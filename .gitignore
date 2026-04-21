@@ -13,13 +13,6 @@ __pycache__/
 .vscode/
 .idea/
 
-# Bỏ qua các cache dữ liệu dataset tại máy local
-datasets/
-/data/
-*.npy
-*.nii.gz
-*.json
-
 # Bỏ qua các Checkpoint PyTorch cồng kềnh
 checkpoints/
 *.pth

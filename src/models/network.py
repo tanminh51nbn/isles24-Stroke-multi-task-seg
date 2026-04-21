@@ -78,7 +78,7 @@ class MultiTaskUNet(nn.Module):
                 decoder_channels=decoder_channels,
                 n_blocks=n_blocks,
                 attention_type=attention_type,
-                center=center_block,
+                add_center_block=center_block,
             )
             setattr(self, f"decoder_{task_name}", decoder)
 
