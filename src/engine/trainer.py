@@ -177,8 +177,12 @@ class Trainer:
         train_cfg = cfg["training"]
 
         # ── Create Accelerator (handles DDP + AMP) ──
+        from accelerate import DistributedDataParallelKwargs
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        
         self.accelerator = Accelerator(
             mixed_precision="fp16" if train_cfg.get("amp", True) else "no",
+            kwargs_handlers=[ddp_kwargs]
         )
 
         # ── Prepare all components for distributed training ──
