@@ -1,0 +1,35 @@
+# Bỏ qua các file nháp và hướng dẫn nội bộ
+notebooks/
+Context.md
+
+# Bỏ qua thư viện và biến môi trường ảo Python
+venv/
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Bỏ qua các file IDE sinh ra
+.vscode/
+.idea/
+
+# Bỏ qua các cache dữ liệu dataset tại máy local
+datasets/
+data/
+*.npy
+*.nii.gz
+*.json
+
+# Bỏ qua các Checkpoint PyTorch cồng kềnh
+checkpoints/
+*.pth
+*.pt
+
+# Bỏ qua logs (W&B, TensorBoard,...)
+wandb/
+runs/
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db

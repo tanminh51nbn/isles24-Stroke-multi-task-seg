@@ -1,0 +1,27 @@
+# ═══════════════════════════════════════════════════════════════
+#  ISLES'24 — Multi-Task 2.5D U-Net Configuration
+#  Shared encoder + 3 independent decoders (Lesion, LVO, CoW)
+# ═══════════════════════════════════════════════════════════════
+
+encoder:
+  name: "efficientnet-b2"
+  weights: "imagenet"              # "imagenet" | null (random init)
+  depth: 5                         # Số level downsampling (5 stages)
+  in_channels: 18                  # 6 modalities × 3 slices (2.5D)
+
+decoder:
+  channels: [256, 128, 64, 32, 16] # Channels tại mỗi level upsampling
+  attention_type: null              # null | "scse" (Squeeze-and-Excitation)
+  center_block: false               # Center block giữa encoder-decoder
+
+heads:
+  lesion:
+    out_channels: 1                 # Binary segmentation — stroke infarct
+  lvo:
+    out_channels: 1                 # Binary segmentation — large vessel occlusion
+  cow:
+    out_channels: 1                 # Binary segmentation — Circle of Willis
+
+# ── Output ──
+# Raw logits (KHÔNG sigmoid/softmax trong model)
+# BCEWithLogitsLoss tự tích hợp sigmoid → numerical stability

@@ -1,0 +1,67 @@
+# ═══════════════════════════════════════════════════════════════
+#  ISLES'24 — Training Configuration
+#  Loss, Optimizer, Scheduler, Training params
+# ═══════════════════════════════════════════════════════════════
+
+# ── Loss Function ───────────────────────────────────────────────
+loss:
+  type: "dice_focal"
+  sigmoid: true                    # Apply sigmoid to raw logits (model outputs logits)
+  include_background: true         # ⚠️ MUST be true — model output is [B,1,H,W] (1 channel only)
+  lambda_dice: 1.0                 # Weight for Dice component
+  lambda_focal: 1.0                # Weight for Focal component
+  gamma: 2.0                      # Focal focusing parameter (paper default: Lin et al.)
+                                    # Fine-tuning strategy: tăng lên 3.0 nếu LVO recall thấp
+
+# ── Multi-task Weighting ────────────────────────────────────────
+# Loss_total = w_lesion·L_lesion + w_lvo·L_lvo + w_cow·L_cow
+task_weights:
+  lesion: 1.0                      # Vùng nhồi máu — vùng lớn, tương đối dễ học
+  lvo: 2.0                         # Cục máu đông — siêu nhỏ (vài pixel), khó nhất
+  cow: 1.0                         # Vòng Willis — ống liên tục
+
+# ── Optimizer ───────────────────────────────────────────────────
+optimizer:
+  type: "adamw"
+  lr: 3.0e-4                       # Peak learning rate (decoders + heads)
+  weight_decay: 1.0e-4             # L2 regularization (prevent overfitting)
+  encoder_lr_scale: 0.1            # Encoder LR = lr × 0.1 = 3e-5 (protect pretrained)
+
+# ── LR Scheduler ───────────────────────────────────────────────
+scheduler:
+  warmup_epochs: 5                 # Linear warmup: 0 → lr over 5 epochs
+  min_lr: 1.0e-6                   # Cosine annealing floor
+
+# ── Training ────────────────────────────────────────────────────
+training:
+  epochs: 50
+  amp: true                        # Automatic Mixed Precision (float16 forward)
+  grad_clip_norm: 1.0              # Max gradient norm — safety net for LVO gradient explosion
+
+  # Composite Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
+  composite_weights:
+    dice_lesion: 0.4               # Đo chính xác vùng nhồi máu
+    recall_lvo: 0.4                # Phát hiện cục máu đông (chỉ cần chạm trúng)
+    dice_cow: 0.2                  # Phụ trợ — mạch máu lớn
+
+  # Checkpointing — 3 phiên bản cho 3 use-case lâm sàng
+  checkpoint:
+    dir: "checkpoints"
+    save_best_overall: true        # Composite Score → Release chính
+    save_best_lesion: true         # Dice Lesion    → Bác sĩ đo thể tích
+    save_best_lvo: true            # Recall LVO     → Bác sĩ cấp cứu
+
+  # Early Stopping (dựa trên Composite Score)
+  early_stopping:
+    enabled: true
+    patience: 15                   # Epochs không cải thiện → stop
+    min_delta: 0.001               # Ngưỡng cải thiện tối thiểu
+
+  # Logging
+  logging:
+    log_interval: 10               # Log mỗi N batches
+    visualize_every: 5             # Overlay predictions mỗi N epochs
+    wandb:
+      enabled: false               # Set true trên Kaggle + WANDB_API_KEY
+      project: "isles24-stroke"
+      run_name: null               # Auto-generate nếu null
