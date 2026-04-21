@@ -137,7 +137,7 @@ class MultiTaskUNet(nn.Module):
             decoder = getattr(self, f"decoder_{task_name}")
             head = getattr(self, f"head_{task_name}")
 
-            decoded = decoder(*features)
+            decoded = decoder(features)
             logits = head(decoded)
             outputs.append(logits)
 
