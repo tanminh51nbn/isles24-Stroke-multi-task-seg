@@ -15,7 +15,7 @@ __pycache__/
 
 # Bỏ qua các cache dữ liệu dataset tại máy local
 datasets/
-data/
+/data/
 *.npy
 *.nii.gz
 *.json
