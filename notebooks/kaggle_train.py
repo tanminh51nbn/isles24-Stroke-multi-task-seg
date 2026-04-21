@@ -27,13 +27,8 @@ def training_function():
     Self-contained training function for Accelerate DDP.
     Everything must be imported inside here!
     """
-    # ── 0. PATH SETUP & DDP FIX (Critical for spawned processes) ──
+    # ── 0. PATH SETUP (Critical for spawned processes) ──
     import sys, os
-    
-    # ❌ Fix Kaggle NCCL Hang: Disable P2P and InfiniBand
-    os.environ["NCCL_P2P_DISABLE"] = "1"
-    os.environ["NCCL_IB_DISABLE"] = "1"
-    os.environ["OMP_NUM_THREADS"] = "1"
     
     project_path = "/kaggle/working/isles24_seg"
     if project_path not in sys.path:
@@ -132,9 +127,20 @@ def training_function():
     trainer.fit()
 
 
+# ── 0. PATH SETUP & DDP FIX (Global Scope) ──
+import os
+import sys
+
+# ❌ Fix Kaggle NCCL Hang: Disable P2P, InfiniBand, and force Localhost Socket
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_IB_DISABLE"] = "1"
+os.environ["NCCL_SOCKET_IFNAME"] = "lo"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 # ── THE ONLY THING ALLOWED IN THE GLOBAL SCOPE ──
-from accelerate import notebook_launcher
 
 if __name__ == "__main__":
-    # Launch DDP with 2 GPUs
-    notebook_launcher(training_function, num_processes=2)
+    # If run via `accelerate launch`, this is standard!
+    # Otherwise, it runs single GPU.
+    training_function()
+
