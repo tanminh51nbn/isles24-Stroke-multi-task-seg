@@ -71,9 +71,10 @@ class ISLES24Dataset(Dataset):
         )
 
         # ── Build positive/negative slice cache ──
-        self._is_positive: List[bool] = self._build_slice_cache(cache_path)
+        # Returns List[Dict[str, bool]] containing 'lesion', 'lvo', 'cow', 'any_positive'
+        self._is_positive = self._build_slice_cache(cache_path)
 
-        n_pos = sum(self._is_positive)
+        n_pos = sum(1 for cat in self._is_positive if cat.get("any_positive", False))
         n_total = len(self._is_positive)
         logger.info(
             f"Slice balance: {n_pos} positive / {n_total - n_pos} negative "

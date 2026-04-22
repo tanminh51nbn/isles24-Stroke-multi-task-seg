@@ -1,6 +1,5 @@
 # Bỏ qua các file nháp và hướng dẫn nội bộ
-notebooks/*
-!notebooks/train_exp.py
+notebooks/
 Context.md
 System_Design_Plan_ISLES24.md
 
