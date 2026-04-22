@@ -62,8 +62,20 @@ class MultiTaskSharedUNet(nn.Module):
                 # RadImageNet weights are standard torchvision ResNet50 keys.
                 # SMP ResNet encoder uses the same keys.
                 state_dict = torch.load(pretrained_weights, map_location="cpu")
-                missing, unexpected = self.encoder.load_state_dict(state_dict, strict=False)
-                logger.info(f"Custom weights loaded. Missing keys: {len(missing)}, Unexpected keys: {len(unexpected)}")
+                # Handle nested state_dicts (e.g., {'state_dict': ..., 'epoch': ...})
+                if "state_dict" in state_dict:
+                    state_dict = state_dict["state_dict"]
+                elif "model" in state_dict:
+                    state_dict = state_dict["model"]
+                
+                load_result = self.encoder.load_state_dict(state_dict, strict=False)
+                
+                # Safe unpacking for older PyTorch or modified modules
+                if load_result is not None:
+                    missing, unexpected = load_result.missing_keys, load_result.unexpected_keys
+                    logger.info(f"Custom weights loaded. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+                else:
+                    logger.info("Custom weights loaded (load_state_dict returned None).")
             else:
                 logger.warning(f"Custom weights file {pretrained_weights} NOT FOUND! Using random weights.")
 
