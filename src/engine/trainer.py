@@ -265,7 +265,7 @@ class MultiTaskTrainer:
     #  Main training loop
     # ─────────────────────────────────────────────────────────────
 
-    def fit(self) -> float:
+    def train(self) -> float:
         """
         Run full training: train → validate → checkpoint → early stop.
 
