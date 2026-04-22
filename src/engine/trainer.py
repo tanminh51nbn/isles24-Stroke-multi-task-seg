@@ -140,7 +140,7 @@ def _create_overlay(ncct_slice: np.ndarray,
 #  Trainer
 # ═══════════════════════════════════════════════════════════════
 
-class Trainer:
+class MultiTaskTrainer:
     """
     Full training pipeline for ISLES'24 Multi-Task Segmentation.
 
