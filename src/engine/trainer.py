@@ -343,10 +343,18 @@ class Trainer:
             disable=not self.accelerator.is_main_process,
         )
 
-        for step, (x, y) in enumerate(pbar):
+        for step, (x, y, brain_mask) in enumerate(pbar):
             # Forward (AMP autocast managed by Accelerate)
             with self.accelerator.autocast():
                 preds = self.model(x)
+                
+                # ── Apply Brain Mask to Logits ──
+                # Multiply by 1 in brain, add -1e9 outside brain. 
+                # After sigmoid, outside brain will be exactly 0.0 probability.
+                brain_mask = brain_mask.to(preds[0].device)
+                for i in range(len(preds)):
+                    preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
+                    
                 loss, loss_dict = self.criterion(preds, y)
 
             # Backward (Accelerate handles gradient scaling)
@@ -419,9 +427,15 @@ class Trainer:
             disable=not self.accelerator.is_main_process,
         )
 
-        for x, y in pbar:
+        for x, y, brain_mask in pbar:
             with self.accelerator.autocast():
                 preds = self.model(x)
+                
+                # ── Apply Brain Mask to Logits ──
+                brain_mask = brain_mask.to(preds[0].device)
+                for i in range(len(preds)):
+                    preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
+                    
                 loss, _ = self.criterion(preds, y)
 
             running_loss += loss.item()

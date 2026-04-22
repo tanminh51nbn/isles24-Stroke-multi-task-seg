@@ -84,52 +84,39 @@ class ISLES24Dataset(Dataset):
     #  Cache logic
     # ─────────────────────────────────────────────────────────────
 
-    def _build_slice_cache(self, cache_path: Optional[str]) -> List[bool]:
+    def _build_slice_cache(self, cache_path: Optional[str]) -> List[Dict[str, bool]]:
         """
-        Determine which slices contain lesion (channel 0 > 0).
-        Cache results to JSON for instant reload on subsequent epochs/runs.
-
-        Cache format:
-            {"positive": [y_path, ...], "negative": [y_path, ...]}
+        Determine which slices contain which labels.
+        Cache results to JSON for instant reload.
         """
-        # ── Try loading existing cache ──
         if cache_path and Path(cache_path).exists():
             logger.info(f"Loading slice cache from {cache_path}")
             with open(cache_path, "r") as f:
-                cache = json.load(f)
-            pos_set = set(cache.get("positive", []))
-            return [sample[1] in pos_set for sample in self.samples]
+                return json.load(f)
 
-        # ── Full scan ──
-        logger.info("Scanning labels for positive/negative classification...")
-        is_positive: List[bool] = []
-        positive_paths: List[str] = []
-        negative_paths: List[str] = []
+        logger.info("Scanning labels for multi-task classification...")
+        categories = []
 
         for i, (_, y_path) in enumerate(self.samples):
-            y = np.load(y_path)                 # [3, 544, 544] uint8
-            has_lesion = bool(y[0].any())        # Channel 0 = lesion
-            is_positive.append(has_lesion)
-
-            if has_lesion:
-                positive_paths.append(y_path)
-            else:
-                negative_paths.append(y_path)
+            y = np.load(y_path)
+            cat = {
+                "lesion": bool(y[0].any()),
+                "lvo": bool(y[1].any()),
+                "cow": bool(y[2].any())
+            }
+            cat["any_positive"] = cat["lesion"] or cat["lvo"] or cat["cow"]
+            categories.append(cat)
 
             if (i + 1) % 2000 == 0:
                 logger.info(f"  Scanned {i + 1}/{len(self.samples)} slices...")
 
-        # ── Persist cache ──
         if cache_path:
             Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
             with open(cache_path, "w") as f:
-                json.dump(
-                    {"positive": positive_paths, "negative": negative_paths},
-                    f,
-                )
+                json.dump(categories, f)
             logger.info(f"Saved slice cache → {cache_path}")
 
-        return is_positive
+        return categories
 
     # ─────────────────────────────────────────────────────────────
     #  PyTorch Dataset interface
@@ -143,20 +130,31 @@ class ISLES24Dataset(Dataset):
 
         # Load from disk and cast types
         x = np.load(x_path).astype(np.float32)     # float16 → float32 [18, 544, 544]
-        y = np.load(y_path).astype(np.float32)      # uint8   → float32 [3, 544, 544]
+        y = np.load(y_path).astype(np.float32)     # uint8   → float32 [3, 544, 544]
+
+        # ── 1. Clip Perfusion Outliers (Critical for Stability) ──
+        # Perfusion channels are 6-17. Clip them to [-5.0, 5.0]
+        x[6:18] = np.clip(x[6:18], -5.0, 5.0)
+
+        # ── 2. Generate Brain Mask from NCCT (Channel 1 is central NCCT slice) ──
+        # NCCT background is -1.0. We use > -0.95 to extract the brain.
+        brain_mask = (x[1] > -0.95).astype(np.float32)  # [544, 544]
+        brain_mask = np.expand_dims(brain_mask, axis=0) # [1, 544, 544]
 
         # Apply MONAI transforms (dict-based)
         if self.transform is not None:
-            data = self.transform({"image": x, "label": y})
-            x, y = data["image"], data["label"]
+            data = self.transform({"image": x, "label": y, "brain_mask": brain_mask})
+            x, y, brain_mask = data["image"], data["label"], data["brain_mask"]
 
         # Ensure torch.Tensor output
         if not isinstance(x, torch.Tensor):
             x = torch.from_numpy(np.ascontiguousarray(x))
         if not isinstance(y, torch.Tensor):
             y = torch.from_numpy(np.ascontiguousarray(y))
+        if not isinstance(brain_mask, torch.Tensor):
+            brain_mask = torch.from_numpy(np.ascontiguousarray(brain_mask))
 
-        return x, y
+        return x, y, brain_mask
 
     # ─────────────────────────────────────────────────────────────
     #  Sampling support
@@ -165,12 +163,17 @@ class ISLES24Dataset(Dataset):
     def get_sample_weights(self) -> np.ndarray:
         """
         Return weight array for torch.utils.data.WeightedRandomSampler.
-
-        Positive slice (has lesion) → pos_weight (default 3.0)
-        Negative slice (all black)  → 1.0
+        Implementing stratified sampling strategy from System Design Plan:
+        - LVO -> 3.0 (Oversample 3x)
+        - Lesion / CoW (Positive but no LVO) -> 1.0 (Keep 100%)
+        - All negative -> 0.3 (Downsample to 30%)
         """
         weights = np.ones(len(self.samples), dtype=np.float64)
-        for i, is_pos in enumerate(self._is_positive):
-            if is_pos:
-                weights[i] = self.pos_weight
+        for i, cat in enumerate(self._is_positive):
+            if cat["lvo"]:
+                weights[i] = 3.0
+            elif cat["any_positive"]:
+                weights[i] = 1.0
+            else:
+                weights[i] = 0.3
         return weights

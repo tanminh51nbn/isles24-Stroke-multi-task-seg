@@ -35,9 +35,15 @@ Dataset gốc: ISLES'24 - A Real-World Longitudinal Multimodal Stroke Dataset | 
 **Tóm lại:** Bộ dataset này đầy đủ các đặc trưng, không thiếu.
 
 - INPUT: Sử dụng `ncct` trong raw_data để làm khung, ép các kênh thô khác khớp với nó vì nó chứa đầy đủ sơ đồ hình não chi tiết. `CTA` (Ảnh chụp CT Angiography , đây là sơ đồ máu) và `perfusion` gồm: `CBF` (Lưu lượng máu), `CBV` (Thể tích máu), `MTT` (Thời gian trung bình máu đi qua não), `Tmax` (Thời gian máu đạt đỉnh).
-- LABEL: `lesion-msk` (vùng nhồi máu - hoại tử), `lvo-msk` (vị trí cục máu đông gây tắc mạch), `cow-msk` (phục vụ phân loại vòng nối gồm các động mạch lớn).
 
-## Cấu trúc thư mục và Tiền xử lý
+- LABEL: `lesion-msk` (vùng nhồi máu - hoại tử), `lvo-msk` (vị trí cục máu đông gây tắc mạch), `cow-msk` (phục vụ phân loại vòng nối gồm các động mạch lớn).
+  >- lesion: Vùng lớn, hình dạng bất quy tắc => Class imbalance nặng (vùng tổn thương nhỏ so với toàn não)
+  >- lvo: Điểm trên mạch máu, cực nhỏ => dễ bị model lướt qua.
+  >- cow: Cấu trúc mạng mạch máu dạng vòng => Mỏng, dài, topology phức tạp.
+
+## Tái cấu trúc thư mục và Tiền xử lý
+
+Chuyển từ .nii.gz sang .npy nhị phân thô để tăng tốc độ train, đồng thời tiền xử lí và chuẩn hóa sẵn luôn.
 
 ```
 ISLES24_NPY_544x544x1mm/

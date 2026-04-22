@@ -4,10 +4,10 @@
 # ═══════════════════════════════════════════════════════════════
 
 encoder:
-  name: "efficientnet-b2"
-  weights: "imagenet"              # "imagenet" | null (random init)
-  depth: 5                         # Số level downsampling (5 stages)
-  in_channels: 18                  # 6 modalities × 3 slices (2.5D)
+  name: "resnet50"
+  weights: "RadImageNet-ResNet50.pt" # Sẽ tải tự động trong Kaggle
+  depth: 5                           # Số level downsampling (5 stages)
+  in_channels: 18                    # 6 modalities × 3 slices (2.5D)
 
 decoder:
   channels: [256, 128, 64, 32, 16] # Channels tại mỗi level upsampling

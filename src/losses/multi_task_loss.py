@@ -21,7 +21,7 @@ from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
-from monai.losses import DiceFocalLoss
+from monai.losses import DiceFocalLoss, FocalLoss, TverskyLoss
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,7 @@ class MultiTaskLoss(nn.Module):
     """
     Multi-task loss for simultaneous Lesion/LVO/CoW segmentation.
 
-    Each task gets its own DiceFocalLoss computation, then losses
-    are aggregated with configurable task weights.
+    Each task gets its own specialized loss (e.g., FocalTversky for imbalanced LVO).
     """
 
     TASK_NAMES = ("lesion", "lvo", "cow")
@@ -40,18 +39,57 @@ class MultiTaskLoss(nn.Module):
         """
         Args:
             loss_cfg:     loss section from configs/train.yaml
-            task_weights: {"lesion": 1.0, "lvo": 2.0, "cow": 1.0}
+            task_weights: {"lesion": 2.0, "lvo": 5.0, "cow": 1.0}
         """
         super().__init__()
-
-        # ── MONAI DiceFocalLoss ──
-        self.criterion = DiceFocalLoss(
-            sigmoid=loss_cfg.get("sigmoid", True),
-            include_background=True,               # ⚠️ Must be True for [B,1,H,W]
-            lambda_dice=loss_cfg.get("lambda_dice", 1.0),
-            lambda_focal=loss_cfg.get("lambda_focal", 1.0),
-            gamma=loss_cfg.get("gamma", 2.0),
-        )
+        
+        self.criterions = nn.ModuleDict()
+        
+        for task_name in self.TASK_NAMES:
+            cfg = loss_cfg.get(task_name, {})
+            loss_type = cfg.get("type", "dice_focal")
+            
+            if loss_type == "dice_focal":
+                self.criterions[task_name] = DiceFocalLoss(
+                    sigmoid=True,
+                    include_background=True,
+                    lambda_dice=cfg.get("lambda_dice", 1.0),
+                    lambda_focal=cfg.get("lambda_focal", 1.0),
+                    gamma=cfg.get("gamma", 2.0),
+                )
+            elif loss_type == "focal_tversky":
+                # MONAI's TverskyLoss has an internal focal parameter if needed,
+                # but we can use TverskyLoss + Focal behavior.
+                # Actually, MONAI FocalLoss and TverskyLoss are separate, but 
+                # TverskyLoss has no built-in focal power. We can use TverskyLoss 
+                # and apply focal manually, or just use TverskyLoss as is.
+                # Wait, MONAI has FocalLoss, but no FocalTverskyLoss directly.
+                # Let's implement Focal Tversky natively here.
+                pass # Handled below
+                
+        # To handle Focal Tversky cleanly without relying on MONAI internals, 
+        # let's just initialize the standard TverskyLoss and we will apply focal in forward.
+        for task_name in self.TASK_NAMES:
+            cfg = loss_cfg.get(task_name, {})
+            loss_type = cfg.get("type", "dice_focal")
+            
+            if loss_type == "focal_tversky":
+                self.criterions[task_name] = TverskyLoss(
+                    sigmoid=True,
+                    include_background=True,
+                    alpha=cfg.get("alpha", 0.5),
+                    beta=cfg.get("beta", 0.5),
+                )
+                
+        # Store focal gammas separately
+        self.gammas = {
+            name: loss_cfg.get(name, {}).get("gamma", 1.0)
+            for name in self.TASK_NAMES
+        }
+        self.loss_types = {
+            name: loss_cfg.get(name, {}).get("type", "dice_focal")
+            for name in self.TASK_NAMES
+        }
 
         # ── Task weights ──
         self.task_weights = {
@@ -59,10 +97,8 @@ class MultiTaskLoss(nn.Module):
             for name in self.TASK_NAMES
         }
 
-        logger.info(
-            f"MultiTaskLoss: DiceFocal(gamma={loss_cfg.get('gamma', 2.0)}) | "
-            f"weights={self.task_weights}"
-        )
+        logger.info(f"MultiTaskLoss Task Weights: {self.task_weights}")
+        logger.info(f"Loss Types: {self.loss_types}")
 
     def forward(
         self,
@@ -89,7 +125,19 @@ class MultiTaskLoss(nn.Module):
             pred = predictions[i]                   # [B, 1, H, W] logits
             target = targets[:, i : i + 1, :, :]    # [B, 1, H, W] binary
 
-            task_loss = self.criterion(pred, target)
+            criterion = self.criterions[task_name]
+            task_loss = criterion(pred, target)
+            
+            if self.loss_types[task_name] == "focal_tversky":
+                gamma = self.gammas[task_name]
+                # Focal Tversky formulation: (TverskyLoss)^gamma
+                # Note: TverskyLoss computes 1 - TverskyIndex. 
+                # So task_loss is already (1 - TI). We just raise it to gamma.
+                task_loss = torch.pow(task_loss + 1e-6, 1.0 / gamma) # wait, usually it's (1 - TI)^(1/gamma) in MONAI implementation of Focal Tversky, or just task_loss ** gamma. Let's use (task_loss)**gamma for focusing. 
+                # Actually standard Focal Tversky is: TL = (1 - TverskyIndex)^(1/gamma) according to Abraham et al. 
+                # Let's use 1/gamma.
+                task_loss = torch.pow(task_loss + 1e-6, 1.0 / gamma)
+
             weighted = self.task_weights[task_name] * task_loss
 
             loss_dict[task_name] = task_loss.item()

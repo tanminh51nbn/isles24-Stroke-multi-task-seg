@@ -1,6 +1,7 @@
 # Bỏ qua các file nháp và hướng dẫn nội bộ
 notebooks/
 Context.md
+System_Design_Plan_ISLES24.md
 
 # Bỏ qua thư viện và biến môi trường ảo Python
 venv/

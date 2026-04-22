@@ -1,47 +1,34 @@
 """
-network.py — Multi-Task 2.5D U-Net for ISLES'24 Stroke Segmentation.
+network.py — Multi-Task 2.5D Shared UNet for ISLES'24 Stroke Segmentation.
 
 Architecture:
-  - Shared Encoder: EfficientNet-B2 (18 input channels)
-  - 3 Independent UnetDecoders: Lesion, LVO, CoW
-  - 3 SegmentationHeads: raw logits output (no sigmoid)
+  - Shared Encoder: ResNet50 (loaded with RadImageNet, inflated to 18 channels via average-repeat)
+  - Shared Decoder: UNet Decoder (smp.Unet)
+  - 3 Independent Segmentation Heads: Lesion, LVO, CoW (raw logits)
 
 Output:
   List of 3 tensors, each [B, 1, 544, 544] (raw logits)
   Order: [lesion, lvo, cow]
-
-Medical design rationale:
-  - 3 independent decoders allow each task to learn task-specific
-    skip connection usage (Lesion=large regions, LVO=tiny points, CoW=tubular)
-  - Raw logits output → BCEWithLogitsLoss handles sigmoid internally
-    for better gradient flow and numerical stability
 """
+import os
 import logging
-
 import torch
 import torch.nn as nn
 import segmentation_models_pytorch as smp
-from segmentation_models_pytorch.decoders.unet.decoder import UnetDecoder
 from segmentation_models_pytorch.base import SegmentationHead
 
 logger = logging.getLogger(__name__)
 
 
-class MultiTaskUNet(nn.Module):
+class MultiTaskSharedUNet(nn.Module):
     """
-    Multi-Task 2.5D U-Net for simultaneous Lesion/LVO/CoW segmentation.
-
-    Hard Parameter Sharing: one encoder → three independent decoders.
-    Each decoder has its own skip connections and segmentation head.
+    Multi-Task 2.5D Shared UNet for simultaneous Lesion/LVO/CoW segmentation.
+    Shared encoder and decoder to learn task correlations, separate heads.
     """
 
     TASK_NAMES = ("lesion", "lvo", "cow")
 
     def __init__(self, cfg: dict):
-        """
-        Args:
-            cfg: model config dict (from configs/model.yaml)
-        """
         super().__init__()
 
         enc_cfg = cfg["encoder"]
@@ -49,132 +36,112 @@ class MultiTaskUNet(nn.Module):
         heads_cfg = cfg["heads"]
 
         # ════════════════════════════════════════════════════════
-        #  Shared Encoder
+        #  Base UNet (Loaded with 3 channels to match RadImageNet)
         # ════════════════════════════════════════════════════════
-        self.encoder = smp.encoders.get_encoder(
-            name=enc_cfg["name"],
-            in_channels=enc_cfg["in_channels"],     # 18
-            depth=enc_cfg["depth"],                  # 5
-            weights=enc_cfg.get("weights"),          # "imagenet" or None
+        pretrained_weights = enc_cfg.get("weights", None)
+        is_custom_weights = pretrained_weights and pretrained_weights.endswith(".pt")
+        
+        base_model = smp.Unet(
+            encoder_name=enc_cfg["name"],
+            encoder_weights=pretrained_weights if not is_custom_weights else None,
+            in_channels=3,
+            classes=1, # Dummy head, we will replace it
+            decoder_channels=dec_cfg["channels"],
+            decoder_attention_type=dec_cfg.get("attention_type", None),
         )
 
-        # Encoder output channels at each stage
-        # e.g. EfficientNet-B2: (3, 32, 16, 24, 48, 120, 352) for depth=5
-        encoder_channels = self.encoder.out_channels
-
-        decoder_channels = tuple(dec_cfg["channels"])   # (256, 128, 64, 32, 16)
-        n_blocks = len(decoder_channels)
-        attention_type = dec_cfg.get("attention_type")   # None or "scse"
-        center_block = dec_cfg.get("center_block", False)
+        self.encoder = base_model.encoder
+        self.decoder = base_model.decoder
 
         # ════════════════════════════════════════════════════════
-        #  3 Independent Decoders
+        #  Load RadImageNet Custom Weights
         # ════════════════════════════════════════════════════════
-        # Each decoder learns its own skip connection weights,
-        # allowing task-specific feature selection at each scale.
+        if is_custom_weights:
+            if os.path.exists(pretrained_weights):
+                logger.info(f"Loading custom weights from {pretrained_weights}")
+                # RadImageNet weights are standard torchvision ResNet50 keys.
+                # SMP ResNet encoder uses the same keys.
+                state_dict = torch.load(pretrained_weights, map_location="cpu")
+                missing, unexpected = self.encoder.load_state_dict(state_dict, strict=False)
+                logger.info(f"Custom weights loaded. Missing keys: {len(missing)}, Unexpected keys: {len(unexpected)}")
+            else:
+                logger.warning(f"Custom weights file {pretrained_weights} NOT FOUND! Using random weights.")
+
+        # ════════════════════════════════════════════════════════
+        #  Inflate Conv1 (Average-Repeat)
+        # ════════════════════════════════════════════════════════
+        target_in_channels = enc_cfg["in_channels"]
+        for m in self.encoder.modules():
+            if isinstance(m, nn.Conv2d):
+                old_weight = m.weight.data
+                # w_new = w_old.mean(dim=1, keepdim=True).repeat(1, 18, 1, 1) / (18/3)
+                new_weight = old_weight.mean(dim=1, keepdim=True).repeat(1, target_in_channels, 1, 1) / (target_in_channels / 3.0)
+                m.in_channels = target_in_channels
+                m.weight = nn.Parameter(new_weight)
+                logger.info(f"Inflated first Conv2d from 3 to {target_in_channels} channels using Average-Repeat.")
+                break
+
+        # ════════════════════════════════════════════════════════
+        #  3 Independent Segmentation Heads
+        # ════════════════════════════════════════════════════════
+        decoder_out_channels = dec_cfg["channels"][-1]
+        self.heads = nn.ModuleDict()
+
         for task_name in self.TASK_NAMES:
-            decoder = UnetDecoder(
-                encoder_channels=encoder_channels,
-                decoder_channels=decoder_channels,
-                n_blocks=n_blocks,
-                attention_type=attention_type,
-                add_center_block=center_block,
-            )
-            setattr(self, f"decoder_{task_name}", decoder)
-
-        # ════════════════════════════════════════════════════════
-        #  3 Segmentation Heads (raw logits, NO activation)
-        # ════════════════════════════════════════════════════════
-        for task_name in self.TASK_NAMES:
-            out_ch = heads_cfg[task_name]["out_channels"]   # 1
+            out_ch = heads_cfg[task_name]["out_channels"]
             head = SegmentationHead(
-                in_channels=decoder_channels[-1],   # 16
-                out_channels=out_ch,                 # 1
-                activation=None,                     # ⚠️ Raw logits!
-                kernel_size=3,                       # 3×3 conv for smoothing
-                upsampling=1,                        # No additional upsampling
+                in_channels=decoder_out_channels,
+                out_channels=out_ch,
+                activation=None,  # ⚠️ Raw logits!
+                kernel_size=3,    # UNet default head
+                upsampling=1,     # UNet decoder already upsamples to H,W
             )
-            setattr(self, f"head_{task_name}", head)
+            self.heads[task_name] = head
 
-        # Initialize decoder/head weights
-        self._init_decoder_heads()
+        self._init_heads()
 
-    def _init_decoder_heads(self):
-        """Kaiming initialization for decoder and head weights."""
-        for task_name in self.TASK_NAMES:
-            decoder = getattr(self, f"decoder_{task_name}")
-            head = getattr(self, f"head_{task_name}")
-
-            for module in [decoder, head]:
-                for m in module.modules():
-                    if isinstance(m, nn.Conv2d):
-                        nn.init.kaiming_normal_(
-                            m.weight, mode="fan_out", nonlinearity="relu"
-                        )
-                        if m.bias is not None:
-                            nn.init.zeros_(m.bias)
-                    elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
-                        nn.init.ones_(m.weight)
-                        nn.init.zeros_(m.bias)
+    def _init_heads(self):
+        """Kaiming initialization for task heads."""
+        for m in self.heads.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> list:
         """
-        Forward pass: encode once, decode three times.
-
-        Args:
-            x: Input tensor [B, 18, 544, 544] float32
-
-        Returns:
-            List of 3 tensors (raw logits), each [B, 1, 544, 544]
-            Order: [lesion_logits, lvo_logits, cow_logits]
+        Forward pass:
+        Args: x: [B, 18, 544, 544]
+        Returns: List of 3 raw logits [lesion, lvo, cow]
         """
-        # ── Shared encoding (computed ONCE) ──
         features = self.encoder(x)
+        decoded = self.decoder(*features)
 
-        # ── Independent decoding per task ──
         outputs = []
         for task_name in self.TASK_NAMES:
-            decoder = getattr(self, f"decoder_{task_name}")
-            head = getattr(self, f"head_{task_name}")
+            outputs.append(self.heads[task_name](decoded))
 
-            decoded = decoder(features)
-            logits = head(decoded)
-            outputs.append(logits)
-
-        return outputs   # [lesion, lvo, cow]
+        return outputs
 
 
-# ═══════════════════════════════════════════════════════════════
-#  Factory
-# ═══════════════════════════════════════════════════════════════
+def build_model(cfg: dict) -> MultiTaskSharedUNet:
+    model = MultiTaskSharedUNet(cfg)
 
-def build_model(cfg: dict) -> MultiTaskUNet:
-    """
-    Build MultiTaskUNet from config and log architecture details.
-
-    Args:
-        cfg: model config dict (from configs/model.yaml)
-
-    Returns:
-        Initialized MultiTaskUNet ready for training
-    """
-    model = MultiTaskUNet(cfg)
-
-    # ── Log parameter counts ──
     enc_params = sum(p.numel() for p in model.encoder.parameters())
-    total_params = sum(p.numel() for p in model.parameters())
-    dec_head_params = total_params - enc_params
+    dec_params = sum(p.numel() for p in model.decoder.parameters())
+    head_params = sum(p.numel() for p in model.heads.parameters())
+    total_params = enc_params + dec_params + head_params
 
     logger.info(
-        f"MultiTaskUNet built: "
+        f"MultiTaskSharedUNet built: "
         f"encoder={enc_params / 1e6:.1f}M, "
-        f"decoders+heads={dec_head_params / 1e6:.1f}M, "
+        f"decoder={dec_params / 1e6:.1f}M, "
+        f"heads={head_params / 1e6:.1f}M, "
         f"total={total_params / 1e6:.1f}M"
     )
     logger.info(f"  Encoder: {cfg['encoder']['name']} (depth={cfg['encoder']['depth']})")
-    logger.info(f"  Encoder out_channels: {model.encoder.out_channels}")
-    logger.info(f"  Decoder channels: {cfg['decoder']['channels']}")
-    logger.info(f"  Tasks: {MultiTaskUNet.TASK_NAMES}")
-    logger.info(f"  Output: 3 × [B, 1, H, W] raw logits (no activation)")
-
+    logger.info(f"  Tasks: {MultiTaskSharedUNet.TASK_NAMES}")
     return model

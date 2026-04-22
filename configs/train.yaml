@@ -3,22 +3,30 @@
 #  Loss, Optimizer, Scheduler, Training params
 # ═══════════════════════════════════════════════════════════════
 
-# ── Loss Function ───────────────────────────────────────────────
+# ── Loss Function (Task-Specific) ─────────────────────────────
 loss:
-  type: "dice_focal"
-  sigmoid: true                    # Apply sigmoid to raw logits (model outputs logits)
-  include_background: true         # ⚠️ MUST be true — model output is [B,1,H,W] (1 channel only)
-  lambda_dice: 1.0                 # Weight for Dice component
-  lambda_focal: 1.0                # Weight for Focal component
-  gamma: 2.0                      # Focal focusing parameter (paper default: Lin et al.)
-                                    # Fine-tuning strategy: tăng lên 3.0 nếu LVO recall thấp
+  lesion:
+    type: "focal_tversky"
+    alpha: 0.4                    # Phạt đoán nhầm (FP)
+    beta: 0.6                     # Phạt bỏ sót (FN)
+    gamma: 1.0                    # Không cần focal quá mạnh cho Lesion
+  lvo:
+    type: "focal_tversky"
+    alpha: 0.2                    # Rất nhẹ tay với FP
+    beta: 0.8                     # Trừng phạt cực nặng nếu bỏ sót LVO
+    gamma: 2.0                    # Focus vào các ca khó
+  cow:
+    type: "dice_focal"
+    lambda_dice: 1.0
+    lambda_focal: 1.0
+    gamma: 2.0
 
 # ── Multi-task Weighting ────────────────────────────────────────
-# Loss_total = w_lesion·L_lesion + w_lvo·L_lvo + w_cow·L_cow
+# Tổng Loss = w_lesion*L_lesion + w_lvo*L_lvo + w_cow*L_cow
 task_weights:
-  lesion: 1.0                      # Vùng nhồi máu — vùng lớn, tương đối dễ học
-  lvo: 2.0                         # Cục máu đông — siêu nhỏ (vài pixel), khó nhất
-  cow: 1.0                         # Vòng Willis — ống liên tục
+  lesion: 2.0                      # Tăng nhẹ trọng số Lesion
+  lvo: 5.0                         # LVO là ưu tiên hàng đầu
+  cow: 1.0                         # CoW học rất nhanh nên giữ nguyên
 
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
