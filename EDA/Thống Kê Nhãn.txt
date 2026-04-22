@@ -1,0 +1,29 @@
+============================================================
+THỐNG KÊ NHÃN
+============================================================
+
+── LESION ──
+  Cases có nhãn: 140 / 149 (94.0%)
+  Slices dương tính: 4956 / 11821 (41.93%)
+  Tổng pixel dương (toàn bộ dataset): 16,386,503
+  Pixel per case (có nhãn): min=6, max=849296, mean=117046
+  Pixel per slice dương: min=1, max=32521, mean=3306.4, median=1399.0
+
+── LVO ──
+  Cases có nhãn: 139 / 149 (93.3%)
+  Slices dương tính: 379 / 11821 (3.21%)
+  Tổng pixel dương (toàn bộ dataset): 16,401
+  Pixel per case (có nhãn): min=9, max=832, mean=118
+  Pixel per slice dương: min=1, max=355, mean=43.3, median=26.0
+
+── COW ──
+  Cases có nhãn: 147 / 149 (98.7%)
+  Slices dương tính: 3285 / 11821 (27.79%)
+  Tổng pixel dương (toàn bộ dataset): 5,991,681
+  Pixel per case (có nhãn): min=616, max=81869, mean=40760
+  Pixel per slice dương: min=1, max=9117, mean=1824.0, median=1281.0
+
+── Class Imbalance Ratio ──
+  lesion: 1 pos : 213 neg (pos=16,386,503 / total=3,498,259,456)
+  lvo: 1 pos : 213282 neg (pos=16,401 / total=3,498,259,456)
+  cow: 1 pos : 584 neg (pos=5,991,681 / total=3,498,259,456)

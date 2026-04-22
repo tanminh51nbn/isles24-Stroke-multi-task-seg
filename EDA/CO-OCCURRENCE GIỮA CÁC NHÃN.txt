@@ -1,0 +1,24 @@
+============================================================
+CO-OCCURRENCE GIỮA CÁC NHÃN
+============================================================
+  Cases có lesion: 140
+  Cases có lvo:    139
+  Cases có cow:    147
+  Cases có lesion+lvo:      135
+  Cases có lesion+cow:      139
+  Cases có lvo+cow:         139
+  Cases có cả 3:            135
+  Cases KHÔNG có nhãn nào:  1
+  Cases chỉ có lesion:      1
+  Cases chỉ có lvo:         0
+  Cases chỉ có cow:         4
+
+Slice-level co-occurrence (sample toàn bộ):
+  lesion=✗ lvo=✗ cow=✗:  5191 slices (43.9%)
+  lesion=✗ lvo=✗ cow=✓:  1500 slices (12.7%)
+  lesion=✗ lvo=✓ cow=✗:    54 slices (0.5%)
+  lesion=✗ lvo=✓ cow=✓:   120 slices (1.0%)
+  lesion=✓ lvo=✗ cow=✗:  3249 slices (27.5%)
+  lesion=✓ lvo=✗ cow=✓:  1502 slices (12.7%)
+  lesion=✓ lvo=✓ cow=✗:    42 slices (0.4%)
+  lesion=✓ lvo=✓ cow=✓:   163 slices (1.4%)
