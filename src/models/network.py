@@ -130,7 +130,7 @@ class MultiTaskSharedUNet(nn.Module):
         Returns: List of 3 raw logits [lesion, lvo, cow]
         """
         features = self.encoder(x)
-        decoded = self.decoder(*features)
+        decoded = self.decoder(features)
 
         outputs = []
         for task_name in self.TASK_NAMES:
