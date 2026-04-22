@@ -2,12 +2,12 @@
 src.models — ISLES'24 Multi-Task Segmentation Models
 
 Public API:
-    MultiTaskUNet  → Multi-task 2.5D U-Net (shared encoder, 3 decoders)
-    build_model    → Factory: config dict → initialized model
+    MultiTaskSharedUNet → Multi-task 2.5D Shared U-Net (shared encoder, shared decoder)
+    build_model         → Factory: config dict → initialized model
 """
-from .network import MultiTaskUNet, build_model
+from .network import MultiTaskSharedUNet, build_model
 
 __all__ = [
-    "MultiTaskUNet",
+    "MultiTaskSharedUNet",
     "build_model",
 ]

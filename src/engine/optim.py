@@ -30,7 +30,7 @@ def build_optimizer(model, cfg: dict) -> optim.Optimizer:
     since they are randomly initialized.
 
     Args:
-        model: MultiTaskUNet instance
+        model: MultiTaskSharedUNet instance
         cfg:   optimizer section from configs/train.yaml
 
     Returns:

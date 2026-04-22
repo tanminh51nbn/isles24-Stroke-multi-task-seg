@@ -47,7 +47,7 @@ class Evaluator:
     ):
         """
         Args:
-            model:           Trained MultiTaskUNet (already loaded with weights)
+            model:           Trained MultiTaskSharedUNet (already loaded with weights)
             patient_ids:     List of patient IDs to evaluate
             patient_dirs:    {patient_id: Path} mapping from fold_split
             device:          "cuda" or "cpu"

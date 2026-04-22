@@ -166,7 +166,7 @@ class Trainer:
     ):
         """
         Args:
-            model:        MultiTaskUNet instance
+            model:        MultiTaskSharedUNet instance
             criterion:    MultiTaskLoss instance
             optimizer:    AdamW with differential LR
             scheduler:    CosineWarmup scheduler
@@ -182,6 +182,7 @@ class Trainer:
         
         self.accelerator = Accelerator(
             mixed_precision="fp16" if train_cfg.get("amp", True) else "no",
+            gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 1),
             kwargs_handlers=[ddp_kwargs]
         )
 
@@ -344,31 +345,30 @@ class Trainer:
         )
 
         for step, (x, y, brain_mask) in enumerate(pbar):
-            # Forward (AMP autocast managed by Accelerate)
-            with self.accelerator.autocast():
-                preds = self.model(x)
-                
-                # ── Apply Brain Mask to Logits ──
-                # Multiply by 1 in brain, add -1e9 outside brain. 
-                # After sigmoid, outside brain will be exactly 0.0 probability.
-                brain_mask = brain_mask.to(preds[0].device)
-                for i in range(len(preds)):
-                    preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
+            with self.accelerator.accumulate(self.model):
+                # Forward (AMP autocast managed by Accelerate)
+                with self.accelerator.autocast():
+                    preds = self.model(x)
                     
-                loss, loss_dict = self.criterion(preds, y)
+                    # ── Apply Brain Mask to Logits ──
+                    brain_mask = brain_mask.to(preds[0].device)
+                    for i in range(len(preds)):
+                        preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
+                        
+                    loss, loss_dict = self.criterion(preds, y)
 
-            # Backward (Accelerate handles gradient scaling)
-            self.accelerator.backward(loss)
+                # Backward (Accelerate handles gradient scaling)
+                self.accelerator.backward(loss)
 
-            # Gradient clipping (prevents LVO gradient explosion)
-            if self.grad_clip_norm > 0:
-                self.accelerator.clip_grad_norm_(
-                    self.model.parameters(), self.grad_clip_norm
-                )
+                # Gradient clipping (prevents LVO gradient explosion)
+                if self.grad_clip_norm > 0:
+                    self.accelerator.clip_grad_norm_(
+                        self.model.parameters(), self.grad_clip_norm
+                    )
 
-            # Update weights
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+                # Update weights
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
             # Accumulate
             running_loss += loss.item()
