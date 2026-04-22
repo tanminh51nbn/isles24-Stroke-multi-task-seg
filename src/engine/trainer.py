@@ -361,7 +361,7 @@ class MultiTaskTrainer:
                 self.accelerator.backward(loss)
 
                 # Gradient clipping (prevents LVO gradient explosion)
-                if self.grad_clip_norm > 0:
+                if self.grad_clip_norm > 0 and self.accelerator.sync_gradients:
                     self.accelerator.clip_grad_norm_(
                         self.model.parameters(), self.grad_clip_norm
                     )
