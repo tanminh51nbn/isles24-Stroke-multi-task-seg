@@ -335,6 +335,7 @@ class MultiTaskTrainer:
         self.model.train()
 
         running_loss = 0.0
+        total_samples = 0
         task_loss_sums = {t: 0.0 for t in self.TASK_NAMES}
         n_batches = 0
 
@@ -345,6 +346,7 @@ class MultiTaskTrainer:
         )
 
         for step, (x, y, brain_mask) in enumerate(pbar):
+            batch_size = x.size(0)
             with self.accelerator.accumulate(self.model):
                 # Forward (AMP autocast managed by Accelerate)
                 with self.accelerator.autocast():
@@ -371,9 +373,10 @@ class MultiTaskTrainer:
                 self.optimizer.zero_grad()
 
             # Accumulate
-            running_loss += loss.item()
+            running_loss += loss.item() * batch_size
+            total_samples += batch_size
             for t in self.TASK_NAMES:
-                task_loss_sums[t] += loss_dict[t]
+                task_loss_sums[t] += loss_dict[t] * batch_size
             n_batches += 1
 
             # Progress bar
@@ -383,8 +386,8 @@ class MultiTaskTrainer:
                     lr=f"{self.optimizer.param_groups[-1]['lr']:.2e}",
                 )
 
-        avg_loss = running_loss / max(n_batches, 1)
-        avg_tasks = {t: v / max(n_batches, 1) for t, v in task_loss_sums.items()}
+        avg_loss = running_loss / max(total_samples, 1)
+        avg_tasks = {t: v / max(total_samples, 1) for t, v in task_loss_sums.items()}
         return avg_loss, avg_tasks
 
     # ─────────────────────────────────────────────────────────────
@@ -411,6 +414,7 @@ class MultiTaskTrainer:
         device = self.accelerator.device
 
         running_loss = 0.0
+        total_samples = 0
         n_batches = 0
 
         # Accumulators for reduction: [inter_lesion, union_lesion,
@@ -438,7 +442,9 @@ class MultiTaskTrainer:
                     
                 loss, _ = self.criterion(preds, y)
 
-            running_loss += loss.item()
+            batch_size = x.size(0)
+            running_loss += loss.item() * batch_size
+            total_samples += batch_size
             n_batches += 1
 
             # Dice for lesion (task 0)
@@ -482,7 +488,7 @@ class MultiTaskTrainer:
         if viz_data is not None and epoch % self.viz_interval == 0:
             self._visualize(epoch, *viz_data)
 
-        avg_loss = running_loss / max(n_batches, 1)
+        avg_loss = running_loss / max(total_samples, 1)
         return avg_loss, metrics
 
     # ─────────────────────────────────────────────────────────────
