@@ -48,10 +48,14 @@ class MultiTaskTrainer:
         self.cfg = cfg
         train_cfg = cfg["training"]
         
+        from accelerate import DistributedDataParallelKwargs
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+
         # 1. Initialize Accelerate
         self.accelerator = Accelerator(
             mixed_precision="fp16" if train_cfg.get("amp", True) else "no",
             gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 1),
+            kwargs_handlers=[ddp_kwargs]
         )
 
         # 2. Prepare with Accelerate
