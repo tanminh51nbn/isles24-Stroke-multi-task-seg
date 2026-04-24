@@ -147,14 +147,15 @@ class MultiTaskTrainer:
                 comp = val_metrics.get("composite_score", 0.0)
                 lr = self.optimizer.param_groups[-1]["lr"]
                 
-                # Thiết kế Log dạng bảng 3 hàng chuyên nghiệp
-                separator = " " + "-" * 78
+                # Thiết kế bảng 3x3 siêu đẹp
                 msg = (
-                    f"\n{separator}\n"
-                    f" | Epoch {epoch+1:02d}/{self.epochs:02d} | Train Loss: {train_loss:6.4f} | Val Loss: {val_loss:6.4f} |\n"
-                    f" | Lesion Dice: {val_metrics.get('dice_lesion', 0):6.4f} | CoW Dice: {val_metrics.get('dice_cow', 0):6.4f} | LVO Recall: {val_metrics.get('recall_lvo', 0):6.4f} |\n"
-                    f" | Composite Score: {comp:6.4f} | LR: {lr:.1e} | Time: {elapsed:5.1f}s |\n"
-                    f"{separator}"
+                    f"\n ┌─────────────────────────┬─────────────────────────┬─────────────────────────┐\n"
+                    f" │ Epoch: {epoch+1:02d}/{self.epochs:02d}        │ Train Loss: {train_loss:9.4f} │ Val Loss: {val_loss:9.4f}   │\n"
+                    f" ├─────────────────────────┼─────────────────────────┼─────────────────────────┤\n"
+                    f" │ Lesion Dice: {val_metrics.get('dice_lesion', 0):8.4f} │ CoW Dice: {val_metrics.get('dice_cow', 0):8.4f}    │ LVO Recall: {val_metrics.get('recall_lvo', 0):8.4f} │\n"
+                    f" ├─────────────────────────┼─────────────────────────┼─────────────────────────┤\n"
+                    f" │ Score: {comp:14.4f} │ LR: {lr:.1e}              │ Time: {elapsed:10.1f}s     │\n"
+                    f" └─────────────────────────┴─────────────────────────┴─────────────────────────┘"
                 )
                 print(msg, flush=True)
 
@@ -224,13 +225,14 @@ class MultiTaskTrainer:
             for t in self.TASK_NAMES:
                 task_loss_sums[t] += loss_dict[t]
 
-        avg_loss = running_loss / max(n_batches, 1)
-        avg_grad = total_grad_norm / max(grad_steps, 1)
-        avg_tasks = {t: v / max(n_batches, 1) for t, v in task_loss_sums.items()}
-        
         # Sync loss across processes for consistent logging
-        avg_loss_t = torch.tensor([avg_loss], device=self.accelerator.device)
-        avg_loss = self.accelerator.reduce(avg_loss_t, reduction="mean").item()
+        avg_loss_t = torch.tensor([running_loss], device=self.accelerator.device)
+        total_loss = self.accelerator.reduce(avg_loss_t, reduction="sum").item()
+        
+        n_batches_t = torch.tensor([float(n_batches)], device=self.accelerator.device)
+        total_batches = self.accelerator.reduce(n_batches_t, reduction="sum").item()
+        
+        avg_loss = total_loss / max(total_batches, 1)
         
         return avg_loss, avg_tasks, avg_grad
 
@@ -277,8 +279,14 @@ class MultiTaskTrainer:
 
         # Global sync
         accum = self.accelerator.reduce(accum, reduction="sum")
-        avg_loss_t = torch.tensor([running_loss / max(n_batches, 1)], device=self.accelerator.device)
-        avg_loss = self.accelerator.reduce(avg_loss_t, reduction="mean").item()
+        
+        avg_loss_t = torch.tensor([running_loss], device=self.accelerator.device)
+        total_loss = self.accelerator.reduce(avg_loss_t, reduction="sum").item()
+        
+        n_batches_t = torch.tensor([float(n_batches)], device=self.accelerator.device)
+        total_batches = self.accelerator.reduce(n_batches_t, reduction="sum").item()
+        
+        avg_loss = total_loss / max(total_batches, 1)
 
         metrics = {}
         if self.accelerator.is_main_process:
