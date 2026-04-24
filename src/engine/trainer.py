@@ -227,6 +227,7 @@ class MultiTaskTrainer:
     @torch.no_grad()
     def _validate(self, epoch: int) -> Tuple[float, Dict[str, float]]:
         self.model.eval()
+        running_loss = 0.0
         n_batches = 0
         accum = torch.zeros(6, device=self.accelerator.device)
 
