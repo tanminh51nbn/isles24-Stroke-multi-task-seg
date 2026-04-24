@@ -13,9 +13,7 @@ class FocalTverskyLoss(nn.Module):
             include_background=True, 
             sigmoid=True, 
             alpha=alpha, 
-            beta=beta, 
-            smooth_nr=smooth,
-            smooth_dr=smooth
+            beta=beta
         )
         self.gamma = gamma
 

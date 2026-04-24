@@ -121,8 +121,21 @@ class ISLES24Dataset(Dataset):
         lbl_t = data["label"]
         
         # Ensure brain mask matches potential spatial augmentations
-        # A simple trick is to extract the mask *after* transform from the transformed NCCT
-        final_brain_mask = (img_t[1:2] > -0.95).float()
+        final_brain_mask = (img_t[1:2] > -0.95)
+        
+        # Convert to float32 (compatible with both numpy and torch)
+        if isinstance(final_brain_mask, np.ndarray):
+            final_brain_mask = final_brain_mask.astype(np.float32)
+        else:
+            final_brain_mask = final_brain_mask.float()
+
+        # Final check: ensure everything returned is a torch.Tensor
+        if isinstance(img_t, np.ndarray):
+            img_t = torch.from_numpy(img_t)
+        if isinstance(lbl_t, np.ndarray):
+            lbl_t = torch.from_numpy(lbl_t)
+        if isinstance(final_brain_mask, np.ndarray):
+            final_brain_mask = torch.from_numpy(final_brain_mask)
         
         return img_t, lbl_t, final_brain_mask
 
