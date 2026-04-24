@@ -1,157 +1,38 @@
-"""
-trainer.py — Full training pipeline for ISLES'24 Multi-Task Segmentation.
-
-Architecture: HuggingFace Accelerate DDP (2×T4 GPU)
-  - Each GPU runs its own process with its own model copy
-  - Forward/backward run in PARALLEL on both GPUs
-  - Only gradients are synchronized via AllReduce (NCCL Ring)
-  - Result: ~1.85-1.95× speedup with 2 GPUs (vs ~1.2× with DataParallel)
-
-Features:
-  - Automatic Mixed Precision (managed by Accelerate, no manual GradScaler)
-  - Composite Score: 0.4*Dice_Lesion + 0.4*Recall_LVO + 0.2*Dice_CoW
-  - 3 Checkpoints: best_overall, best_lesion, best_lvo
-  - Early stopping on Composite Score
-  - Optional W&B logging with prediction visualization
-"""
 import logging
 import os
 import time
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
+import matplotlib.pyplot as plt
+from PIL import Image
 
 try:
     from accelerate import Accelerator
 except ImportError:
-    raise ImportError(
-        "HuggingFace Accelerate is required. "
-        "Install with: pip install accelerate"
-    )
-
-try:
-    import wandb
-
-    WANDB_AVAILABLE = True
-except ImportError:
-    WANDB_AVAILABLE = False
+    raise ImportError("pip install accelerate is required.")
 
 logger = logging.getLogger(__name__)
 
-
-# ═══════════════════════════════════════════════════════════════
-#  Metric helpers
-# ═══════════════════════════════════════════════════════════════
-
-def _dice_score(logits: torch.Tensor, target: torch.Tensor,
-                threshold: float = 0.5) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Compute Dice numerator and denominator for a batch.
-    Returns (numerator, denominator) tensors for later reduction across GPUs.
-
-    Dice = (2 * intersection) / (pred_sum + target_sum)
-
-    Args:
-        logits: [B, 1, H, W] raw logits
-        target: [B, 1, H, W] binary {0, 1}
-
-    Returns:
-        inter:  scalar tensor — sum of intersections across batch
-        union:  scalar tensor — sum of (pred + target) across batch
-    """
+# --- Helper Metrics ---
+def _dice_score(logits, target, threshold=0.5):
     pred = (torch.sigmoid(logits) > threshold).float()
     inter = (pred * target).sum()
     union = pred.sum() + target.sum()
     return inter, union
 
-
-def _recall_score(logits: torch.Tensor, target: torch.Tensor,
-                  threshold: float = 0.5) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Compute Recall numerator and denominator for a batch.
-    Returns (TP, TP+FN) tensors for later reduction across GPUs.
-
-    Recall = TP / (TP + FN) = intersection / target_sum
-
-    For LVO: "did the model touch/detect the clot?" — doesn't need
-    precise boundaries, just needs to overlap with ground truth.
-
-    Args:
-        logits: [B, 1, H, W] raw logits
-        target: [B, 1, H, W] binary {0, 1}
-
-    Returns:
-        tp:     scalar tensor — true positives (intersection)
-        tp_fn:  scalar tensor — total positive pixels in target
-    """
+def _recall_score(logits, target, threshold=0.5):
     pred = (torch.sigmoid(logits) > threshold).float()
     tp = (pred * target).sum()
     tp_fn = target.sum()
     return tp, tp_fn
 
-
-# ═══════════════════════════════════════════════════════════════
-#  Visualization
-# ═══════════════════════════════════════════════════════════════
-
-def _create_overlay(ncct_slice: np.ndarray,
-                    mask_true: np.ndarray,
-                    mask_pred: np.ndarray) -> np.ndarray:
-    """
-    Create RGB overlay: NCCT (gray) + ground truth (green) + prediction (red).
-
-    Args:
-        ncct_slice: [H, W] normalized NCCT slice
-        mask_true:  [H, W] binary ground truth
-        mask_pred:  [H, W] binary prediction
-
-    Returns:
-        overlay: [H, W, 3] uint8 RGB image
-    """
-    # Normalize NCCT to [0, 255]
-    ncct_norm = ncct_slice - ncct_slice.min()
-    if ncct_norm.max() > 0:
-        ncct_norm = ncct_norm / ncct_norm.max()
-    gray = (ncct_norm * 255).astype(np.uint8)
-
-    # Create RGB
-    overlay = np.stack([gray, gray, gray], axis=-1)
-
-    # Green = ground truth, Red = prediction
-    alpha = 0.4
-    gt_mask = mask_true > 0.5
-    pred_mask = mask_pred > 0.5
-
-    overlay[gt_mask, 1] = np.clip(
-        overlay[gt_mask, 1] * (1 - alpha) + 255 * alpha, 0, 255
-    ).astype(np.uint8)
-    overlay[pred_mask, 0] = np.clip(
-        overlay[pred_mask, 0] * (1 - alpha) + 255 * alpha, 0, 255
-    ).astype(np.uint8)
-
-    return overlay
-
-
-# ═══════════════════════════════════════════════════════════════
-#  Trainer
-# ═══════════════════════════════════════════════════════════════
-
+# --- Trainer ---
 class MultiTaskTrainer:
-    """
-    Full training pipeline for ISLES'24 Multi-Task Segmentation.
-
-    Uses HuggingFace Accelerate for:
-      - DDP (Distributed Data Parallel) across 2×T4 GPUs
-      - Automatic Mixed Precision (no manual GradScaler needed)
-      - Gradient synchronization via AllReduce
-
-    Must be instantiated INSIDE the function passed to notebook_launcher.
-    """
-
     TASK_NAMES = ("lesion", "lvo", "cow")
 
     def __init__(
@@ -164,31 +45,15 @@ class MultiTaskTrainer:
         val_loader,
         cfg: dict,
     ):
-        """
-        Args:
-            model:        MultiTaskSharedUNet instance
-            criterion:    MultiTaskLoss instance
-            optimizer:    AdamW with differential LR
-            scheduler:    CosineWarmup scheduler
-            train_loader: Training DataLoader
-            val_loader:   Validation DataLoader
-            cfg:          Full training config dict (from train.yaml)
-        """
         train_cfg = cfg["training"]
-
-        # ── Create Accelerator (handles DDP + AMP) ──
-        from accelerate import DistributedDataParallelKwargs
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         
+        # 1. Initialize Accelerate
         self.accelerator = Accelerator(
             mixed_precision="fp16" if train_cfg.get("amp", True) else "no",
             gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 1),
-            kwargs_handlers=[ddp_kwargs]
         )
 
-        # ── Prepare all components for distributed training ──
-        # Accelerate wraps model in DDP, splits data across GPUs,
-        # and injects AMP autocast + GradScaler automatically.
+        # 2. Prepare with Accelerate
         (
             self.model,
             self.optimizer,
@@ -198,489 +63,290 @@ class MultiTaskTrainer:
         ) = self.accelerator.prepare(
             model, optimizer, train_loader, val_loader, scheduler
         )
+        self.criterion = criterion # No parameters, no need to prepare
 
-        # Criterion has no parameters → no prepare needed
-        self.criterion = criterion
-
-        # ── Config ──
+        # 3. Config
         self.epochs = train_cfg["epochs"]
         self.grad_clip_norm = train_cfg.get("grad_clip_norm", 1.0)
+        self.log_interval = train_cfg.get("logging", {}).get("log_interval", 10)
+        
+        # Freeze config
+        self.freeze_epochs = train_cfg.get("freeze_encoder_epochs", 5)
 
-        # Composite score weights
-        comp_cfg = train_cfg.get("composite_weights", {})
-        self.comp_w_dice_lesion = comp_cfg.get("dice_lesion", 0.4)
-        self.comp_w_recall_lvo = comp_cfg.get("recall_lvo", 0.4)
-        self.comp_w_dice_cow = comp_cfg.get("dice_cow", 0.2)
-
-        # Checkpointing
-        ckpt_cfg = train_cfg.get("checkpoint", {})
-        self.ckpt_dir = Path(ckpt_cfg.get("dir", "checkpoints"))
-        self.save_best_overall = ckpt_cfg.get("save_best_overall", True)
-        self.save_best_lesion = ckpt_cfg.get("save_best_lesion", True)
-        self.save_best_lvo = ckpt_cfg.get("save_best_lvo", True)
-
-        # Early stopping
-        es_cfg = train_cfg.get("early_stopping", {})
-        self.es_enabled = es_cfg.get("enabled", True)
-        self.es_patience = es_cfg.get("patience", 15)
-        self.es_min_delta = es_cfg.get("min_delta", 0.001)
-
-        # Logging
-        log_cfg = train_cfg.get("logging", {})
-        self.log_interval = log_cfg.get("log_interval", 10)
-        self.viz_interval = log_cfg.get("visualize_every", 5)
-
-        # W&B
-        wandb_cfg = log_cfg.get("wandb", {})
-        self.wandb_enabled = (
-            wandb_cfg.get("enabled", False)
-            and WANDB_AVAILABLE
-            and self.accelerator.is_main_process
-        )
-
-        # ── State tracking ──
+        # Early stopping & Checkpoints
+        self.es_patience = train_cfg.get("early_stopping", {}).get("patience", 15)
+        self.ckpt_dir = Path(train_cfg.get("checkpoint", {}).get("dir", "checkpoints"))
+        
+        # Tracking
         self.best_composite = 0.0
-        self.best_dice_lesion = 0.0
-        self.best_recall_lvo = 0.0
         self.patience_counter = 0
 
-        # ── Init ──
         if self.accelerator.is_main_process:
             self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+            (self.ckpt_dir / "visualizations").mkdir(parents=True, exist_ok=True)
+            logger.info(f"Trainer initialized (Accelerate). GPUs: {self.accelerator.num_processes}")
 
-        if self.wandb_enabled:
-            wandb.init(
-                project=wandb_cfg.get("project", "isles24-stroke"),
-                name=wandb_cfg.get("run_name"),
-                config=cfg,
-            )
+    def _freeze_encoder(self):
+        """Freezes the encoder weights (ResNet50)."""
+        module = self.model.module if hasattr(self.model, "module") else self.model
+        for param in module.encoder.parameters():
+            param.requires_grad = False
+            
+    def _unfreeze_encoder(self):
+        """Unfreezes the encoder weights."""
+        module = self.model.module if hasattr(self.model, "module") else self.model
+        for param in module.encoder.parameters():
+            param.requires_grad = True
 
-        self.accelerator.print(
-            f"Trainer initialized: {self.epochs} epochs, "
-            f"{self.accelerator.num_processes} GPUs, "
-            f"AMP={'fp16' if train_cfg.get('amp') else 'off'}"
-        )
-
-    # ─────────────────────────────────────────────────────────────
-    #  Main training loop
-    # ─────────────────────────────────────────────────────────────
-
-    def train(self) -> float:
-        """
-        Run full training: train → validate → checkpoint → early stop.
-
-        Returns:
-            Best composite score achieved
-        """
-        self.accelerator.print("=" * 60)
-        self.accelerator.print("  ISLES'24 Multi-Task Training")
-        self.accelerator.print("=" * 60)
+    def train(self):
+        logger.info("=" * 60)
+        logger.info("  ISLES'24 Multi-Task Training (Accelerate)")
+        logger.info("=" * 60)
 
         for epoch in range(self.epochs):
-            t0 = time.time()
+            # Freeze scheduling
+            if epoch < self.freeze_epochs:
+                self._freeze_encoder()
+                if epoch == 0 and self.accelerator.is_main_process:
+                    logger.info("❄️ Encoder frozen for initial epochs.")
+            elif epoch == self.freeze_epochs:
+                self._unfreeze_encoder()
+                if self.accelerator.is_main_process:
+                    logger.info("🔥 Encoder unfrozen for full fine-tuning.")
 
-            # ── Train ──
-            train_loss, train_task_losses = self._train_one_epoch(epoch)
+            start_t = time.time()
 
-            # ── Validate ──
+            train_loss, train_tasks, grad_norm = self._train_one_epoch(epoch)
             val_loss, val_metrics = self._validate(epoch)
 
-            # ── Scheduler step (per epoch) ──
+            # Visualization every N epochs
+            visualize_every = self.cfg["training"].get("logging", {}).get("visualize_every", 5)
+            if (epoch + 1) % visualize_every == 0 and self.accelerator.is_main_process:
+                self._visualize_results(epoch)
+
+            elapsed = time.time() - start_t
             self.scheduler.step()
 
-            # ── Compute composite score ──
-            composite = self._compute_composite(val_metrics)
-            val_metrics["composite_score"] = composite
-
-            elapsed = time.time() - t0
-
-            # ── Log ──
-            self._log_epoch(
-                epoch, train_loss, train_task_losses,
-                val_loss, val_metrics, elapsed,
-            )
-
-            # ── Checkpoint (3 independent best trackers) ──
-            self._checkpoint(epoch, val_metrics)
-
-            # ── Early stopping ──
-            if self._check_early_stopping(composite):
-                self.accelerator.print(
-                    f"\n⚡ Early stopping at epoch {epoch} "
-                    f"(no improvement for {self.es_patience} epochs)"
+            # Logging & Checkpointing (Main Process)
+            if self.accelerator.is_main_process:
+                composite = val_metrics.get("composite_score", 0)
+                lr = self.optimizer.param_groups[-1]["lr"]
+                
+                logger.info(
+                    f"Epoch {epoch:02d} | "
+                    f"loss={train_loss:.4f} | "
+                    f"val_loss={val_loss:.4f} | "
+                    f"dice_les={val_metrics.get('dice_lesion', 0):.4f} | "
+                    f"rec_lvo={val_metrics.get('recall_lvo', 0):.4f} | "
+                    f"grad={grad_norm:.2f} | "
+                    f"lr={lr:.2e} | "
+                    f"{elapsed:.0f}s"
                 )
-                break
 
-        # ── Cleanup ──
-        if self.wandb_enabled:
-            wandb.finish()
+                # Checkpoint
+                if composite > self.best_composite:
+                    self.best_composite = composite
+                    self.patience_counter = 0
+                    torch.save({
+                        "epoch": epoch,
+                        "model_state_dict": self.accelerator.unwrap_model(self.model).state_dict(),
+                        "composite": composite
+                    }, self.ckpt_dir / "best_model.pth")
+                    logger.info(f"  --> Saved new best model (Composite: {composite:.4f})")
+                else:
+                    self.patience_counter += 1
 
-        self.accelerator.print(
-            f"\nTraining complete! Best composite: {self.best_composite:.4f}"
-        )
-        return self.best_composite
+                # Early Stopping
+                if self.patience_counter >= self.es_patience:
+                    logger.info(f"Early stopping triggered after {epoch} epochs.")
+                    break
+                    
+        # Synchronize across processes before exiting
+        self.accelerator.wait_for_everyone()
 
-    # ─────────────────────────────────────────────────────────────
-    #  Train one epoch
-    # ─────────────────────────────────────────────────────────────
-
-    def _train_one_epoch(self, epoch: int) -> Tuple[float, Dict[str, float]]:
-        """
-        Train for one epoch.
-
-        Returns:
-            avg_loss:    mean total loss over all batches
-            task_losses: {"lesion": float, "lvo": float, "cow": float}
-        """
+    def _train_one_epoch(self, epoch: int) -> Tuple[float, Dict[str, float], float]:
         self.model.train()
-
         running_loss = 0.0
         total_samples = 0
         task_loss_sums = {t: 0.0 for t in self.TASK_NAMES}
-        n_batches = 0
+        total_grad_norm = 0.0
+        grad_steps = 0
 
-        pbar = tqdm(
-            self.train_loader,
-            desc=f"Epoch {epoch:02d} [Train]",
-            disable=not self.accelerator.is_main_process,
-        )
+        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch:02d} [Train]", disable=not self.accelerator.is_local_main_process)
 
         for step, (x, y, brain_mask) in enumerate(pbar):
             batch_size = x.size(0)
+
             with self.accelerator.accumulate(self.model):
-                # Forward (AMP autocast managed by Accelerate)
                 with self.accelerator.autocast():
                     preds = self.model(x)
                     
-                    # ── Apply Brain Mask to Logits ──
-                    brain_mask = brain_mask.to(preds[0].device)
+                    # Apply mask (background to -1e9)
                     for i in range(len(preds)):
                         preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
                         
                     loss, loss_dict = self.criterion(preds, y)
 
-                # Backward (Accelerate handles gradient scaling)
                 self.accelerator.backward(loss)
 
-                # Gradient clipping (prevents LVO gradient explosion)
-                if self.grad_clip_norm > 0 and self.accelerator.sync_gradients:
-                    self.accelerator.clip_grad_norm_(
-                        self.model.parameters(), self.grad_clip_norm
-                    )
+                # Gradient clipping
+                if self.accelerator.sync_gradients:
+                    current_grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    if isinstance(current_grad_norm, torch.Tensor):
+                        current_grad_norm = current_grad_norm.item()
+                    total_grad_norm += current_grad_norm
+                    grad_steps += 1
 
-                # Update weights
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
-            # Accumulate
-            running_loss += loss.item() * batch_size
+            # Loss Accumulation - Strictly Per Sample Normalized
+            # loss.item() is the mean over the batch
+            real_loss = loss.item()
+            running_loss += real_loss * batch_size
             total_samples += batch_size
             for t in self.TASK_NAMES:
                 task_loss_sums[t] += loss_dict[t] * batch_size
-            n_batches += 1
 
-            # Progress bar
             if step % self.log_interval == 0:
-                pbar.set_postfix(
-                    loss=f"{loss.item():.4f}",
-                    lr=f"{self.optimizer.param_groups[-1]['lr']:.2e}",
-                )
+                pbar.set_postfix(loss=f"{real_loss:.4f}")
 
-        avg_loss = running_loss / max(total_samples, 1)
+        # Gather metrics across GPUs
+        avg_loss = self.accelerator.gather(torch.tensor([running_loss / max(total_samples, 1)], device=self.accelerator.device)).mean().item()
+        avg_grad = total_grad_norm / max(grad_steps, 1)
+        
         avg_tasks = {t: v / max(total_samples, 1) for t, v in task_loss_sums.items()}
-        return avg_loss, avg_tasks
-
-    # ─────────────────────────────────────────────────────────────
-    #  Validate
-    # ─────────────────────────────────────────────────────────────
+        return avg_loss, avg_tasks, avg_grad
 
     @torch.no_grad()
     def _validate(self, epoch: int) -> Tuple[float, Dict[str, float]]:
-        """
-        Validate and compute per-task metrics.
-
-        Metrics computed:
-          - Dice Score:   Lesion, CoW
-          - Recall:       LVO (clinically: detect the clot, don't need perfect mask)
-          - Composite:    0.4*Dice_Lesion + 0.4*Recall_LVO + 0.2*Dice_CoW
-
-        Metrics are reduced across GPUs via AllReduce before final computation.
-
-        Returns:
-            avg_loss: mean validation loss
-            metrics:  {"dice_lesion", "recall_lvo", "dice_cow"} — all in [0, 1]
-        """
         self.model.eval()
-        device = self.accelerator.device
-
         running_loss = 0.0
         total_samples = 0
-        n_batches = 0
+        accum = torch.zeros(6, device=self.accelerator.device)
 
-        # Accumulators for reduction: [inter_lesion, union_lesion,
-        #                              tp_lvo, tp_fn_lvo,
-        #                              inter_cow, union_cow]
-        accum = torch.zeros(6, device=device)
-
-        # Store one batch for visualization
-        viz_data = None
-
-        pbar = tqdm(
-            self.val_loader,
-            desc=f"Epoch {epoch:02d} [Val]  ",
-            disable=not self.accelerator.is_main_process,
-        )
+        pbar = tqdm(self.val_loader, desc=f"Epoch {epoch:02d} [Val]  ", disable=not self.accelerator.is_local_main_process)
 
         for x, y, brain_mask in pbar:
             with self.accelerator.autocast():
                 preds = self.model(x)
-                
-                # ── Apply Brain Mask to Logits ──
-                brain_mask = brain_mask.to(preds[0].device)
                 for i in range(len(preds)):
                     preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
-                    
                 loss, _ = self.criterion(preds, y)
 
             batch_size = x.size(0)
             running_loss += loss.item() * batch_size
             total_samples += batch_size
-            n_batches += 1
 
-            # Dice for lesion (task 0)
             inter, union = _dice_score(preds[0], y[:, 0:1])
             accum[0] += inter
             accum[1] += union
 
-            # Recall for LVO (task 1)
             tp, tp_fn = _recall_score(preds[1], y[:, 1:2])
             accum[2] += tp
             accum[3] += tp_fn
 
-            # Dice for CoW (task 2)
-            inter, union = _dice_score(preds[2], y[:, 2:3])
-            accum[4] += inter
-            accum[5] += union
+            inter_c, union_c = _dice_score(preds[2], y[:, 2:3])
+            accum[4] += inter_c
+            accum[5] += union_c
 
-            # Save first batch for visualization
-            if viz_data is None:
-                viz_data = (
-                    x[:1].detach(),
-                    y[:1].detach(),
-                    [p[:1].detach() for p in preds],
-                )
-
-        # ── Reduce across GPUs ──
+        # Gather across GPUs
         accum = self.accelerator.reduce(accum, reduction="sum")
+        total_samples_tensor = torch.tensor([total_samples], device=self.accelerator.device)
+        running_loss_tensor = torch.tensor([running_loss], device=self.accelerator.device)
+        total_samples_tensor = self.accelerator.reduce(total_samples_tensor, reduction="sum")
+        running_loss_tensor = self.accelerator.reduce(running_loss_tensor, reduction="sum")
 
-        smooth = 1e-6
-        dice_lesion = (2.0 * accum[0] + smooth) / (accum[1] + smooth)
-        recall_lvo = (accum[2] + smooth) / (accum[3] + smooth)
-        dice_cow = (2.0 * accum[4] + smooth) / (accum[5] + smooth)
+        avg_loss = (running_loss_tensor / max(total_samples_tensor, 1)).item()
 
-        metrics = {
-            "dice_lesion": dice_lesion.item(),
-            "recall_lvo": recall_lvo.item(),
-            "dice_cow": dice_cow.item(),
-        }
-
-        # ── Visualization ──
-        if viz_data is not None and epoch % self.viz_interval == 0:
-            self._visualize(epoch, *viz_data)
-
-        avg_loss = running_loss / max(total_samples, 1)
+        metrics = {}
+        if self.accelerator.is_main_process:
+            accum = accum.cpu().numpy()
+            dice_les = 2.0 * accum[0] / max(accum[1], 1e-6)
+            rec_lvo = accum[2] / max(accum[3], 1e-6)
+            dice_cow = 2.0 * accum[4] / max(accum[5], 1e-6)
+            
+            comp = 0.4 * dice_les + 0.4 * rec_lvo + 0.2 * dice_cow
+            
+            metrics = {
+                "dice_lesion": dice_les,
+                "recall_lvo": rec_lvo,
+                "dice_cow": dice_cow,
+                "composite_score": comp
+            }
+            
         return avg_loss, metrics
 
-    # ─────────────────────────────────────────────────────────────
-    #  Composite Score
-    # ─────────────────────────────────────────────────────────────
-
-    def _compute_composite(self, metrics: Dict[str, float]) -> float:
+    @torch.no_grad()
+    def _visualize_results(self, epoch: int):
         """
-        Composite = 0.4 × Dice_Lesion + 0.4 × Recall_LVO + 0.2 × Dice_CoW
-
-        Clinically meaningful weighting:
-          - Lesion Dice:  how accurately we measure infarct volume
-          - LVO Recall:   did we detect the clot? (critical for emergency)
-          - CoW Dice:     collateral vessel mapping (supplementary)
+        Saves overlay visualizations of NCCT, Ground Truth, and Predictions.
+        Focuses on slices with LVO or Lesions.
         """
-        return (
-            self.comp_w_dice_lesion * metrics.get("dice_lesion", 0)
-            + self.comp_w_recall_lvo * metrics.get("recall_lvo", 0)
-            + self.comp_w_dice_cow * metrics.get("dice_cow", 0)
-        )
-
-    # ─────────────────────────────────────────────────────────────
-    #  Checkpointing
-    # ─────────────────────────────────────────────────────────────
-
-    def _checkpoint(self, epoch: int, metrics: Dict[str, float]):
-        """
-        Save up to 3 best models independently.
-
-        Each checkpoint tracks its own "best" independently:
-          - best_overall.pth  → highest Composite Score (main release)
-          - best_lesion.pth   → highest Dice Lesion (volume measurement)
-          - best_lvo.pth      → highest Recall LVO (emergency detection)
-        """
-        if not self.accelerator.is_main_process:
-            return
-
-        unwrapped = self.accelerator.unwrap_model(self.model)
-
-        def _save(filename: str, monitor_name: str, monitor_value: float):
-            path = self.ckpt_dir / filename
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": unwrapped.state_dict(),
-                    "monitor": monitor_name,
-                    "monitor_value": monitor_value,
-                    "metrics": metrics,
-                },
-                path,
-            )
-            logger.info(f"  💾 Saved {filename} ({monitor_name}={monitor_value:.4f})")
-
-        composite = metrics.get("composite_score", 0)
-        dice_lesion = metrics.get("dice_lesion", 0)
-        recall_lvo = metrics.get("recall_lvo", 0)
-
-        # 1. Best overall (Composite Score)
-        if self.save_best_overall and composite > self.best_composite:
-            _save("best_overall.pth", "composite_score", composite)
-            self.best_composite = composite
-
-        # 2. Best lesion (Dice Lesion)
-        if self.save_best_lesion and dice_lesion > self.best_dice_lesion:
-            _save("best_lesion.pth", "dice_lesion", dice_lesion)
-            self.best_dice_lesion = dice_lesion
-
-        # 3. Best LVO (Recall LVO)
-        if self.save_best_lvo and recall_lvo > self.best_recall_lvo:
-            _save("best_lvo.pth", "recall_lvo", recall_lvo)
-            self.best_recall_lvo = recall_lvo
-
-    # ─────────────────────────────────────────────────────────────
-    #  Early Stopping
-    # ─────────────────────────────────────────────────────────────
-
-    def _check_early_stopping(self, composite: float) -> bool:
-        """
-        Check if training should stop based on Composite Score plateau.
-
-        Returns True if patience exceeded (should stop).
-        """
-        if not self.es_enabled:
-            return False
-
-        if composite > (self.best_composite - self.es_min_delta):
-            # Composite improved (or very close) → checkpoint already updated
-            self.patience_counter = 0
-        else:
-            self.patience_counter += 1
-
-        return self.patience_counter >= self.es_patience
-
-    # ─────────────────────────────────────────────────────────────
-    #  Logging
-    # ─────────────────────────────────────────────────────────────
-
-    def _log_epoch(
-        self,
-        epoch: int,
-        train_loss: float,
-        train_tasks: Dict[str, float],
-        val_loss: float,
-        val_metrics: Dict[str, float],
-        elapsed: float,
-    ):
-        """Log epoch summary to console and optionally W&B."""
-        if not self.accelerator.is_main_process:
-            return
-
-        composite = val_metrics.get("composite_score", 0)
-        lr = self.optimizer.param_groups[-1]["lr"]
-
-        # Console
-        self.accelerator.print(
-            f"Epoch {epoch:02d} │ "
-            f"train_loss={train_loss:.4f} │ "
-            f"val_loss={val_loss:.4f} │ "
-            f"dice_les={val_metrics.get('dice_lesion', 0):.4f} │ "
-            f"rec_lvo={val_metrics.get('recall_lvo', 0):.4f} │ "
-            f"dice_cow={val_metrics.get('dice_cow', 0):.4f} │ "
-            f"composite={composite:.4f} │ "
-            f"lr={lr:.2e} │ "
-            f"{elapsed:.0f}s │ "
-            f"patience={self.patience_counter}/{self.es_patience}"
-        )
-
-        # W&B
-        if self.wandb_enabled:
-            log_dict = {
-                "epoch": epoch,
-                "train/loss": train_loss,
-                "train/loss_lesion": train_tasks.get("lesion", 0),
-                "train/loss_lvo": train_tasks.get("lvo", 0),
-                "train/loss_cow": train_tasks.get("cow", 0),
-                "val/loss": val_loss,
-                "val/dice_lesion": val_metrics.get("dice_lesion", 0),
-                "val/recall_lvo": val_metrics.get("recall_lvo", 0),
-                "val/dice_cow": val_metrics.get("dice_cow", 0),
-                "val/composite_score": composite,
-                "lr": lr,
-                "epoch_time_s": elapsed,
-            }
-            wandb.log(log_dict, step=epoch)
-
-    # ─────────────────────────────────────────────────────────────
-    #  Visualization
-    # ─────────────────────────────────────────────────────────────
-
-    def _visualize(
-        self,
-        epoch: int,
-        x: torch.Tensor,
-        y_true: torch.Tensor,
-        preds: list,
-    ):
-        """
-        Overlay predicted masks on NCCT slice.
-
-        Green = ground truth, Red = prediction.
-        Helps detect "background collapse" (model predicting all zeros).
-
-        Only runs on main process.
-        """
-        if not self.accelerator.is_main_process:
-            return
-
+        self.model.eval()
+        # Lấy 1 batch từ val_loader
         try:
-            # NCCT middle slice (channel 1 of 0-2 in input)
-            ncct = x[0, 1].float().cpu().numpy()
+            x, y, brain_mask = next(iter(self.val_loader))
+        except StopIteration:
+            return
 
-            for i, task_name in enumerate(self.TASK_NAMES):
-                mask_true = y_true[0, i].float().cpu().numpy()
-                mask_pred = (
-                    (torch.sigmoid(preds[i][0, 0]) > 0.5).float().cpu().numpy()
-                )
+        with self.accelerator.autocast():
+            preds = self.model(x)
+            # Masking
+            for i in range(len(preds)):
+                preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
+            
+            probs = [torch.sigmoid(p) for p in preds]
 
-                overlay = _create_overlay(ncct, mask_true, mask_pred)
+        # Chuyển sang numpy
+        x_np = x.cpu().numpy()
+        y_np = y.cpu().numpy()
+        p_np = [pr.cpu().numpy() for pr in probs]
+        
+        # Chọn 4 ảnh để hiển thị (ưu tiên những ảnh có LVO hoặc Lesion)
+        indices = []
+        for i in range(x_np.shape[0]):
+            if y_np[i, 1].max() > 0 or y_np[i, 0].max() > 0:
+                indices.append(i)
+        
+        if len(indices) < 4:
+            indices.extend(list(range(min(4 - len(indices), x_np.shape[0]))))
+        indices = indices[:4]
 
-                if self.wandb_enabled:
-                    wandb.log(
-                        {f"viz/{task_name}": wandb.Image(overlay)},
-                        step=epoch,
-                    )
-                else:
-                    # Save as numpy file (lightweight, no PIL dependency)
-                    viz_dir = self.ckpt_dir / "viz"
-                    viz_dir.mkdir(exist_ok=True)
-                    np.save(
-                        viz_dir / f"epoch{epoch:02d}_{task_name}.npy",
-                        overlay,
-                    )
+        fig, axes = plt.subplots(4, 3, figsize=(15, 20))
+        plt.subplots_adjust(wspace=0.1, hspace=0.1)
 
-        except Exception as e:
-            logger.warning(f"Visualization failed at epoch {epoch}: {e}")
+        # Labels: 0=Lesion (Green), 1=LVO (Red), 2=CoW (Blue)
+        colors = [ (0, 1, 0), (1, 0, 0), (0, 0, 1) ]
+
+        for row, idx in enumerate(indices):
+            # 1. NCCT base (Channel index 1 is central NCCT slice)
+            ncct = x_np[idx, 1]
+            ncct = (ncct - ncct.min()) / (ncct.max() - ncct.min() + 1e-6)
+            
+            # 2. GT Overlay
+            gt_overlay = np.stack([ncct]*3, axis=-1)
+            for i in range(3):
+                mask = y_np[idx, i] > 0.5
+                gt_overlay[mask] = colors[i]
+            
+            # 3. Pred Overlay
+            pred_overlay = np.stack([ncct]*3, axis=-1)
+            for i in range(3):
+                mask = p_np[i][idx, 0] > 0.5
+                pred_overlay[mask] = colors[i]
+
+            axes[row, 0].imshow(ncct, cmap="gray")
+            axes[row, 0].set_title(f"NCCT (Sample {idx})")
+            axes[row, 1].imshow(gt_overlay)
+            axes[row, 1].set_title("Ground Truth (L-LVO-C)")
+            axes[row, 2].imshow(pred_overlay)
+            axes[row, 2].set_title("Prediction")
+            
+            for ax in axes[row]:
+                ax.axis("off")
+
+        save_path = self.ckpt_dir / "visualizations" / f"epoch_{epoch:02d}.png"
+        plt.savefig(save_path, bbox_inches="tight")
+        plt.close()
+        logger.info(f"  --> Saved visualization to {save_path}")

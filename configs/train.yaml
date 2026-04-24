@@ -6,7 +6,7 @@
 # ── Loss Function (Task-Specific) ─────────────────────────────
 loss:
   lesion:
-    type: "focal_tversky"
+    type: "tversky"
     alpha: 0.4                    # Phạt đoán nhầm (FP)
     beta: 0.6                     # Phạt bỏ sót (FN)
     gamma: 1.0                    # Không cần focal quá mạnh cho Lesion
@@ -24,9 +24,9 @@ loss:
 # ── Multi-task Weighting ────────────────────────────────────────
 # Tổng Loss = w_lesion*L_lesion + w_lvo*L_lvo + w_cow*L_cow
 task_weights:
-  lesion: 2.0                      # Tăng nhẹ trọng số Lesion
-  lvo: 5.0                         # LVO là ưu tiên hàng đầu
-  cow: 1.0                         # CoW học rất nhanh nên giữ nguyên
+  lesion: 1.0
+  lvo: 3.0
+  cow: 0.8
 
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:

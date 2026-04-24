@@ -1,14 +1,6 @@
-"""
-dataset.py — ISLES24Dataset: PyTorch Dataset with JSON-cached pos/neg
-              slice classification and WeightedRandomSampler support.
-
-Input:  [18, 544, 544] float16 on disk → float32 in memory
-Label:  [3, 544, 544]  uint8 on disk   → float32 in memory
-"""
-import json
 import logging
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import List, Dict
 
 import numpy as np
 import torch
@@ -16,165 +8,138 @@ from torch.utils.data import Dataset
 
 logger = logging.getLogger(__name__)
 
-
 class ISLES24Dataset(Dataset):
     """
-    PyTorch Dataset for ISLES'24 2.5D NPY slices.
-
-    Features:
-      - Loads data on-the-fly from NVMe (136GB >> 30GB RAM)
-      - JSON cache for positive/negative slice classification
-      - Sample weights for WeightedRandomSampler
-      - MONAI dictionary-based transforms
+    Dataset for ISLES'24 2.5D Multimodal Slices.
+    Handles loading, negative downsampling, outlier clipping, and brain masking.
     """
-
+    
     def __init__(
         self,
-        patient_ids: List[str],
-        patient_dirs: Dict[str, Path],
-        transform: Optional[Callable] = None,
-        cache_path: Optional[str] = None,
-        pos_weight: float = 3.0,
+        patient_dirs: List[Path],
+        transform=None,
+        is_train: bool = False,
+        downsample_neg_ratio: float = 1.0,
+        lvo_oversample: int = 1
     ):
-        """
-        Args:
-            patient_ids:  List of patient IDs assigned to this split
-            patient_dirs: Dict mapping patient_id → absolute directory Path
-            transform:    MONAI Compose pipeline (None for validation)
-            cache_path:   Path to JSON cache for pos/neg slice info
-            pos_weight:   Weight for positive slices in WeightedRandomSampler
-        """
-        super().__init__()
+        self.patient_dirs = patient_dirs
         self.transform = transform
-        self.pos_weight = pos_weight
-
-        # ── Build flat sample list: [(x_path, y_path), ...] ──
-        self.samples: List[tuple] = []
-        for pid in sorted(patient_ids):
-            pdir = patient_dirs[pid]
-            input_dir = pdir / "inputs"
-            label_dir = pdir / "labels"
-
-            for x_file in sorted(input_dir.glob("x_z*.npy")):
-                # x_z000.npy → y_z000.npy
-                z_suffix = x_file.stem[1:]           # "_z000"
-                y_file = label_dir / f"y{z_suffix}.npy"
-
-                if y_file.exists():
-                    self.samples.append((str(x_file), str(y_file)))
-                else:
-                    logger.warning(f"Missing label for {x_file.name} in {pid}")
-
-        logger.info(
-            f"ISLES24Dataset: {len(self.samples)} slices "
-            f"from {len(patient_ids)} patients"
-        )
-
-        # ── Build positive/negative slice cache ──
-        # Returns List[Dict[str, bool]] containing 'lesion', 'lvo', 'cow', 'any_positive'
-        self._is_positive = self._build_slice_cache(cache_path)
-
-        n_pos = sum(1 for cat in self._is_positive if cat.get("any_positive", False))
-        n_total = len(self._is_positive)
-        logger.info(
-            f"Slice balance: {n_pos} positive / {n_total - n_pos} negative "
-            f"({100 * n_pos / max(n_total, 1):.1f}% positive)"
-        )
-
-    # ─────────────────────────────────────────────────────────────
-    #  Cache logic
-    # ─────────────────────────────────────────────────────────────
-
-    def _build_slice_cache(self, cache_path: Optional[str]) -> List[Dict[str, bool]]:
-        """
-        Determine which slices contain which labels.
-        Cache results to JSON for instant reload.
-        """
-        if cache_path and Path(cache_path).exists():
-            logger.info(f"Loading slice cache from {cache_path}")
-            with open(cache_path, "r") as f:
-                return json.load(f)
-
-        logger.info("Scanning labels for multi-task classification...")
-        categories = []
-
-        for i, (_, y_path) in enumerate(self.samples):
-            y = np.load(y_path)
-            cat = {
-                "lesion": bool(y[0].any()),
-                "lvo": bool(y[1].any()),
-                "cow": bool(y[2].any())
-            }
-            cat["any_positive"] = cat["lesion"] or cat["lvo"] or cat["cow"]
-            categories.append(cat)
-
-            if (i + 1) % 2000 == 0:
-                logger.info(f"  Scanned {i + 1}/{len(self.samples)} slices...")
-
-        if cache_path:
-            Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(cache_path, "w") as f:
-                json.dump(categories, f)
-            logger.info(f"Saved slice cache → {cache_path}")
-
-        return categories
-
-    # ─────────────────────────────────────────────────────────────
-    #  PyTorch Dataset interface
-    # ─────────────────────────────────────────────────────────────
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int):
-        x_path, y_path = self.samples[idx]
-
-        # Load from disk and cast types
-        x = np.load(x_path).astype(np.float32)     # float16 → float32 [18, 544, 544]
-        y = np.load(y_path).astype(np.float32)     # uint8   → float32 [3, 544, 544]
-
-        # ── 1. Clip Perfusion Outliers (Critical for Stability) ──
-        # Perfusion channels are 6-17. Clip them to [-5.0, 5.0]
-        x[6:18] = np.clip(x[6:18], -5.0, 5.0)
-
-        # ── 2. Generate Brain Mask from NCCT (Channel 1 is central NCCT slice) ──
-        # NCCT background is -1.0. We use > -0.95 to extract the brain.
-        brain_mask = (x[1] > -0.95).astype(np.float32)  # [544, 544]
-        brain_mask = np.expand_dims(brain_mask, axis=0) # [1, 544, 544]
-
-        # Apply MONAI transforms (dict-based)
-        if self.transform is not None:
-            data = self.transform({"image": x, "label": y, "brain_mask": brain_mask})
-            x, y, brain_mask = data["image"], data["label"], data["brain_mask"]
-
-        # Ensure torch.Tensor output
-        if not isinstance(x, torch.Tensor):
-            x = torch.from_numpy(np.ascontiguousarray(x))
-        if not isinstance(y, torch.Tensor):
-            y = torch.from_numpy(np.ascontiguousarray(y))
-        if not isinstance(brain_mask, torch.Tensor):
-            brain_mask = torch.from_numpy(np.ascontiguousarray(brain_mask))
-
-        return x, y, brain_mask
-
-    # ─────────────────────────────────────────────────────────────
-    #  Sampling support
-    # ─────────────────────────────────────────────────────────────
-
-    def get_sample_weights(self) -> np.ndarray:
-        """
-        Return weight array for torch.utils.data.WeightedRandomSampler.
-        Implementing stratified sampling strategy from System Design Plan:
-        - LVO -> 3.0 (Oversample 3x)
-        - Lesion / CoW (Positive but no LVO) -> 1.0 (Keep 100%)
-        - All negative -> 0.3 (Downsample to 30%)
-        """
-        weights = np.ones(len(self.samples), dtype=np.float64)
-        for i, cat in enumerate(self._is_positive):
-            if cat["lvo"]:
-                weights[i] = 3.0
-            elif cat["any_positive"]:
-                weights[i] = 1.0
+        self.is_train = is_train
+        self.downsample_neg_ratio = downsample_neg_ratio
+        self.lvo_oversample = lvo_oversample
+        
+        self.slices = []
+        self._build_index()
+        
+    def _build_index(self):
+        """Index all available slices and apply sampling strategies if training."""
+        raw_slices = []
+        for pdir in self.patient_dirs:
+            if not pdir.is_dir():
+                continue
+                
+            img_dir = pdir / "inputs"
+            lbl_dir = pdir / "labels"
+            
+            if not img_dir.exists() or not lbl_dir.exists():
+                continue
+                
+            slice_files = sorted(list(img_dir.glob("x_z*.npy")))
+            for sf in slice_files:
+                lf = lbl_dir / sf.name.replace("x_z", "y_z")
+                if lf.exists():
+                    raw_slices.append({"image": sf, "label": lf})
+                    
+        if not self.is_train:
+            self.slices = raw_slices
+            logger.info(f"Validation Dataset: {len(self.slices)} slices loaded.")
+            return
+            
+        # Training sampling logic
+        final_slices = []
+        rng = np.random.default_rng(seed=42)
+        stats = {"total": 0, "neg": 0, "pos": 0, "lvo": 0, "cow": 0, "les": 0}
+        
+        for item in raw_slices:
+            stats["total"] += 1
+            
+            # Fast check label presence without loading entire array if possible
+            # But for simplicity and robustness, we load it here to check if it's positive.
+            # In a real scenario with huge dataset, we should cache metadata.
+            # Assuming labels are small enough to load quickly during init.
+            lbl = np.load(item["label"], mmap_mode='r') # [3, 544, 544]
+            
+            has_lesion = lbl[0].max() > 0
+            has_lvo = lbl[1].max() > 0
+            has_cow = lbl[2].max() > 0
+            
+            is_positive = has_lesion or has_lvo or has_cow
+            
+            if is_positive:
+                stats["pos"] += 1
+                if has_lesion: stats["les"] += 1
+                if has_lvo: stats["lvo"] += 1
+                if has_cow: stats["cow"] += 1
+                
+                # Oversample LVO
+                repeats = self.lvo_oversample if has_lvo else 1
+                for _ in range(repeats):
+                    final_slices.append(dict(item))
             else:
-                weights[i] = 0.3
-        return weights
+                stats["neg"] += 1
+                # Downsample negative
+                if rng.random() <= self.downsample_neg_ratio:
+                    final_slices.append(item)
+                    
+        self.slices = final_slices
+        logger.info(f"Training Dataset Stats (Raw): {stats}")
+        logger.info(f"Training Dataset Final Size: {len(self.slices)} slices (Neg ratio: {self.downsample_neg_ratio}, LVO oversample: {self.lvo_oversample})")
+
+    def __len__(self):
+        return len(self.slices)
+
+    def __getitem__(self, idx):
+        item = self.slices[idx]
+        
+        # Load data
+        img = np.load(item["image"]).astype(np.float32) # [18, 544, 544]
+        lbl = np.load(item["label"]).astype(np.float32) # [3, 544, 544]
+        
+        # 1. Clip Perfusion Outliers (Channels 6 to 17) to [-5, 5]
+        img[6:18] = np.clip(img[6:18], -5.0, 5.0)
+        
+        # Brain mask được tạo SAU transform để khớp với spatial augmentation
+        # Xem: final_brain_mask = (img_t[1:2] > -0.95).float() bên dưới
+        
+        # Prepare dict for MONAI
+        data = {"image": img, "label": lbl}
+        
+        if self.transform:
+            data = self.transform(data)
+            
+        img_t = data["image"]
+        lbl_t = data["label"]
+        
+        # Ensure brain mask matches potential spatial augmentations
+        # A simple trick is to extract the mask *after* transform from the transformed NCCT
+        final_brain_mask = (img_t[1:2] > -0.95).float()
+        
+        return img_t, lbl_t, final_brain_mask
+
+def build_dataset(patient_dirs: List[Path], cfg: dict, is_train: bool = False, transform=None) -> ISLES24Dataset:
+    """
+    Factory function to build ISLES24Dataset from config.
+    """
+    samp_cfg = cfg.get("sampling", {})
+    
+    # Chỉ áp dụng sampling ratio (downsample/oversample) khi huấn luyện
+    downsample_neg = samp_cfg.get("downsample_neg_ratio", 1.0) if is_train else 1.0
+    lvo_over = samp_cfg.get("lvo_oversample", 1) if is_train else 1
+    
+    return ISLES24Dataset(
+        patient_dirs=patient_dirs,
+        transform=transform,
+        is_train=is_train,
+        downsample_neg_ratio=downsample_neg,
+        lvo_oversample=lvo_over
+    )
