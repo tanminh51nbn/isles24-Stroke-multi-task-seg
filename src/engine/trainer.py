@@ -19,14 +19,16 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # --- Helper Metrics ---
-def _dice_score(logits, target, threshold=0.5):
+def _dice_score(logits, target, mask, threshold=0.5):
     pred = (torch.sigmoid(logits) > threshold).float()
+    pred = pred * mask
     inter = (pred * target).sum()
     union = pred.sum() + target.sum()
     return inter, union
 
-def _recall_score(logits, target, threshold=0.5):
+def _recall_score(logits, target, mask, threshold=0.5):
     pred = (torch.sigmoid(logits) > threshold).float()
+    pred = pred * mask
     tp = (pred * target).sum()
     tp_fn = target.sum()
     return tp, tp_fn
@@ -134,30 +136,30 @@ class MultiTaskTrainer:
 
             # Logging & Checkpointing (Main Process)
             if self.accelerator.is_main_process:
-                composite = val_metrics.get("composite_score", 0)
+                comp = val_metrics.get("composite_score", 0.0)
                 lr = self.optimizer.param_groups[-1]["lr"]
                 
-                logger.info(
-                    f"Epoch {epoch:02d} | "
-                    f"loss={train_loss:.4f} | "
-                    f"val_loss={val_loss:.4f} | "
-                    f"dice_les={val_metrics.get('dice_lesion', 0):.4f} | "
-                    f"rec_lvo={val_metrics.get('recall_lvo', 0):.4f} | "
-                    f"grad={grad_norm:.2f} | "
-                    f"lr={lr:.2e} | "
-                    f"{elapsed:.0f}s"
+                # Thiết kế Log dạng bảng 3 hàng chuyên nghiệp
+                separator = " " + "-" * 78
+                msg = (
+                    f"\n{separator}\n"
+                    f" | Epoch {epoch+1:02d}/{self.epochs:02d} | Train Loss: {train_loss:6.4f} | Val Loss: {val_loss:6.4f} |\n"
+                    f" | Lesion Dice: {val_metrics.get('dice_lesion', 0):6.4f} | CoW Dice: {val_metrics.get('dice_cow', 0):6.4f} | LVO Recall: {val_metrics.get('recall_lvo', 0):6.4f} |\n"
+                    f" | Composite Score: {comp:6.4f} | LR: {lr:.1e} | Time: {elapsed:5.1f}s |\n"
+                    f"{separator}"
                 )
+                logger.info(msg)
 
                 # Checkpoint
-                if composite > self.best_composite:
-                    self.best_composite = composite
+                if comp > self.best_composite:
+                    self.best_composite = comp
                     self.patience_counter = 0
                     torch.save({
                         "epoch": epoch,
                         "model_state_dict": self.accelerator.unwrap_model(self.model).state_dict(),
-                        "composite": composite
+                        "composite": comp
                     }, self.ckpt_dir / "best_model.pth")
-                    logger.info(f"  --> Saved new best model (Composite: {composite:.4f})")
+                    logger.info(f"  --> Saved new best model (Composite: {comp:.4f})")
                 else:
                     self.patience_counter += 1
 
@@ -177,9 +179,8 @@ class MultiTaskTrainer:
         grad_steps = 0
         n_batches = 0
 
-        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch:02d} [Train]", disable=not self.accelerator.is_local_main_process)
-
-        for step, (x, y, brain_mask) in enumerate(pbar):
+        # Progress bar disabled for cleaner Kaggle logs
+        for step, (x, y, brain_mask) in enumerate(self.train_loader):
             with self.accelerator.accumulate(self.model):
                 with self.accelerator.autocast():
                     preds = self.model(x)
@@ -196,9 +197,7 @@ class MultiTaskTrainer:
                 # Gradient clipping
                 if self.accelerator.sync_gradients:
                     current_grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                    if isinstance(current_grad_norm, torch.Tensor):
-                        current_grad_norm = current_grad_norm.item()
-                    total_grad_norm += current_grad_norm
+                    total_grad_norm += current_grad_norm.item()
                     grad_steps += 1
 
                 self.optimizer.step()
@@ -210,9 +209,6 @@ class MultiTaskTrainer:
             n_batches += 1
             for t in self.TASK_NAMES:
                 task_loss_sums[t] += loss_dict[t]
-
-            if step % self.log_interval == 0:
-                pbar.set_postfix(loss=f"{real_loss:.4f}")
 
         avg_loss = running_loss / max(n_batches, 1)
         avg_grad = total_grad_norm / max(grad_steps, 1)
@@ -231,9 +227,7 @@ class MultiTaskTrainer:
         n_batches = 0
         accum = torch.zeros(6, device=self.accelerator.device)
 
-        pbar = tqdm(self.val_loader, desc=f"Epoch {epoch:02d} [Val]  ", disable=not self.accelerator.is_local_main_process)
-
-        for x, y, brain_mask in pbar:
+        for x, y, brain_mask in self.val_loader:
             with self.accelerator.autocast():
                 preds = self.model(x)
                 preds = list(preds)
@@ -244,15 +238,20 @@ class MultiTaskTrainer:
             running_loss += loss.item()
             n_batches += 1
             
-            # Dice calculations (on GPU)
-            dice_les = _dice_score(preds[0], y[:, 0:1], brain_mask)
-            rec_lvo  = _recall_score(preds[1], y[:, 1:2], brain_mask)
-            dice_cow = _dice_score(preds[2], y[:, 2:3], brain_mask)
+            # 1. Lesion Dice
+            inter_l, union_l = _dice_score(preds[0], y[:, 0:1], brain_mask)
+            accum[0] += inter_l
+            accum[1] += union_l
             
-            accum[0] += dice_les
-            accum[1] += rec_lvo
-            accum[2] += dice_cow
-            accum[5] += 1
+            # 2. LVO Recall
+            tp, tp_fn = _recall_score(preds[1], y[:, 1:2], brain_mask)
+            accum[2] += tp
+            accum[3] += tp_fn
+            
+            # 3. CoW Dice
+            inter_c, union_c = _dice_score(preds[2], y[:, 2:3], brain_mask)
+            accum[4] += inter_c
+            accum[5] += union_c
 
         # Global sync
         accum = self.accelerator.reduce(accum, reduction="sum")
@@ -261,19 +260,23 @@ class MultiTaskTrainer:
 
         metrics = {}
         if self.accelerator.is_main_process:
-            accum = accum.cpu().numpy()
-            dice_les = 2.0 * accum[0] / max(accum[1], 1e-6)
-            rec_lvo = accum[2] / max(accum[3], 1e-6)
-            dice_cow = 2.0 * accum[4] / max(accum[5], 1e-6)
-            
-            comp = 0.4 * dice_les + 0.4 * rec_lvo + 0.2 * dice_cow
+            d_les = (2.0 * accum[0] / (accum[1] + 1e-6)).item()
+            r_lvo = (accum[2] / (accum[3] + 1e-6)).item()
+            d_cow = (2.0 * accum[4] / (accum[5] + 1e-6)).item()
+            comp = 0.4 * d_les + 0.4 * r_lvo + 0.2 * d_cow
             
             metrics = {
-                "dice_lesion": dice_les,
-                "recall_lvo": rec_lvo,
-                "dice_cow": dice_cow,
+                "dice_lesion": d_les,
+                "recall_lvo": r_lvo,
+                "dice_cow": d_cow,
                 "composite_score": comp
             }
+            
+        # CRITICAL: Sync composite_score for Early Stopping
+        comp_t = torch.tensor([metrics.get("composite_score", 0.0)], device=self.accelerator.device)
+        comp_t = self.accelerator.reduce(comp_t, reduction="sum")
+        if not self.accelerator.is_main_process:
+            metrics["composite_score"] = comp_t.item()
             
         return avg_loss, metrics
 

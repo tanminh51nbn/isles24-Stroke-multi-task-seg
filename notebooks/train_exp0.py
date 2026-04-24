@@ -7,13 +7,25 @@
 
 # %% [code]
 import os
+import warnings
+
+# Tắt các cảnh báo hệ thống rác
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Tắt log TensorFlow/XLA
+os.environ['PYDEVD_DISABLE_FILE_VALIDATION'] = '1' # Tắt cảnh báo debugger
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
 import sys
 from pathlib import Path
 
 # 1. MÔI TRƯỜNG KAGGLE (Cài đặt dependencies)
 if os.environ.get('KAGGLE_KERNEL_RUN_TYPE'):
-    print("🛠️ Đang cài đặt thư viện (SMP, Monai, Accelerate)...")
-    os.system('pip install -q segmentation-models-pytorch monai accelerate pyyaml')
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    if local_rank <= 0: # Chỉ GPU chính mới cài đặt và in log
+        print("🛠️ Đang chuẩn bị môi trường (SMP, Monai, Accelerate)...")
+        os.system('pip install -q segmentation-models-pytorch monai accelerate pyyaml')
+    
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 import yaml
 import torch
