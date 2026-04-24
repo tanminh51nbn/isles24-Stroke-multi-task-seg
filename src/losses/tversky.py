@@ -9,5 +9,6 @@ def build_lesion_loss(alpha: float = 0.4, beta: float = 0.6):
         include_background=True, 
         sigmoid=True, 
         alpha=alpha, 
-        beta=beta
+        beta=beta,
+        reduction='mean'
     )

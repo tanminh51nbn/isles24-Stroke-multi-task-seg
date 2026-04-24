@@ -10,5 +10,6 @@ def build_cow_loss(lambda_dice: float = 1.0, lambda_focal: float = 1.0, gamma: f
         sigmoid=True, 
         lambda_dice=lambda_dice, 
         lambda_focal=lambda_focal, 
-        gamma=gamma
+        gamma=gamma,
+        reduction='mean'
     )

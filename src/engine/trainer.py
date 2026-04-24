@@ -147,14 +147,24 @@ class MultiTaskTrainer:
                 comp = val_metrics.get("composite_score", 0.0)
                 lr = self.optimizer.param_groups[-1]["lr"]
                 
-                # Thiết kế bảng 3x3 siêu đẹp
+                # Lấy chi tiết loss từng task
+                t_tasks = train_tasks # dict từ _train_one_epoch
+                v_tasks = val_metrics.get("task_losses", {})
+                
+                # Thiết kế bảng 5 hàng cực kỳ chi tiết
                 msg = (
                     f"\n ┌─────────────────────────┬─────────────────────────┬─────────────────────────┐\n"
-                    f" │ Epoch: {epoch+1:02d}/{self.epochs:02d}        │ Train Loss: {train_loss:9.4f} │ Val Loss: {val_loss:9.4f}   │\n"
+                    f" │ Epoch: {epoch+1:02d}/{self.epochs:02d}          │ Train Loss: {train_loss:9.4f} │ Val Loss: {val_loss:9.4f}   │\n"
                     f" ├─────────────────────────┼─────────────────────────┼─────────────────────────┤\n"
-                    f" │ Lesion Dice: {val_metrics.get('dice_lesion', 0):8.4f} │ CoW Dice: {val_metrics.get('dice_cow', 0):8.4f}    │ LVO Recall: {val_metrics.get('recall_lvo', 0):8.4f} │\n"
+                    f" │ Train Task Loss Detail: │ Lesion: {t_tasks['lesion']:11.4f} │ LVO: {t_tasks['lvo']:14.4f} │\n"
+                    f" │                         │ CoW:    {t_tasks['cow']:11.4f} │                         │\n"
                     f" ├─────────────────────────┼─────────────────────────┼─────────────────────────┤\n"
-                    f" │ Score: {comp:14.4f} │ LR: {lr:.1e}              │ Time: {elapsed:10.1f}s     │\n"
+                    f" │ Val Task Loss Detail:   │ Lesion: {v_tasks.get('lesion',0):11.4f} │ LVO: {v_tasks.get('lvo',0):14.4f} │\n"
+                    f" │                         │ CoW:    {v_tasks.get('cow',0):11.4f} │                         │\n"
+                    f" ├─────────────────────────┼─────────────────────────┼─────────────────────────┤\n"
+                    f" │ Lesion Dice: {val_metrics.get('dice_lesion', 0):8.4f} │ CoW Dice: {val_metrics.get('dice_cow', 0):8.4f}    │ LVO Recall: {val_metrics.get('recall_lvo', 0):8.4f}  │\n"
+                    f" ├─────────────────────────┼─────────────────────────┼─────────────────────────┤\n"
+                    f" │ Score: {comp:14.4f} │ LR: {lr:.1e}           │ Time: {elapsed:10.1f}s     │\n"
                     f" └─────────────────────────┴─────────────────────────┴─────────────────────────┘"
                 )
                 print(msg, flush=True)
@@ -225,7 +235,7 @@ class MultiTaskTrainer:
             for t in self.TASK_NAMES:
                 task_loss_sums[t] += loss_dict[t]
 
-        # Sync loss across processes for consistent logging
+        # Sync loss and tasks across processes
         avg_loss_t = torch.tensor([running_loss], device=self.accelerator.device)
         total_loss = self.accelerator.reduce(avg_loss_t, reduction="sum").item()
         
@@ -234,8 +244,12 @@ class MultiTaskTrainer:
         
         avg_loss = total_loss / max(total_batches, 1)
         
+        # Sync task losses
+        task_loss_t = torch.tensor([task_loss_sums[t] for t in self.TASK_NAMES], device=self.accelerator.device)
+        total_task_losses = self.accelerator.reduce(task_loss_t, reduction="sum")
+        avg_tasks = {t: (total_task_losses[i] / max(total_batches, 1)).item() for i, t in enumerate(self.TASK_NAMES)}
+        
         avg_grad = total_grad_norm / max(grad_steps, 1)
-        avg_tasks = {t: v / max(n_batches, 1) for t, v in task_loss_sums.items()}
         
         return avg_loss, avg_tasks, avg_grad
 
@@ -244,6 +258,7 @@ class MultiTaskTrainer:
         self.model.eval()
         running_loss = 0.0
         n_batches = 0
+        task_loss_sums = {t: 0.0 for t in self.TASK_NAMES}
         accum = torch.zeros(6, device=self.accelerator.device)
 
         loader = self.val_loader
@@ -260,10 +275,12 @@ class MultiTaskTrainer:
                 preds = list(preds)
                 for i in range(len(preds)):
                     preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
-                loss, _ = self.criterion(preds, y)
+                loss, loss_dict = self.criterion(preds, y)
 
             running_loss += loss.item()
             n_batches += 1
+            for t in self.TASK_NAMES:
+                task_loss_sums[t] += loss_dict[t]
             
             # 1. Lesion Dice
             inter_l, union_l = _dice_score(preds[0], y[:, 0:1], brain_mask)
@@ -290,6 +307,11 @@ class MultiTaskTrainer:
         total_batches = self.accelerator.reduce(n_batches_t, reduction="sum").item()
         
         avg_loss = total_loss / max(total_batches, 1)
+        
+        # Sync task losses
+        task_loss_t = torch.tensor([task_loss_sums[t] for t in self.TASK_NAMES], device=self.accelerator.device)
+        total_task_losses = self.accelerator.reduce(task_loss_t, reduction="sum")
+        avg_tasks = {t: (total_task_losses[i] / max(total_batches, 1)).item() for i, t in enumerate(self.TASK_NAMES)}
 
         metrics = {}
         if self.accelerator.is_main_process:
@@ -302,7 +324,8 @@ class MultiTaskTrainer:
                 "dice_lesion": d_les,
                 "recall_lvo": r_lvo,
                 "dice_cow": d_cow,
-                "composite_score": comp
+                "composite_score": comp,
+                "task_losses": avg_tasks
             }
             
         # CRITICAL: Sync composite_score for Early Stopping

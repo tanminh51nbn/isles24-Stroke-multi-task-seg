@@ -13,13 +13,16 @@ class FocalTverskyLoss(nn.Module):
             include_background=True, 
             sigmoid=True, 
             alpha=alpha, 
-            beta=beta
+            beta=beta,
+            reduction='none'
         )
         self.gamma = gamma
 
     def forward(self, logits, target):
-        tversky_loss = self.tversky(logits, target)
-        return torch.pow(tversky_loss + 1e-6, self.gamma)
+        # Calculate per-sample Tversky loss
+        tversky_loss = self.tversky(logits, target) # [B, 1, 1, 1] or similar
+        focal_tversky = torch.pow(tversky_loss + 1e-6, self.gamma)
+        return focal_tversky.mean()
 
 def build_lvo_loss(alpha: float = 0.2, beta: float = 0.8, gamma: float = 2.0):
     return FocalTverskyLoss(alpha=alpha, beta=beta, gamma=gamma)
