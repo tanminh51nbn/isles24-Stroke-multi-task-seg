@@ -78,7 +78,7 @@ class MultiTaskSharedUNet(nn.Module):
         # features = [stem_out, layer1, layer2, layer3, layer4]
         # SMP decoder tự handle skip connections từ features list
         features = self.encoder(x)
-        decoder_output = self.decoder(*features)
+        decoder_output = self.decoder(features)
         out_lesion, out_lvo, out_cow = self.heads(decoder_output)
         return out_lesion, out_lvo, out_cow
 
