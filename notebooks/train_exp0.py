@@ -69,22 +69,26 @@ def download_radimagenet(target_path):
         print("✅ RadImageNet Weights đã có sẵn.")
 
 # %% [code]
-# 4. HÀM CHẠY THÍ NGHIỆM CHÍNH
-def run_experiment(exp_name="Baseline_ResNet50"):
+# 4. LOAD CONFIGS
+workspace_dir = Path.cwd()
+if "notebooks" in str(workspace_dir): workspace_dir = workspace_dir.parent
+
+with open(workspace_dir / "configs/train.yaml", "r", encoding="utf-8") as f:
+    train_cfg = yaml.safe_load(f)
+with open(workspace_dir / "configs/model.yaml", "r", encoding="utf-8") as f:
+    model_cfg = yaml.safe_load(f)
+with open(workspace_dir / "configs/data.yaml", "r", encoding="utf-8") as f:
+    data_cfg = yaml.safe_load(f)
+    
+cfg = {**train_cfg, **model_cfg, **data_cfg}
+
+# %% [code]
+# 5. HÀM CHẠY THÍ NGHIỆM CHÍNH
+def run_experiment(cfg, exp_name="Baseline_ResNet50"):
     print(f"🚀 Bắt đầu thí nghiệm: {exp_name}")
     
-    # --- A. Load Configs ---
     workspace_dir = Path.cwd()
     if "notebooks" in str(workspace_dir): workspace_dir = workspace_dir.parent
-    
-    with open(workspace_dir / "configs/train.yaml", "r", encoding="utf-8") as f:
-        train_cfg = yaml.safe_load(f)
-    with open(workspace_dir / "configs/model.yaml", "r", encoding="utf-8") as f:
-        model_cfg = yaml.safe_load(f)
-    with open(workspace_dir / "configs/data.yaml", "r", encoding="utf-8") as f:
-        data_cfg = yaml.safe_load(f)
-        
-    cfg = {**train_cfg, **model_cfg, **data_cfg}
     
     # Download weights
     rad_path = workspace_dir / "configs" / "RadImageNet-ResNet50.pt"
@@ -93,29 +97,34 @@ def run_experiment(exp_name="Baseline_ResNet50"):
 
     # --- B. Tìm dữ liệu (Kaggle Support) ---
     if os.environ.get('KAGGLE_KERNEL_RUN_TYPE'):
-        # Đường dẫn mặc định khi add dataset trên Kaggle
-        data_roots = [
-            Path("/kaggle/input/isles24-stroke-dataset-part-1"),
-            Path("/kaggle/input/isles24-stroke-dataset-part-2")
-        ]
+        kaggle_input = Path("/kaggle/input")
+        print(f"🔍 Đang tự động quét dữ liệu trong {kaggle_input}...")
+        # Tìm mọi thư mục bắt đầu bằng sub- trong toàn bộ thư mục input
+        all_sub_dirs = list(kaggle_input.rglob("sub-*"))
+        patient_dirs = {d.name: d for d in all_sub_dirs if d.is_dir()}
     else:
-        data_roots = [workspace_dir / "data/processed"]
+        data_root = workspace_dir / "data/processed"
+        patient_dirs = {p.name: p for p in data_root.glob("sub-*") if p.is_dir()}
 
-    patient_dirs = {}
-    for root in data_roots:
-        if root.exists():
-            patient_dirs.update({p.name: p for p in root.glob("sub-*") if p.is_dir()})
-    
     patient_ids = sorted(list(patient_dirs.keys()))
     print(f"📦 Tổng số bệnh nhân tìm thấy: {len(patient_ids)}")
     
+    if len(patient_ids) == 0:
+        print("❌ Dừng: Không tìm thấy dữ liệu bệnh nhân (sub-*). Hãy kiểm tra lại Dataset.")
+        return
+
     # --- C. Data Split (Simple 80/20 for baseline) ---
     split_idx = int(len(patient_ids) * 0.8)
     train_ids = patient_ids[:split_idx]
     val_ids = patient_ids[split_idx:]
     
-    train_ds = ISLES24Dataset(patient_ids=train_ids, patient_dirs=patient_dirs)
-    val_ds = ISLES24Dataset(patient_ids=val_ids, patient_dirs=patient_dirs)
+    # Chuyển đổi ID thành List[Path] đúng chuẩn cho ISLES24Dataset
+    train_paths = [patient_dirs[pid] for pid in train_ids]
+    val_paths = [patient_dirs[pid] for pid in val_ids]
+    
+    from src.data.dataset import build_dataset
+    train_ds = build_dataset(train_paths, cfg, is_train=True)
+    val_ds = build_dataset(val_paths, cfg, is_train=False)
     
     train_loader = DataLoader(
         train_ds, 
@@ -152,10 +161,9 @@ def run_experiment(exp_name="Baseline_ResNet50"):
 
     # --- F. Final 3D Evaluation ---
     print("\n🏁 Đang tiến hành đánh giá 3D cuối cùng...")
-    eval_patient_dirs = [patient_dirs[pid] for pid in val_ids]
     evaluator = Evaluator(
         model=model,
-        patient_dirs=eval_patient_dirs,
+        patient_dirs=val_paths, # Truyền List[Path]
         device="cuda" if torch.cuda.is_available() else "cpu"
     )
     final_metrics = evaluator.evaluate_all()
@@ -163,5 +171,5 @@ def run_experiment(exp_name="Baseline_ResNet50"):
 
 # %% [code]
 if __name__ == "__main__":
-    # Bạn có thể ghi đè tham số tại đây nếu cần (ví dụ: epochs=1 để test)
-    run_experiment()
+    # Bạn có thể ghi đè tham số tại đây trước khi gọi run_experiment
+    run_experiment(cfg)
