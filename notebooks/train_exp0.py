@@ -176,15 +176,20 @@ if __name__ == "__main__":
     # ═══════════════════════════════════════════════════════════════
     #  EXP 0: SANITY CHECK CONFIG
     # ═══════════════════════════════════════════════════════════════
-    # Ghi đè cấu hình để chạy nhanh, kiểm tra pipeline
     cfg["training"]["epochs"] = 2
     cfg["training"]["batch_size"] = 2
     cfg["training"]["logging"]["visualize_every"] = 1
     
-    # ── CHẾ ĐỘ CHẠY ──
-    # Chạy trên 2 GPU (T4 x2) để kiểm tra tính tương thích Distributed
-    print("🚀 Đang khởi tạo Sanity Check trên 2 GPU (Kaggle T4 x2)...")
-    notebook_launcher(run_experiment, args=(cfg,), num_processes=2)
-    
-    # Nếu muốn chạy 1 GPU duy nhất, hãy bỏ comment dòng dưới và comment dòng notebook_launcher
-    # run_experiment(cfg)
+    # Kiểm tra môi trường chạy:
+    # Nếu chạy qua lệnh `accelerate launch`, biến môi trường "RANK" sẽ tồn tại.
+    if "RANK" in os.environ:
+        run_experiment(cfg)
+    else:
+        # Nếu chạy trực tiếp trong Notebook cell
+        try:
+            from accelerate import notebook_launcher
+            print("🚀 Đang khởi tạo qua notebook_launcher (2 GPU)...")
+            notebook_launcher(run_experiment, args=(cfg,), num_processes=2)
+        except Exception as e:
+            print(f"⚠️ notebook_launcher không khả dụng hoặc lỗi, chạy 1 GPU mặc định.")
+            run_experiment(cfg)
