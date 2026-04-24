@@ -45,6 +45,7 @@ class MultiTaskTrainer:
         val_loader,
         cfg: dict,
     ):
+        self.cfg = cfg
         train_cfg = cfg["training"]
         
         # 1. Initialize Accelerate
