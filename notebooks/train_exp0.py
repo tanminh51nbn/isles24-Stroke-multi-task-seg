@@ -170,6 +170,21 @@ def run_experiment(cfg, exp_name="Baseline_ResNet50"):
     print(f"✅ Kết quả cuối cùng: {final_metrics}")
 
 # %% [code]
+from accelerate import notebook_launcher
+
 if __name__ == "__main__":
-    # Bạn có thể ghi đè tham số tại đây trước khi gọi run_experiment
-    run_experiment(cfg)
+    # ═══════════════════════════════════════════════════════════════
+    #  EXP 0: SANITY CHECK CONFIG
+    # ═══════════════════════════════════════════════════════════════
+    # Ghi đè cấu hình để chạy nhanh, kiểm tra pipeline
+    cfg["training"]["epochs"] = 2
+    cfg["training"]["batch_size"] = 2
+    cfg["training"]["logging"]["visualize_every"] = 1
+    
+    # ── CHẾ ĐỘ CHẠY ──
+    # Chạy trên 2 GPU (T4 x2) để kiểm tra tính tương thích Distributed
+    print("🚀 Đang khởi tạo Sanity Check trên 2 GPU (Kaggle T4 x2)...")
+    notebook_launcher(run_experiment, args=(cfg,), num_processes=2)
+    
+    # Nếu muốn chạy 1 GPU duy nhất, hãy bỏ comment dòng dưới và comment dòng notebook_launcher
+    # run_experiment(cfg)
