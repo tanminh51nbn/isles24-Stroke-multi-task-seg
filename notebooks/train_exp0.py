@@ -127,16 +127,16 @@ def run_experiment(cfg, exp_name="Baseline_ResNet50"):
     
     train_loader = DataLoader(
         train_ds, 
-        batch_size=cfg["training"].get("batch_size", 4),
+        batch_size=cfg.get("dataloader", {}).get("batch_size", 4),
         shuffle=True, 
-        num_workers=4, 
-        pin_memory=True
+        num_workers=cfg.get("dataloader", {}).get("num_workers", 4), 
+        pin_memory=cfg.get("dataloader", {}).get("pin_memory", True)
     )
     val_loader = DataLoader(
         val_ds, 
-        batch_size=cfg["training"].get("batch_size", 4),
+        batch_size=cfg.get("dataloader", {}).get("batch_size", 4),
         shuffle=False, 
-        num_workers=4
+        num_workers=cfg.get("dataloader", {}).get("num_workers", 4)
     )
 
     # --- D. Initialize Model, Loss, Opt ---
@@ -159,36 +159,39 @@ def run_experiment(cfg, exp_name="Baseline_ResNet50"):
     trainer.train()
 
     # --- F. Final 3D Evaluation ---
-    print("\n🏁 Đang tiến hành đánh giá 3D cuối cùng...")
-    evaluator = Evaluator(
-        model=model,
-        patient_dirs=val_paths, # Truyền List[Path]
-        device="cuda" if torch.cuda.is_available() else "cpu"
-    )
-    final_metrics = evaluator.evaluate_all()
-    print(f"✅ Kết quả cuối cùng: {final_metrics}")
+    if is_main:
+        print("\n🏁 Đang tiến hành đánh giá 3D cuối cùng...")
+        evaluator = Evaluator(
+            model=model,
+            patient_dirs=val_paths, # Truyền List[Path]
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+        final_metrics = evaluator.evaluate_all()
+        print(f"✅ Kết quả cuối cùng: {final_metrics}")
 
 # %% [code]
 from accelerate import notebook_launcher
 
 if __name__ == "__main__":
     # ═══════════════════════════════════════════════════════════════
-    #  EXP 0: SANITY CHECK CONFIG
+    #  EXP 1: FULL TRAINING (50 Epochs)
     # ═══════════════════════════════════════════════════════════════
-    cfg["training"]["epochs"] = 2
-    cfg["training"]["batch_size"] = 8
-    cfg["training"]["logging"]["visualize_every"] = 1
+    cfg["training"]["epochs"] = 50
+    if "dataloader" not in cfg: cfg["dataloader"] = {}
+    cfg["dataloader"]["batch_size"] = 8
+    cfg["training"]["logging"]["visualize_every"] = 5
+    
+    exp_name = "Exp1_ResNet50_50E"
     
     # Kiểm tra môi trường chạy:
-    # Nếu chạy qua lệnh `accelerate launch`, biến môi trường "RANK" sẽ tồn tại.
     if "RANK" in os.environ:
-        run_experiment(cfg)
+        run_experiment(cfg, exp_name=exp_name)
     else:
         # Nếu chạy trực tiếp trong Notebook cell
         try:
             from accelerate import notebook_launcher
             print("🚀 Đang khởi tạo qua notebook_launcher (2 GPU)...")
-            notebook_launcher(run_experiment, args=(cfg,), num_processes=2)
+            notebook_launcher(run_experiment, args=(cfg, exp_name), num_processes=2)
         except Exception as e:
             print(f"⚠️ notebook_launcher không khả dụng hoặc lỗi, chạy 1 GPU mặc định.")
-            run_experiment(cfg)
+            run_experiment(cfg, exp_name=exp_name)

@@ -172,16 +172,14 @@ class MultiTaskTrainer:
     def _train_one_epoch(self, epoch: int) -> Tuple[float, Dict[str, float], float]:
         self.model.train()
         running_loss = 0.0
-        total_samples = 0
         task_loss_sums = {t: 0.0 for t in self.TASK_NAMES}
         total_grad_norm = 0.0
         grad_steps = 0
+        n_batches = 0
 
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch:02d} [Train]", disable=not self.accelerator.is_local_main_process)
 
         for step, (x, y, brain_mask) in enumerate(pbar):
-            batch_size = x.size(0)
-
             with self.accelerator.accumulate(self.model):
                 with self.accelerator.autocast():
                     preds = self.model(x)
@@ -204,31 +202,32 @@ class MultiTaskTrainer:
                     grad_steps += 1
 
                 self.optimizer.step()
+                self.scheduler.step()
                 self.optimizer.zero_grad()
 
-            # Loss Accumulation - Strictly Per Sample Normalized
-            # loss.item() is the mean over the batch
             real_loss = loss.item()
-            running_loss += real_loss * batch_size
-            total_samples += batch_size
+            running_loss += real_loss
+            n_batches += 1
             for t in self.TASK_NAMES:
-                task_loss_sums[t] += loss_dict[t] * batch_size
+                task_loss_sums[t] += loss_dict[t]
 
             if step % self.log_interval == 0:
                 pbar.set_postfix(loss=f"{real_loss:.4f}")
 
-        # Gather metrics across GPUs
-        avg_loss = self.accelerator.gather(torch.tensor([running_loss / max(total_samples, 1)], device=self.accelerator.device)).mean().item()
+        avg_loss = running_loss / max(n_batches, 1)
         avg_grad = total_grad_norm / max(grad_steps, 1)
+        avg_tasks = {t: v / max(n_batches, 1) for t, v in task_loss_sums.items()}
         
-        avg_tasks = {t: v / max(total_samples, 1) for t, v in task_loss_sums.items()}
+        # Sync loss across processes for consistent logging
+        avg_loss_t = torch.tensor([avg_loss], device=self.accelerator.device)
+        avg_loss = self.accelerator.reduce(avg_loss_t, reduction="mean").item()
+        
         return avg_loss, avg_tasks, avg_grad
 
     @torch.no_grad()
     def _validate(self, epoch: int) -> Tuple[float, Dict[str, float]]:
         self.model.eval()
-        running_loss = 0.0
-        total_samples = 0
+        n_batches = 0
         accum = torch.zeros(6, device=self.accelerator.device)
 
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch:02d} [Val]  ", disable=not self.accelerator.is_local_main_process)
@@ -241,30 +240,23 @@ class MultiTaskTrainer:
                     preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
                 loss, _ = self.criterion(preds, y)
 
-            batch_size = x.size(0)
-            running_loss += loss.item() * batch_size
-            total_samples += batch_size
+            running_loss += loss.item()
+            n_batches += 1
+            
+            # Dice calculations (on GPU)
+            dice_les = _dice_score(preds[0], y[:, 0:1], brain_mask)
+            rec_lvo  = _recall_score(preds[1], y[:, 1:2], brain_mask)
+            dice_cow = _dice_score(preds[2], y[:, 2:3], brain_mask)
+            
+            accum[0] += dice_les
+            accum[1] += rec_lvo
+            accum[2] += dice_cow
+            accum[5] += 1
 
-            inter, union = _dice_score(preds[0], y[:, 0:1])
-            accum[0] += inter
-            accum[1] += union
-
-            tp, tp_fn = _recall_score(preds[1], y[:, 1:2])
-            accum[2] += tp
-            accum[3] += tp_fn
-
-            inter_c, union_c = _dice_score(preds[2], y[:, 2:3])
-            accum[4] += inter_c
-            accum[5] += union_c
-
-        # Gather across GPUs
+        # Global sync
         accum = self.accelerator.reduce(accum, reduction="sum")
-        total_samples_tensor = torch.tensor([total_samples], device=self.accelerator.device)
-        running_loss_tensor = torch.tensor([running_loss], device=self.accelerator.device)
-        total_samples_tensor = self.accelerator.reduce(total_samples_tensor, reduction="sum")
-        running_loss_tensor = self.accelerator.reduce(running_loss_tensor, reduction="sum")
-
-        avg_loss = (running_loss_tensor / max(total_samples_tensor, 1)).item()
+        avg_loss_t = torch.tensor([running_loss / max(n_batches, 1)], device=self.accelerator.device)
+        avg_loss = self.accelerator.reduce(avg_loss_t, reduction="mean").item()
 
         metrics = {}
         if self.accelerator.is_main_process:

@@ -57,6 +57,7 @@ class Evaluator:
         return final
 
     def evaluate_patient(self, pdir: Path) -> dict:
+        import gc
         img_dir = pdir / "inputs"
         lbl_dir = pdir / "labels"
         
@@ -67,44 +68,49 @@ class Evaluator:
         if not slice_files:
             return None
             
-        preds_3d = {t: [] for t in self.TASK_NAMES}
-        targets_3d = {t: [] for t in self.TASK_NAMES}
+        # --- Batch Inference Optimization ---
+        all_imgs = []
+        all_lbls = []
         
         for sf in slice_files:
             lf = lbl_dir / sf.name.replace("x_z", "y_z")
+            all_imgs.append(np.load(sf).astype(np.float32))
+            all_lbls.append(np.load(lf).astype(np.uint8)) # Labels are binary uint8
             
-            # Load
-            img = np.load(sf).astype(np.float32)
-            lbl = np.load(lf).astype(np.float32)
-            
-            # Clip
-            img[6:18] = np.clip(img[6:18], -5.0, 5.0)
-            
-            # Brain mask
-            brain_mask = (img[1] > -0.95).astype(np.float32)
-            
-            # To tensor
-            x = torch.from_numpy(img).unsqueeze(0).to(self.device)
-            mask_t = torch.from_numpy(brain_mask).unsqueeze(0).unsqueeze(0).to(self.device)
-            
+        # Stack to tensors: [N, C, H, W]
+        x_batch = torch.from_numpy(np.stack(all_imgs)).to(self.device)
+        del all_imgs # Free CPU RAM immediately
+        
+        # GPU Preprocessing
+        x_batch[:, 6:18] = torch.clamp(x_batch[:, 6:18], -5.0, 5.0)
+        mask_t = (x_batch[:, 1:2] > -0.95).float()
+        
+        preds_3d = {t: [] for t in self.TASK_NAMES}
+        
+        with torch.no_grad():
             with torch.autocast(device_type="cuda", dtype=torch.float16):
-                logits = self.model(x)
-                logits = list(logits) # Model returns tuple
+                # Run whole patient in one GPU call (Safe for T4)
+                logits = self.model(x_batch)
+                logits = list(logits)
                 
             for i, t in enumerate(self.TASK_NAMES):
-                # Apply mask
+                # Apply mask & threshold
                 logits_i = logits[i] * mask_t + (-1e9) * (1 - mask_t)
-                pred_bin = (torch.sigmoid(logits_i) > 0.5).float().cpu().numpy()[0, 0]
-                
-                preds_3d[t].append(pred_bin)
-                targets_3d[t].append(lbl[i])
-                
-        # Stack to 3D: [Z, H, W]
-        p_vol = {t: np.stack(preds_3d[t]) for t in self.TASK_NAMES}
-        t_vol = {t: np.stack(targets_3d[t]) for t in self.TASK_NAMES}
+                pred_bin = (torch.sigmoid(logits_i) > 0.5).byte() # Use byte (uint8) for RAM
+                preds_3d[t] = pred_bin.cpu().numpy()[:, 0] # [N, H, W]
+                del logits_i
         
-        return {
-            "lesion_dice": dice_3d(p_vol["lesion"], t_vol["lesion"]),
-            "lvo_f1": object_f1_centroid(p_vol["lvo"], t_vol["lvo"], radius=3),
-            "cow_dice": dice_3d(p_vol["cow"], t_vol["cow"])
+        del x_batch, mask_t, logits
+        gc.collect() # Trigger garbage collection
+        
+        # Final Volumes: [Z, H, W] in uint8
+        t_vol = np.stack(all_lbls) # [N, 3, H, W]
+        
+        results = {
+            "lesion_dice": dice_3d(preds_3d["lesion"], t_vol[:, 0]),
+            "lvo_f1": object_f1_centroid(preds_3d["lvo"], t_vol[:, 1], radius=3),
+            "cow_dice": dice_3d(preds_3d["cow"], t_vol[:, 2])
         }
+        
+        del preds_3d, t_vol, all_lbls
+        return results

@@ -36,19 +36,34 @@ def build_optimizer(model: nn.Module, cfg: dict) -> torch.optim.Optimizer:
     )
     return optimizer
 
-def build_scheduler(optimizer: torch.optim.Optimizer, cfg: dict):
-    """
-    Builds the Cosine Annealing scheduler.
-    """
+def build_scheduler(optimizer, cfg):
     train_cfg = cfg.get("training", {})
-    epochs = train_cfg.get("epochs", 50)
     sched_cfg = cfg.get("scheduler", {})
-    min_lr = sched_cfg.get("min_lr", 1e-6)
     
-    # Single cosine cycle over the full training
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=epochs,
+    epochs = train_cfg.get("epochs", 50)
+    warmup_epochs = sched_cfg.get("warmup_epochs", 5)
+    min_lr = sched_cfg.get("min_lr", 1e-6)
+
+    # 1. Linear Warmup
+    warmup_scheduler = LinearLR(
+        optimizer, 
+        start_factor=0.001, 
+        end_factor=1.0, 
+        total_iters=warmup_epochs
+    )
+    
+    # 2. Cosine Decay
+    cosine_scheduler = CosineAnnealingLR(
+        optimizer, 
+        T_max=epochs - warmup_epochs, 
         eta_min=min_lr
     )
+    
+    # 3. Combine using SequentialLR
+    scheduler = SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_epochs]
+    )
+    
     return scheduler
