@@ -5,8 +5,15 @@ from typing import List, Dict
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from scipy.ndimage import binary_dilation
 
 logger = logging.getLogger(__name__)
+
+def create_disk_kernel(radius):
+    """Tạo nhân hình tròn cho phép giãn nhãn."""
+    y, x = np.ogrid[-radius : radius + 1, -radius : radius + 1]
+    mask = x**2 + y**2 <= radius**2
+    return mask.astype(bool)
 
 class ISLES24Dataset(Dataset):
     """
@@ -20,13 +27,18 @@ class ISLES24Dataset(Dataset):
         transform=None,
         is_train: bool = False,
         downsample_neg_ratio: float = 1.0,
-        lvo_oversample: int = 1
+        lvo_oversample: int = 1,
+        lvo_dilation_radius: int = 0
     ):
         self.patient_dirs = patient_dirs
         self.transform = transform
         self.is_train = is_train
         self.downsample_neg_ratio = downsample_neg_ratio
         self.lvo_oversample = lvo_oversample
+        self.lvo_dilation_radius = lvo_dilation_radius
+        
+        if self.lvo_dilation_radius > 0:
+            self.lvo_kernel = create_disk_kernel(self.lvo_dilation_radius)
         
         self.slices = []
         self._build_index()
@@ -105,6 +117,13 @@ class ISLES24Dataset(Dataset):
         img = np.load(item["image"]).astype(np.float32) # [18, 544, 544]
         lbl = np.load(item["label"]).astype(np.float32) # [3, 544, 544]
         
+        # 0. LVO Label Dilation (To help localization)
+        if self.lvo_dilation_radius > 0:
+            lvo_mask = lbl[1] > 0
+            if lvo_mask.any():
+                dilated = binary_dilation(lvo_mask, structure=self.lvo_kernel)
+                lbl[1] = dilated.astype(np.float32)
+        
         # 1. Clip Perfusion Outliers (Channels 6 to 17) to [-5, 5]
         img[6:18] = np.clip(img[6:18], -5.0, 5.0)
         
@@ -137,11 +156,13 @@ def build_dataset(patient_dirs: List[Path], cfg: dict, is_train: bool = False, t
     # Chỉ áp dụng sampling ratio (downsample/oversample) khi huấn luyện
     downsample_neg = samp_cfg.get("downsample_neg_ratio", 1.0) if is_train else 1.0
     lvo_over = samp_cfg.get("lvo_oversample", 1) if is_train else 1
+    lvo_dilate = samp_cfg.get("lvo_dilation_radius", 0)
     
     return ISLES24Dataset(
         patient_dirs=patient_dirs,
         transform=transform,
         is_train=is_train,
         downsample_neg_ratio=downsample_neg,
-        lvo_oversample=lvo_over
+        lvo_oversample=lvo_over,
+        lvo_dilation_radius=lvo_dilate
     )

@@ -13,8 +13,9 @@ kfold:
 sampling:
   strategy: random # Dataset đã xử lý sampling, không dùng WeightedSampler
   # Strategy hiện tại được xử lý trực tiếp trong Dataset (Downsampling + Oversampling)
-  downsample_neg_ratio: 0.3 # Chỉ giữ 30% slice all-negative
-  lvo_oversample: 3 # Lặp lại slice có LVO 3 lần
+  downsample_neg_ratio: 0.2 # Chỉ giữ 20% slice all-negative
+  lvo_oversample: 6 # Lặp lại slice có LVO 6 lần
+  lvo_dilation_radius: 5 # Biến LVO thành đốm tròn bán kính 5px
 
 # ── DataLoader ──────────────────────────────────────────────────
 dataloader:

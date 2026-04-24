@@ -11,7 +11,9 @@ import sys
 from pathlib import Path
 
 # 1. MÔI TRƯỜNG KAGGLE (Cài đặt dependencies)
-if os.environ.get('KAGGLE_KERNEL_RUN_TYPE'):
+is_main = os.environ.get('LOCAL_RANK', '0') == '0'
+
+if is_main and os.environ.get('KAGGLE_KERNEL_RUN_TYPE'):
     print("🛠️ Đang cài đặt thư viện (SMP, Monai, Accelerate)...")
     os.system('pip install -q segmentation-models-pytorch monai accelerate pyyaml')
 
@@ -31,14 +33,31 @@ REPO_NAME = "isles24-Stroke-multi-task-seg"
 
 # --- A. Setup Environment ---
 workspace_dir = Path.cwd()
-# Nếu đang ở trong thư mục notebooks, lùi lại 1 cấp để ra root repo
 if "notebooks" in str(workspace_dir):
-    workspace_dir = workspace_dir.parent
+    os.chdir("..")
+    workspace_dir = Path.cwd()
 
-if str(workspace_dir) not in sys.path:
-    sys.path.append(str(workspace_dir))
+if is_main:
+    # 1. Clone & Checkout (Chỉ chạy trên process chính)
+    if not os.path.exists(REPO_NAME):
+        print(f"🚀 Setting up source code from branch {BRANCH}...")
+        os.system(f"git clone -b {BRANCH} {REPO_URL}")
+    else:
+        print("🚀 Updating source code...")
+        os.system(f"cd {REPO_NAME} && git pull origin {BRANCH}")
+    
+    # 2. Checkout branch cụ thể nếu cần
+    os.system(f"cd {REPO_NAME} && git checkout {BRANCH}")
+else:
+    # Đợi process chính setup xong thư mục
+    import time
+    while not os.path.exists(REPO_NAME):
+        time.sleep(2)
+    time.sleep(1) # Extra buffer
 
-# Import các module từ source
+# Add to path
+sys.path.append(str(workspace_dir / REPO_NAME / "src"))
+sys.path.append(str(workspace_dir / REPO_NAME))
 try:
     from src.data.dataset import ISLES24Dataset
     from src.models.model import build_model

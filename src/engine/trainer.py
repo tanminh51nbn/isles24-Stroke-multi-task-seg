@@ -363,24 +363,54 @@ class MultiTaskTrainer:
         y_np = y.cpu().numpy()
         p_np = [pr.cpu().numpy() for pr in probs]
         
-        # Chọn 4 ảnh để hiển thị (ưu tiên những ảnh có LVO hoặc Lesion)
-        indices = []
-        for i in range(x_np.shape[0]):
-            if y_np[i, 1].max() > 0 or y_np[i, 0].max() > 0:
-                indices.append(i)
-        
-        if len(indices) < 4:
-            indices.extend(list(range(min(4 - len(indices), x_np.shape[0]))))
-        indices = indices[:4]
+        # Diversified Sampling: 1 Empty, 1 LVO+, 1 Lesion+, 1 CoW+
+        with torch.no_grad():
+            y_sums = y.sum(dim=(2, 3)) # [B, 3]
+            indices = []
+            
+            # 1. Tìm LVO
+            lvo_ids = torch.where(y_sums[:, 1] > 0)[0]
+            if len(lvo_ids) > 0: indices.append(lvo_ids[0].item())
+            
+            # 2. Tìm Lesion
+            les_ids = torch.where(y_sums[:, 0] > 0)[0]
+            for i in les_ids:
+                if i.item() not in indices:
+                    indices.append(i.item())
+                    break
+            
+            # 3. Tìm CoW
+            cow_ids = torch.where(y_sums[:, 2] > 0)[0]
+            for i in cow_ids:
+                if i.item() not in indices:
+                    indices.append(i.item())
+                    break
+            
+            # 4. Tìm Empty (No labels)
+            empty_ids = torch.where(y_sums.sum(dim=1) == 0)[0]
+            if len(empty_ids) > 0: indices.append(empty_ids[0].item())
+            
+            # Fill remaining to ensure 4 samples
+            for i in range(x.shape[0]):
+                if len(indices) >= 4: break
+                if i not in indices:
+                    indices.append(i)
+            
+            indices = indices[:4]
 
         fig, axes = plt.subplots(4, 3, figsize=(15, 20))
         plt.subplots_adjust(wspace=0.1, hspace=0.1)
 
         # Labels: 0=Lesion (Green), 1=LVO (Red), 2=CoW (Blue)
-        colors = [ (0, 1, 0), (1, 0, 0), (0, 0, 1) ]
+        colors = [
+            (0, 1, 0), # Green for Lesion
+            (1, 0, 0), # Red for LVO
+            (0, 0, 1)  # Blue for CoW
+        ]
 
         for row, idx in enumerate(indices):
-            # 1. NCCT base (Channel index 1 is central NCCT slice)
+            # 1. NCCT base with Brain Windowing (W:80, L:40)
+            # Normalizing to [0, 1] range for visualization
             ncct = x_np[idx, 1]
             ncct = (ncct - ncct.min()) / (ncct.max() - ncct.min() + 1e-6)
             
