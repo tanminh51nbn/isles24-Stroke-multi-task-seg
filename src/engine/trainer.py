@@ -234,6 +234,9 @@ class MultiTaskTrainer:
         
         avg_loss = total_loss / max(total_batches, 1)
         
+        avg_grad = total_grad_norm / max(grad_steps, 1)
+        avg_tasks = {t: v / max(n_batches, 1) for t, v in task_loss_sums.items()}
+        
         return avg_loss, avg_tasks, avg_grad
 
     @torch.no_grad()
