@@ -85,20 +85,25 @@ cfg = {**train_cfg, **model_cfg, **data_cfg}
 # %% [code]
 # 5. HÀM CHẠY THÍ NGHIỆM CHÍNH
 def run_experiment(cfg, exp_name="Baseline_ResNet50"):
-    print(f"🚀 Bắt đầu thí nghiệm: {exp_name}")
+    is_main = os.environ.get("RANK", "0") == "0"
+    
+    if is_main:
+        print(f"🚀 Bắt đầu thí nghiệm: {exp_name}")
     
     workspace_dir = Path.cwd()
     if "notebooks" in str(workspace_dir): workspace_dir = workspace_dir.parent
     
     # Download weights
     rad_path = workspace_dir / "configs" / "RadImageNet-ResNet50.pt"
-    download_radimagenet(rad_path)
+    if is_main:
+        download_radimagenet(rad_path)
     cfg["encoder"]["weights"] = str(rad_path)
 
     # --- B. Tìm dữ liệu (Kaggle Support) ---
     if os.environ.get('KAGGLE_KERNEL_RUN_TYPE'):
         kaggle_input = Path("/kaggle/input")
-        print(f"🔍 Đang tự động quét dữ liệu trong {kaggle_input}...")
+        if is_main:
+            print(f"🔍 Đang tự động quét dữ liệu trong {kaggle_input}...")
         # Tìm mọi thư mục bắt đầu bằng sub- trong toàn bộ thư mục input
         all_sub_dirs = list(kaggle_input.rglob("sub-*"))
         patient_dirs = {d.name: d for d in all_sub_dirs if d.is_dir()}
@@ -107,7 +112,8 @@ def run_experiment(cfg, exp_name="Baseline_ResNet50"):
         patient_dirs = {p.name: p for p in data_root.glob("sub-*") if p.is_dir()}
 
     patient_ids = sorted(list(patient_dirs.keys()))
-    print(f"📦 Tổng số bệnh nhân tìm thấy: {len(patient_ids)}")
+    if is_main:
+        print(f"📦 Tổng số bệnh nhân tìm thấy: {len(patient_ids)}")
     
     if len(patient_ids) == 0:
         print("❌ Dừng: Không tìm thấy dữ liệu bệnh nhân (sub-*). Hãy kiểm tra lại Dataset.")
@@ -177,7 +183,7 @@ if __name__ == "__main__":
     #  EXP 0: SANITY CHECK CONFIG
     # ═══════════════════════════════════════════════════════════════
     cfg["training"]["epochs"] = 2
-    cfg["training"]["batch_size"] = 2
+    cfg["training"]["batch_size"] = 8
     cfg["training"]["logging"]["visualize_every"] = 1
     
     # Kiểm tra môi trường chạy:

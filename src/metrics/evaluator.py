@@ -57,13 +57,13 @@ class Evaluator:
         return final
 
     def evaluate_patient(self, pdir: Path) -> dict:
-        img_dir = pdir / "images"
+        img_dir = pdir / "inputs"
         lbl_dir = pdir / "labels"
         
         if not img_dir.exists() or not lbl_dir.exists():
             return None
             
-        slice_files = sorted(list(img_dir.glob("slice_*.npy")))
+        slice_files = sorted(list(img_dir.glob("x_z*.npy")))
         if not slice_files:
             return None
             
@@ -71,7 +71,7 @@ class Evaluator:
         targets_3d = {t: [] for t in self.TASK_NAMES}
         
         for sf in slice_files:
-            lf = lbl_dir / sf.name
+            lf = lbl_dir / sf.name.replace("x_z", "y_z")
             
             # Load
             img = np.load(sf).astype(np.float32)
@@ -89,6 +89,7 @@ class Evaluator:
             
             with torch.autocast(device_type="cuda", dtype=torch.float16):
                 logits = self.model(x)
+                logits = list(logits) # Model returns tuple
                 
             for i, t in enumerate(self.TASK_NAMES):
                 # Apply mask

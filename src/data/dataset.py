@@ -108,9 +108,6 @@ class ISLES24Dataset(Dataset):
         # 1. Clip Perfusion Outliers (Channels 6 to 17) to [-5, 5]
         img[6:18] = np.clip(img[6:18], -5.0, 5.0)
         
-        # Brain mask được tạo SAU transform để khớp với spatial augmentation
-        # Xem: final_brain_mask = (img_t[1:2] > -0.95).float() bên dưới
-        
         # Prepare dict for MONAI
         data = {"image": img, "label": lbl}
         
@@ -121,14 +118,8 @@ class ISLES24Dataset(Dataset):
         lbl_t = data["label"]
         
         # Ensure brain mask matches potential spatial augmentations
-        final_brain_mask = (img_t[1:2] > -0.95)
+        final_brain_mask = (img_t[1:2] > -0.95).float()
         
-        # Convert to float32 (compatible with both numpy and torch)
-        if isinstance(final_brain_mask, np.ndarray):
-            final_brain_mask = final_brain_mask.astype(np.float32)
-        else:
-            final_brain_mask = final_brain_mask.float()
-
         # Final check: ensure everything returned is a torch.Tensor
         if isinstance(img_t, np.ndarray):
             img_t = torch.from_numpy(img_t)
