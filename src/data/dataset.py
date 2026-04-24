@@ -117,16 +117,14 @@ class ISLES24Dataset(Dataset):
         img_t = data["image"]
         lbl_t = data["label"]
         
-        # Ensure brain mask matches potential spatial augmentations
-        final_brain_mask = (img_t[1:2] > -0.95).float()
-        
-        # Final check: ensure everything returned is a torch.Tensor
+        # Convert to tensor first to use torch methods
         if isinstance(img_t, np.ndarray):
             img_t = torch.from_numpy(img_t)
         if isinstance(lbl_t, np.ndarray):
             lbl_t = torch.from_numpy(lbl_t)
-        if isinstance(final_brain_mask, np.ndarray):
-            final_brain_mask = torch.from_numpy(final_brain_mask)
+        
+        # Ensure brain mask matches potential spatial augmentations
+        final_brain_mask = (img_t[1:2] > -0.95).float()
         
         return img_t, lbl_t, final_brain_mask
 
