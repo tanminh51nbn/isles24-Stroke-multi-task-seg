@@ -29,18 +29,11 @@ REPO_URL = "https://github.com/tanminh51nbn/isles24-Stroke-multi-task-seg.git"
 BRANCH = "feat/resnet50-radimagenet"
 REPO_NAME = "isles24-Stroke-multi-task-seg"
 
-if os.environ.get('KAGGLE_KERNEL_RUN_TYPE'):
-    print("🚀 Đang chạy trên Kaggle. Đang thiết lập mã nguồn...")
-    os.chdir("/kaggle/working")
-    if not Path(REPO_NAME).exists():
-        os.system(f"git clone {REPO_URL}")
-    os.chdir(REPO_NAME)
-    os.system(f"git checkout {BRANCH}")
-    os.system("git pull")
-    workspace_dir = Path(os.getcwd())
-else:
-    # Local Setup
-    workspace_dir = Path.cwd()
+# --- A. Setup Environment ---
+workspace_dir = Path.cwd()
+# Nếu đang ở trong thư mục notebooks, lùi lại 1 cấp để ra root repo
+if "notebooks" in str(workspace_dir):
+    workspace_dir = workspace_dir.parent
 
 if str(workspace_dir) not in sys.path:
     sys.path.append(str(workspace_dir))
