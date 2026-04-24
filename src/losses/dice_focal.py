@@ -1,15 +1,14 @@
-from monai.losses import DiceFocalLoss
+from monai.losses import TverskyLoss
 
-def build_cow_loss(lambda_dice: float = 1.0, lambda_focal: float = 1.0, gamma: float = 2.0):
+def build_cow_loss(alpha: float = 0.5, beta: float = 0.5):
     """
-    Dice Focal Loss for CoW Segmentation.
-    Stable structures with focal component to handle difficulty.
+    Tversky Loss (equivalent to Dice with 0.5/0.5) for CoW Segmentation.
+    Switched from DiceFocal to maintain scale consistency with other tasks.
     """
-    return DiceFocalLoss(
+    return TverskyLoss(
         include_background=True, 
         sigmoid=True, 
-        lambda_dice=lambda_dice, 
-        lambda_focal=lambda_focal, 
-        gamma=gamma,
+        alpha=alpha, 
+        beta=beta,
         reduction='mean'
     )

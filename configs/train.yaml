@@ -16,10 +16,9 @@ loss:
     beta: 0.8                     # Trừng phạt cực nặng nếu bỏ sót LVO
     gamma: 2.0                    # Focus vào các ca khó
   cow:
-    type: "dice_focal"
-    lambda_dice: 1.0
-    lambda_focal: 1.0
-    gamma: 2.0
+    type: "tversky"
+    alpha: 0.5
+    beta: 0.5
 
 # ── Multi-task Weighting ────────────────────────────────────────
 # Tổng Loss = w_lesion*L_lesion + w_lvo*L_lvo + w_cow*L_cow

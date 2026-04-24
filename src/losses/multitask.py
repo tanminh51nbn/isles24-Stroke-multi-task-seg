@@ -38,9 +38,8 @@ class MultiTaskLoss(nn.Module):
                 gamma=lvo_p.get("gamma", 2.0)
             ),
             "cow": build_cow_loss(
-                lambda_dice=cow_p.get("lambda_dice", 1.0), 
-                lambda_focal=cow_p.get("lambda_focal", 1.0), 
-                gamma=cow_p.get("gamma", 2.0)
+                alpha=cow_p.get("alpha", 0.5), 
+                beta=cow_p.get("beta", 0.5)
             )
         })
 
