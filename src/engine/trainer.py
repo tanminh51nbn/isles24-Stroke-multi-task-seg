@@ -76,6 +76,7 @@ class MultiTaskTrainer:
         self.epochs = train_cfg["epochs"]
         self.grad_clip_norm = train_cfg.get("grad_clip_norm", 1.0)
         self.log_interval = train_cfg.get("logging", {}).get("log_interval", 10)
+        self.interactive = train_cfg.get("logging", {}).get("interactive", False)
         
         # Freeze config
         self.freeze_epochs = train_cfg.get("freeze_encoder_epochs", 5)
@@ -123,7 +124,14 @@ class MultiTaskTrainer:
 
             start_t = time.time()
 
+            if self.accelerator.is_main_process:
+                print(f"\n🚀 Epoch {epoch+1:02d} started...", flush=True)
+
             train_loss, train_tasks, grad_norm = self._train_one_epoch(epoch)
+            
+            if self.accelerator.is_main_process:
+                print(f"🧪 Running Validation...", flush=True)
+                
             val_loss, val_metrics = self._validate(epoch)
 
             # Visualization every N epochs
@@ -148,7 +156,7 @@ class MultiTaskTrainer:
                     f" | Composite Score: {comp:6.4f} | LR: {lr:.1e} | Time: {elapsed:5.1f}s |\n"
                     f"{separator}"
                 )
-                logger.info(msg)
+                print(msg, flush=True)
 
                 # Checkpoint
                 if comp > self.best_composite:
@@ -159,13 +167,13 @@ class MultiTaskTrainer:
                         "model_state_dict": self.accelerator.unwrap_model(self.model).state_dict(),
                         "composite": comp
                     }, self.ckpt_dir / "best_model.pth")
-                    logger.info(f"  --> Saved new best model (Composite: {comp:.4f})")
+                    print(f"  --> Saved new best model (Composite: {comp:.4f})", flush=True)
                 else:
                     self.patience_counter += 1
 
                 # Early Stopping
                 if self.patience_counter >= self.es_patience:
-                    logger.info(f"Early stopping triggered after {epoch} epochs.")
+                    print(f"Early stopping triggered after {epoch} epochs.", flush=True)
                     break
                     
         # Synchronize across processes before exiting
@@ -179,8 +187,15 @@ class MultiTaskTrainer:
         grad_steps = 0
         n_batches = 0
 
-        # Progress bar disabled for cleaner Kaggle logs
-        for step, (x, y, brain_mask) in enumerate(self.train_loader):
+        loader = self.train_loader
+        if self.interactive:
+            loader = tqdm(
+                self.train_loader, 
+                desc=f"Epoch {epoch+1:02d} [Train]", 
+                disable=not self.accelerator.is_local_main_process
+            )
+
+        for step, (x, y, brain_mask) in enumerate(loader):
             with self.accelerator.accumulate(self.model):
                 with self.accelerator.autocast():
                     preds = self.model(x)
@@ -201,7 +216,6 @@ class MultiTaskTrainer:
                     grad_steps += 1
 
                 self.optimizer.step()
-                self.scheduler.step()
                 self.optimizer.zero_grad()
 
             real_loss = loss.item()
@@ -227,7 +241,15 @@ class MultiTaskTrainer:
         n_batches = 0
         accum = torch.zeros(6, device=self.accelerator.device)
 
-        for x, y, brain_mask in self.val_loader:
+        loader = self.val_loader
+        if self.interactive:
+            loader = tqdm(
+                self.val_loader, 
+                desc=f"Epoch {epoch+1:02d} [Val]  ", 
+                disable=not self.accelerator.is_local_main_process
+            )
+
+        for x, y, brain_mask in loader:
             with self.accelerator.autocast():
                 preds = self.model(x)
                 preds = list(preds)

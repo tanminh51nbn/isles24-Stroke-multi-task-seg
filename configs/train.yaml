@@ -69,6 +69,7 @@ training:
   logging:
     log_interval: 10               # Log mỗi N batches
     visualize_every: 5             # Overlay predictions mỗi N epochs
+    interactive: true             # BẬT để hiện thanh tqdm (Real-time), TẮT để in bảng gọn (Save Version)
     wandb:
       enabled: false               # Set true trên Kaggle + WANDB_API_KEY
       project: "isles24-stroke"

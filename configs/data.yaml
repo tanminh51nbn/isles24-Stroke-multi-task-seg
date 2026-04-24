@@ -11,14 +11,14 @@ kfold:
 
 # ── Sampling ────────────────────────────────────────────────────
 sampling:
-  strategy: random              # Dataset đã xử lý sampling, không dùng WeightedSampler
+  strategy: random # Dataset đã xử lý sampling, không dùng WeightedSampler
   # Strategy hiện tại được xử lý trực tiếp trong Dataset (Downsampling + Oversampling)
-  downsample_neg_ratio: 0.3         # Chỉ giữ 30% slice all-negative
-  lvo_oversample: 3                # Lặp lại slice có LVO 3 lần
+  downsample_neg_ratio: 0.3 # Chỉ giữ 30% slice all-negative
+  lvo_oversample: 3 # Lặp lại slice có LVO 3 lần
 
 # ── DataLoader ──────────────────────────────────────────────────
 dataloader:
-  batch_size: 8                 # 1× T4 15GB — đổi lên 8 khi dùng 2 GPU
+  batch_size: 24
   num_workers: 4
   pin_memory: true
   persistent_workers: true
@@ -28,21 +28,21 @@ dataloader:
 # ── Augmentation ────────────────────────────────────────────────
 augmentation:
   enabled: true
-  
+
   horizontal_flip:
     prob: 0.5
-    
+
   affine:
     prob: 0.5
-    rotate_range: 0.26             # ~15° in radians
-    scale_range: 0.1               # ±10%
-    translate_range: [10, 10]      # pixels
-    
+    rotate_range: 0.26 # ~15° in radians
+    scale_range: 0.1 # ±10%
+    translate_range: [10, 10] # pixels
+
   gaussian_noise:
     prob: 0.3
     mean: 0.0
     std: 0.05
-    
+
   scale_intensity:
     prob: 0.3
     factors: 0.1

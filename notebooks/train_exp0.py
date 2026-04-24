@@ -176,11 +176,6 @@ if __name__ == "__main__":
     # ═══════════════════════════════════════════════════════════════
     #  EXP 1: FULL TRAINING (50 Epochs)
     # ═══════════════════════════════════════════════════════════════
-    cfg["training"]["epochs"] = 50
-    if "dataloader" not in cfg: cfg["dataloader"] = {}
-    cfg["dataloader"]["batch_size"] = 8
-    cfg["training"]["logging"]["visualize_every"] = 5
-    
     exp_name = "Exp1_ResNet50_50E"
     
     # Kiểm tra môi trường chạy:
