@@ -180,6 +180,7 @@ class MultiTaskTrainer:
             with self.accelerator.accumulate(self.model):
                 with self.accelerator.autocast():
                     preds = self.model(x)
+                    preds = list(preds)
                     
                     # Apply mask (background to -1e9)
                     for i in range(len(preds)):
@@ -230,6 +231,7 @@ class MultiTaskTrainer:
         for x, y, brain_mask in pbar:
             with self.accelerator.autocast():
                 preds = self.model(x)
+                preds = list(preds)
                 for i in range(len(preds)):
                     preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
                 loss, _ = self.criterion(preds, y)
@@ -292,6 +294,7 @@ class MultiTaskTrainer:
 
         with self.accelerator.autocast():
             preds = self.model(x)
+            preds = list(preds)
             # Masking
             for i in range(len(preds)):
                 preds[i] = preds[i] * brain_mask + (-1e9) * (1 - brain_mask)
