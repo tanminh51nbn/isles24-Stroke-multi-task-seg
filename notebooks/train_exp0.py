@@ -11,11 +11,14 @@ import sys
 import logging
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 # 1. MÔI TRƯỜNG KAGGLE (Cài đặt dependencies)
 is_main = os.environ.get('LOCAL_RANK', '0') == '0'
+
+if is_main:
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+else:
+    logging.basicConfig(level=logging.WARNING) # Máy phụ chỉ in lỗi, không in thông tin
+logger = logging.getLogger(__name__)
 
 if is_main and os.environ.get('KAGGLE_KERNEL_RUN_TYPE'):
     print("🛠️ Đang cài đặt thư viện (SMP, Monai, Accelerate)...")

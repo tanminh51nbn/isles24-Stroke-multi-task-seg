@@ -17,6 +17,7 @@ decoder:
   # center_block: SMP Unet tự động xây dựng bottleneck nối encoder-decoder
 
 heads:
+  dropout: 0.3                      # Spatial Dropout2d để chống overfitting (Khuyên dùng 0.3 cho dataset nhỏ)
   lesion:
     out_channels: 1                 # Binary segmentation — stroke infarct
   lvo:

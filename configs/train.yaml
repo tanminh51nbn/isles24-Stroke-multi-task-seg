@@ -29,14 +29,14 @@ sampling:
 # Tổng Loss = w_lesion*L_lesion + w_lvo*L_lvo + w_cow*L_cow
 task_weights:
   lesion: 1.0
-  lvo: 3.0
-  cow: 0.8
+  lvo: 10.0
+  cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
   lr: 1.0e-4                       # Lower LR for stable learning
-  weight_decay: 1.0e-4             # L2 regularization (prevent overfitting)
+  weight_decay: 1.0e-3             # L2 regularization (prevent overfitting)
   encoder_lr_scale: 0.1            # Encoder LR = lr × 0.1 = 3e-5 (protect pretrained)
 
 # ── LR Scheduler ───────────────────────────────────────────────

@@ -11,11 +11,13 @@ class MultiTaskHeads(nn.Module):
         lvo_out    = tasks_cfg.get("lvo", {}).get("out_channels", 1) if tasks_cfg else 1
         cow_out    = tasks_cfg.get("cow", {}).get("out_channels", 1) if tasks_cfg else 1
         
+        dropout_rate = tasks_cfg.get("dropout", 0.2) if tasks_cfg else 0.2
+        self.dropout = nn.Dropout2d(p=dropout_rate)
+        
         self.lesion = nn.Conv2d(in_channels, lesion_out, kernel_size=1)
         self.lvo = nn.Conv2d(in_channels, lvo_out, kernel_size=1)
         self.cow = nn.Conv2d(in_channels, cow_out, kernel_size=1)
         # Mỗi head là Conv1×1 độc lập — output raw logits, không sigmoid
-        # Sigmoid được apply trong loss function (numerical stability)
-
     def forward(self, x):
+        x = self.dropout(x)
         return self.lesion(x), self.lvo(x), self.cow(x)

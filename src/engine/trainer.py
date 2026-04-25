@@ -51,7 +51,7 @@ class MultiTaskTrainer:
         train_cfg = cfg["training"]
         
         from accelerate import DistributedDataParallelKwargs
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
 
         # 1. Initialize Accelerate
         self.accelerator = Accelerator(
