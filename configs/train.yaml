@@ -14,7 +14,7 @@ loss:
     type: "focal_tversky"
     alpha: 0.2                    # Rất nhẹ tay với FP
     beta: 0.8                     # Trừng phạt cực nặng nếu bỏ sót LVO
-    gamma: 2.0                    # Focus vào các ca khó
+    gamma: 3.0                    # Focus cực mạnh vào các ca khó
   cow:
     type: "tversky"
     alpha: 0.5
@@ -30,13 +30,13 @@ task_weights:
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
-  lr: 3.0e-4                       # Peak learning rate (decoders + heads)
+  lr: 1.0e-4                       # Lower LR for stable learning
   weight_decay: 1.0e-4             # L2 regularization (prevent overfitting)
   encoder_lr_scale: 0.1            # Encoder LR = lr × 0.1 = 3e-5 (protect pretrained)
 
 # ── LR Scheduler ───────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 5                 # Linear warmup: 0 → lr over 5 epochs
+  warmup_epochs: 8                 # Longer warmup for pretrained weights
   min_lr: 1.0e-6                   # Cosine annealing floor
 
 # ── Training ────────────────────────────────────────────────────
