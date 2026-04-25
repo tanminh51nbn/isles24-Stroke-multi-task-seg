@@ -8,7 +8,11 @@
 # %% [code]
 import os
 import sys
+import logging
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # 1. MÔI TRƯỜNG KAGGLE (Cài đặt dependencies)
 is_main = os.environ.get('LOCAL_RANK', '0') == '0'
