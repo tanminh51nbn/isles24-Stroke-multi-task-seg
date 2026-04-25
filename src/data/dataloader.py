@@ -40,7 +40,7 @@ def build_dataloaders(train_dataset, val_dataset, cfg: dict):
         train_sampler = TaskBalancedBatchSampler(
             task_indices=train_dataset.get_task_indices(),
             batch_size=batch_size,
-            num_batches=samp_cfg.get("num_batches", 1000),
+            num_batches=samp_cfg.get("num_batches", 800),
             rank=int(os.environ.get("RANK", "0")),
             world_size=int(os.environ.get("WORLD_SIZE", "1"))
         )

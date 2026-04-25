@@ -141,19 +141,32 @@ def run_experiment(cfg, exp_name="Baseline_ResNet50"):
     val_paths = [patient_dirs[pid] for pid in val_ids]
     
     from src.data.dataset import build_dataset
+    from src.data.sampler import TaskBalancedBatchSampler
+    
     train_ds = build_dataset(train_paths, cfg, is_train=True)
     val_ds = build_dataset(val_paths, cfg, is_train=False)
     
+    # --- Task-Balanced Batch Sampling ---
+    bs = cfg.get("dataloader", {}).get("batch_size", 24)
+    # 1 Epoch = 1000 batches (Cố định số lượng bước học để ổn định)
+    train_sampler = TaskBalancedBatchSampler(
+        task_indices=train_ds.get_task_indices(),
+        batch_size=bs,
+        num_batches=cfg.get("sampling", {}).get("num_batches", 800),
+        rank=int(os.environ.get("RANK", "0")),
+        world_size=int(os.environ.get("WORLD_SIZE", "1"))
+    )
+
     train_loader = DataLoader(
         train_ds, 
-        batch_size=cfg.get("dataloader", {}).get("batch_size", 4),
-        shuffle=True, 
+        batch_sampler=train_sampler,
         num_workers=cfg.get("dataloader", {}).get("num_workers", 4), 
         pin_memory=cfg.get("dataloader", {}).get("pin_memory", True)
     )
+    
     val_loader = DataLoader(
         val_ds, 
-        batch_size=cfg.get("dataloader", {}).get("batch_size", 4),
+        batch_size=bs,
         shuffle=False, 
         num_workers=cfg.get("dataloader", {}).get("num_workers", 4)
     )
@@ -176,17 +189,38 @@ def run_experiment(cfg, exp_name="Baseline_ResNet50"):
     )
     
     trainer.train()
-
-    # --- F. Final 3D Evaluation ---
+    
+    # --- F. Dọn dẹp bộ nhớ & Đánh giá 3D cuối cùng ---
+    # Giải phóng Optimizer và các biến không cần thiết để lấy chỗ cho 3D Eval
+    del trainer.optimizer, trainer.scheduler, trainer.train_loader
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    # Đợi tất cả GPU dọn dẹp xong
+    trainer.accelerator.wait_for_everyone()
+    
     if is_main:
-        print("\n🏁 Đang tiến hành đánh giá 3D cuối cùng...")
-        evaluator = Evaluator(
-            model=model,
-            patient_dirs=val_paths, # Truyền List[Path]
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        )
-        final_metrics = evaluator.evaluate_all()
-        print(f"✅ Kết quả cuối cùng: {final_metrics}")
+        print("\n🏁 Đang tiến hành đánh giá 3D cuối cùng (Distributed)...")
+    
+    # Lấy mô hình gốc (unwrap) để tránh lỗi đồng bộ DDP
+    eval_model = trainer.accelerator.unwrap_model(model)
+    
+    evaluator = Evaluator(
+        model=eval_model,
+        patient_dirs=val_paths,
+        device=trainer.accelerator.device,
+        accelerator=trainer.accelerator # Truyền accelerator để đồng bộ kết quả
+    )
+    
+    # Cả 2 GPU cùng tham gia đánh giá (chia đôi số bệnh nhân)
+    final_metrics = evaluator.evaluate_all()
+    
+    if is_main:
+        print(f"\n✅ Kết quả cuối cùng (Volume-level):")
+        print(f"   - Lesion Dice: {final_metrics['lesion_dice']:.4f}")
+        print(f"   - LVO F1:      {final_metrics['lvo_f1']:.4f}")
+        print(f"   - CoW Dice:    {final_metrics['cow_dice']:.4f}")
 
 # %% [code]
 from accelerate import notebook_launcher

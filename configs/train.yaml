@@ -19,6 +19,11 @@ loss:
     type: "tversky"
     alpha: 0.5
     beta: 0.5
+    
+# ── Sampling ────────────────────────────────────────────────────
+sampling:
+  enabled: true
+  num_batches: 800                 # Đảm bảo tổng thời gian huấn luyện < 12h
 
 # ── Multi-task Weighting ────────────────────────────────────────
 # Tổng Loss = w_lesion*L_lesion + w_lvo*L_lvo + w_cow*L_cow
@@ -41,9 +46,10 @@ scheduler:
 
 # ── Training ────────────────────────────────────────────────────
 training:
-  epochs: 50
+  epochs: 35
   amp: true                        # Automatic Mixed Precision (float16 forward)
   grad_clip_norm: 1.0              # Max gradient norm — safety net for LVO gradient explosion
+  freeze_encoder_epochs: 5         # Đóng băng Encoder 5 epoch đầu để ổn định Heads
 
   # Composite Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
   composite_weights:

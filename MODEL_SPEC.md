@@ -1,87 +1,64 @@
-# Model Specification — ISLES24 2.5D Multi-Task Segmentation
+# ISLES'24: Technical Whitepaper - Multi-Task 2.5D Stroke Segmentation (v3)
 
-Tài liệu này lưu trữ toàn bộ các quyết định về Kiến trúc, Kỹ thuật tối ưu, Hàm Loss, và Workflow Training được áp dụng trong project.
+## 1. Model Architecture Deep-Dive
 
-## 1. Kiến trúc Tổng thể (Overall Architecture)
-- **Framework Core**: PyTorch + MONAI + segmentation-models-pytorch (SMP)
-- **Dạng bài toán**: 2.5D Multi-Task Image Segmentation.
-- **Paradigm**: Shared Encoder-Decoder (1 Bộ Encoder & Decoder xài chung, 3 Task Heads độc lập).
+### 1.1 Encoder (Backbone)
+- **Base:** ResNet50.
+- **Input Manifold:** 18 channels (NCCT x 1, CTA x 1, Perfusion Maps x 16).
+- **Inflation Layer:** The first `conv1` weight ($W \in \mathbb{R}^{64 \times 3 \times 7 \times 7}$) is transformed into $W_{new} \in \mathbb{R}^{64 \times 18 \times 7 \times 7}$ using:
+  $$W_{new} = \text{Repeat}(\text{Mean}(W, \text{dim}=1), 18) \times \frac{3}{18}$$
+  This ensures that the initial feature activation variance remains consistent with the pre-trained RadImageNet scale.
+- **Pre-trained Weights:** RadImageNet (specifically curated for radiology features like density shifts and vascular structures).
 
-## 2. Đầu vào và Đầu ra
-### 2.1. Đầu vào (Input)
-- **Kích thước Tensor**: `[Batch, 18, 544, 544]`
-- **18 Channels bao gồm**: 6 modalities (NCCT, CTA, Tmax, CBF, CBV, MTT) × 3 lát cắt liên tiếp (Z-1, Z, Z+1). Bộ não AI nhìn được độ sâu không gian trên-dưới chứ không chỉ một mặt phẳng.
+### 1.2 Shared Decoder & Multi-Head Branching
+- **Decoder:** Feature Pyramid style with skip-connections from ResNet blocks.
+- **Bottleneck:** Shared representation layer (16 channels) before splitting into task-specific heads.
+- **Head Separation:** Each head is a $1 \times 1$ Convolutional layer followed by an implicit Sigmoid (handled during loss for numerical stability).
 
-### 2.2. Đầu ra (Output)
-- 3 Tensor độc lập đại diện cho 3 nhãn khác nhau. Mỗi tensor có shape: `[Batch, 1, 544, 544]`.
-- Đầu ra là **Raw Logits** (được xử lý Brain Mask với giá trị `-1e9` ở vùng background trước khi tính Loss).
+## 2. Data Engineering & Augmentation
 
----
+### 2.1 Task-Balanced Sampling (Strict Ratio)
+To combat the sparsity of LVO (Large Vessel Occlusion), the sampler draws from 4 independent pools:
+- **LVO Pool:** Positive for arterial occlusion.
+- **Lesion Pool:** Positive for ischemic core (but LVO negative).
+- **CoW Pool:** Positive for Circle of Willis (Anatomy).
+- **Negative Pool:** Pure background/healthy tissue.
+**Batch Composition (N=24):** 3 LVO, 1 Lesion, 2 CoW, 1 Neg, 17 Mixed.
 
-## 3. Kiến trúc Chi tiết
-### 3.1. Shared Encoder (Bộ trích xuất đặc trưng xài chung)
-- **Backbone:** ResNet-50
-- **Pretrained:** **RadImageNet** (1.35 triệu ảnh y tế CT/MRI).
-- **Kỹ thuật Inflate:** Lớp `conv1` được mở rộng từ 3 lên 18 kênh bằng phương pháp **Average-Repeat**, giúp giữ nguyên dải phân bổ đặc trưng (activation scale) của trọng số pretrained.
+### 2.2 Spatial & Intensity Augmentation
+- **Affine Transforms:** Random Rotation ($\pm 15^\circ$), Scaling ($\pm 10\%$), Translation ($\pm 10$ pixels).
+- **Interpolation:** Bilinear for images; **Nearest Neighbor** for labels to preserve boundary integrity.
+- **Intensity Shifts:** Random Gaussian Noise ($\sigma=0.05$) and Random Intensity Scaling ($\pm 10\%$).
+- **LVO Softening:** Gaussian kernel ($\sigma=5px$) applied to LVO masks to create a learning gradient, while maintaining the "Hard Core" (GT=1.0) using `np.maximum`.
 
-### 3.2. Shared Decoder (Bộ giải mã xài chung)
-- Sử dụng **Shared UNet Decoder** từ thư viện SMP.
-- Việc dùng chung Decoder giúp mô hình học được mối tương quan không gian giữa cục máu đông (LVO) và vùng nhu mô bị tổn thương tương ứng (Lesion).
+## 3. Training & Optimization Logic
 
-### 3.3. Multi-Task Heads
-- 3 nhánh Conv 1x1 độc lập tạo ra dự đoán cho Lesion, LVO và CoW.
+### 3.1 Loss Function Formulation
+The total loss is a weighted sum: $\mathcal{L}_{total} = \sum \lambda_i \mathcal{L}_i$
+- **$\mathcal{L}_{Lesion}$ (Tversky):** $\alpha=0.4, \beta=0.6$. Penalizes False Negatives more to ensure stroke coverage.
+- **$\mathcal{L}_{LVO}$ (Focal Tversky):** $\gamma=3.0$. Focuses the gradient on hard-to-detect small occlusions.
+- **$\mathcal{L}_{CoW}$ (Tversky):** $\alpha=0.5, \beta=0.5$. Balanced segmentation of major vessels.
 
----
+### 3.2 Optimization Protocol
+- **Mixed Precision:** FP16 (AMP) for 2x faster throughput on T4 GPUs.
+- **Learning Rate:** $1.0 \times 10^{-4}$ with **Differential Scaling**.
+  - Encoder LR: $1.0 \times 10^{-5}$ (Fine-tuning).
+  - Decoder/Heads LR: $1.0 \times 10^{-4}$ (Active learning).
+- **Warmup:** 8-epoch linear ramp-up to prevent gradient explosion in early iterations.
+- **Freezing:** 5-epoch encoder freeze to allow the shared decoder to stabilize.
 
-## 4. Hàm Loss và Optimizer
-### 4.1. Loss Function theo Task
-- **Lesion:** `TverskyLoss` (Alpha=0.4, Beta=0.6) — Ưu tiên Recall để không bỏ sót vùng nhồi máu.
-- **LVO:** `FocalTverskyLoss` (Gamma=2.0) — Ép model tập trung vào đốm LVO nhỏ li ti và cực hiếm.
-- **CoW:** `DiceFocalLoss` — Phân đoạn cấu trúc mạch máu ổn định.
+## 4. Evaluation & Inference Workflow
 
-### 4.2. Khâu cân trọng số đa nhiệm (Task Weighting)
-- `Loss_Total = 1.0 * L_Lesion + 3.0 * L_LVO + 0.8 * L_CoW`
-- LVO được nhân hệ số 3.0 do độ khó và tầm quan trọng lâm sàng cao nhất.
+### 4.1 Distributed 3D Inference
+- **Memory Optimization:** 3D volumes are processed in mini-batches of 16 slices.
+- **Aggregation:** Slices are reconstructed into $[Z, H, W]$ volumes.
+- **Post-processing:** Skull-masking is applied to zero out non-brain predictions.
 
----
-
-## 5. Chiến lược Training (ResNet-Centric)
-- **Warmup (Epoch 1-5):** Freeze toàn bộ Encoder. Chỉ cho phép Decoder và Heads học.
-- **Joint Training (Epoch 6-50):** Mở toàn bộ mạng.
-- **Differential Learning Rate:** 
-  - `Encoder LR = 3e-5` (Nhỏ để bảo tồn RadImageNet).
-  - `Head/Decoder LR = 3e-4` (Lớn để học task mới).
-- **Automatic Mixed Precision (AMP):** Chạy `fp16` để tiết kiệm VRAM và tăng tốc trên Kaggle T4.
-
----
-
-## 6. Monitoring & Visualization
-### 6.1. Metrics
-- **Composite Score:** `0.4 * Dice_Lesion + 0.4 * Recall_LVO + 0.2 * Dice_CoW`.
-- **Grad Norm:** Theo dõi độ ổn định của gradient để phát hiện outlier.
-
-### 6.2. Visualization (Định kỳ 5 epoch)
-- Trainer tự động chọn 4 slice chứa LVO/Lesion để vẽ overlay:
-  - Red: LVO | Green: Lesion | Blue: CoW.
+### 4.2 Metrics
+- **Volumetric Dice:** Measures spatial overlap for Lesion and CoW.
+- **Object-level F1:** Centroid-based matching with a $3mm$ (3 voxel) tolerance. This is the primary clinical metric for LVO detection.
+- **Zero-Bias Aggregation:** Uses Global Sum/Count across all DDP ranks to ensure mathematical precision of the final report.
 
 ---
-
-## 7. Thực nghiệm Lần 0 (Exp 0 — Sanity Check)
-Đây là module chạy thử nghiệm đầu tiên để xác nhận tính toàn vẹn của Pipeline trước khi "đốt" GPU cho 50 epoch chính thức.
-
-### 7.1. Cấu hình Exp 0
-- **Epochs:** 1 - 2.
-- **Batch Size:** 2 (Tối thiểu).
-- **Mục tiêu kỹ thuật:**
-  - Xác nhận dữ liệu load đúng (Input shape `18, 544, 544`).
-  - Xác nhận Loss không bị `NaN`.
-  - Xác nhận Brain Mask hoạt động (Ảnh visualization không bị nhiễu ngoài sọ).
-  - Xác nhận Gradient Flow (Grad Norm có giá trị, không bằng 0).
-
-### 7.2. Dấu hiệu vượt qua Sanity Check
-- Có file `.pth` xuất hiện trong thư mục `checkpoints/`.
-- Có file `.png` xuất hiện trong `visualizations/` với hình hài não bộ rõ nét.
-- Log không có thông báo lỗi về Device mismatch hoặc Incompatible shapes.
-
----
-_Tài liệu được cập nhật ngày 24/04/2026 bởi Antigravity AI Agent._
+*Target Hardware: Kaggle Dual T4 (2x16GB VRAM)*
+*Execution Time: ~11 Hours for 35 Epochs*
