@@ -33,31 +33,17 @@ REPO_NAME = "isles24-Stroke-multi-task-seg"
 
 # --- A. Setup Environment ---
 workspace_dir = Path.cwd()
-if "notebooks" in str(workspace_dir):
+# Nếu đang đứng trong folder notebooks, lùi lại 1 cấp để ra root của repo
+if workspace_dir.name == "notebooks":
     os.chdir("..")
     workspace_dir = Path.cwd()
 
-if is_main:
-    # 1. Clone & Checkout (Chỉ chạy trên process chính)
-    if not os.path.exists(REPO_NAME):
-        print(f"🚀 Setting up source code from branch {BRANCH}...")
-        os.system(f"git clone -b {BRANCH} {REPO_URL}")
-    else:
-        print("🚀 Updating source code...")
-        os.system(f"cd {REPO_NAME} && git pull origin {BRANCH}")
-    
-    # 2. Checkout branch cụ thể nếu cần
-    os.system(f"cd {REPO_NAME} && git checkout {BRANCH}")
-else:
-    # Đợi process chính setup xong thư mục
-    import time
-    while not os.path.exists(REPO_NAME):
-        time.sleep(2)
-    time.sleep(1) # Extra buffer
+# Thêm thư mục hiện tại và thư mục src vào Python Path
+sys.path.append(str(workspace_dir))
+sys.path.append(str(workspace_dir / "src"))
 
-# Add to path
-sys.path.append(str(workspace_dir / REPO_NAME / "src"))
-sys.path.append(str(workspace_dir / REPO_NAME))
+if is_main:
+    logger.info(f"🚀 Workspace initialized at: {workspace_dir}")
 try:
     from src.data.dataset import ISLES24Dataset
     from src.models.model import build_model
