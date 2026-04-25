@@ -32,21 +32,38 @@ def build_dataloaders(train_dataset, val_dataset, cfg: dict):
     
     # Training Loader
     samp_cfg = cfg.get("sampling", {})
-    # Dataset đã xử lý sampling trong _build_index()
-    # Không cần WeightedRandomSampler thêm tầng thứ 2
-    sampler = None
-    shuffle = True
+    if samp_cfg.get("enabled", True):
+        from .sampler import TaskBalancedBatchSampler
+        import os
         
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
-        prefetch_factor=prefetch_factor,
-        drop_last=drop_last_train
-    )
+        # Build Task-Balanced Batch Sampler
+        train_sampler = TaskBalancedBatchSampler(
+            task_indices=train_dataset.get_task_indices(),
+            batch_size=batch_size,
+            num_batches=samp_cfg.get("num_batches", 1000),
+            rank=int(os.environ.get("RANK", "0")),
+            world_size=int(os.environ.get("WORLD_SIZE", "1"))
+        )
+        
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=train_sampler,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            prefetch_factor=prefetch_factor
+        )
+        logger.info(f"Using TaskBalancedBatchSampler: {batch_size} BS, 1000 batches/epoch")
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            prefetch_factor=prefetch_factor,
+            drop_last=drop_last_train
+        )
     
     return train_loader, val_loader

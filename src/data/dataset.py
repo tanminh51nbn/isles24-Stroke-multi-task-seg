@@ -5,7 +5,7 @@ from typing import List, Dict
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from scipy.ndimage import binary_dilation
+from scipy.ndimage import binary_dilation, gaussian_filter
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +37,6 @@ class ISLES24Dataset(Dataset):
         self.lvo_oversample = lvo_oversample
         self.lvo_dilation_radius = lvo_dilation_radius
         
-        if self.lvo_dilation_radius > 0:
-            self.lvo_kernel = create_disk_kernel(self.lvo_dilation_radius)
-        
         self.slices = []
         self._build_index()
         
@@ -67,48 +64,42 @@ class ISLES24Dataset(Dataset):
             logger.info(f"Validation Dataset: {len(self.slices)} slices loaded.")
             return
             
-        # Training sampling logic
-        final_slices = []
-        rng = np.random.default_rng(seed=42)
-        stats = {"total": 0, "neg": 0, "pos": 0, "lvo": 0, "cow": 0, "les": 0}
+        # 4 Pools for Task-Balanced Sampling
+        self.task_pools = {
+            "lvo": [],
+            "lesion": [],
+            "cow": [],
+            "neg": []
+        }
         
-        for item in raw_slices:
-            stats["total"] += 1
-            
-            # Fast check label presence without loading entire array if possible
-            # But for simplicity and robustness, we load it here to check if it's positive.
-            # In a real scenario with huge dataset, we should cache metadata.
-            # Assuming labels are small enough to load quickly during init.
-            lbl = np.load(item["label"], mmap_mode='r') # [3, 544, 544]
+        for i, item in enumerate(raw_slices):
+            lbl = np.load(item["label"], mmap_mode='r')
             
             has_lesion = lbl[0].max() > 0
             has_lvo = lbl[1].max() > 0
             has_cow = lbl[2].max() > 0
             
-            is_positive = has_lesion or has_lvo or has_cow
-            
-            if is_positive:
-                stats["pos"] += 1
-                if has_lesion: stats["les"] += 1
-                if has_lvo: stats["lvo"] += 1
-                if has_cow: stats["cow"] += 1
-                
-                # Oversample LVO
-                repeats = self.lvo_oversample if has_lvo else 1
-                for _ in range(repeats):
-                    final_slices.append(dict(item))
+            # Ưu tiên LVO > Lesion > CoW > Neg để đảm bảo tính duy nhất trong pool
+            if has_lvo:
+                self.task_pools["lvo"].append(i)
+            elif has_lesion:
+                self.task_pools["lesion"].append(i)
+            elif has_cow:
+                self.task_pools["cow"].append(i)
             else:
-                stats["neg"] += 1
-                # Downsample negative
-                if rng.random() <= self.downsample_neg_ratio:
-                    final_slices.append(item)
-                    
-        self.slices = final_slices
-        logger.info(f"Training Dataset Stats (Raw): {stats}")
-        logger.info(f"Training Dataset Final Size: {len(self.slices)} slices (Neg ratio: {self.downsample_neg_ratio}, LVO oversample: {self.lvo_oversample})")
+                self.task_pools["neg"].append(i)
+                
+        self.slices = raw_slices
+        
+        if self.is_train:
+            logger.info(f"Dataset Pools: LVO={len(self.task_pools['lvo'])}, Lesion={len(self.task_pools['lesion'])}, CoW={len(self.task_pools['cow'])}, Neg={len(self.task_pools['neg'])}")
 
     def __len__(self):
         return len(self.slices)
+    
+    def get_task_indices(self):
+        """Trả về các kho chứa chỉ mục cho Sampler."""
+        return self.task_pools
 
     def __getitem__(self, idx):
         item = self.slices[idx]
@@ -117,14 +108,22 @@ class ISLES24Dataset(Dataset):
         img = np.load(item["image"]).astype(np.float32) # [18, 544, 544]
         lbl = np.load(item["label"]).astype(np.float32) # [3, 544, 544]
         
-        # 0. LVO Label Dilation (To help localization)
+        # 0. LVO Label Softening (Hard Core - Soft Shell)
+        # Bán kính 5px tương đương sigma=2.0 để tạo quầng mờ mượt mà
         if self.lvo_dilation_radius > 0:
             lvo_mask = lbl[1] > 0
             if lvo_mask.any():
-                dilated = binary_dilation(lvo_mask, structure=self.lvo_kernel)
-                lbl[1] = dilated.astype(np.float32)
+                # Tạo quầng mờ Gaussian
+                sigma = self.lvo_dilation_radius / 2.5 # Rule of thumb for radius mapping
+                soft = gaussian_filter(lvo_mask.astype(np.float32), sigma=sigma)
+                if soft.max() > 0:
+                    soft = soft / soft.max()
+                
+                # Kết hợp: Lõi nhãn thật = 1.0, Xung quanh mờ dần
+                lbl[1] = np.maximum(lvo_mask.astype(np.float32), soft)
         
         # 1. Clip Perfusion Outliers (Channels 6 to 17) to [-5, 5]
+        # Keep as a safety measure for extreme z-scores in already normalized data
         img[6:18] = np.clip(img[6:18], -5.0, 5.0)
         
         # Prepare dict for MONAI
