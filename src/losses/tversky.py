@@ -1,9 +1,8 @@
 from monai.losses import TverskyLoss
 
-def build_lesion_loss(alpha: float = 0.4, beta: float = 0.6):
+def build_tversky_loss(alpha: float = 0.5, beta: float = 0.5):
     """
-    Tversky Loss for Lesion Segmentation.
-    Favors Recall (penalizes FN) with alpha=0.4, beta=0.6.
+    Generic Tversky Loss.
     """
     return TverskyLoss(
         include_background=True, 

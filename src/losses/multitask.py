@@ -1,12 +1,11 @@
 import torch
 import torch.nn as nn
-from .tversky import build_lesion_loss
-from .focal_tversky import build_lvo_loss
-from .dice_focal import build_cow_loss
+from .tversky import build_tversky_loss
+from .focal_tversky import build_focal_tversky_loss
 
 class MultiTaskLoss(nn.Module):
     """
-    Combines Lesion, LVO, and CoW losses with configurable weights.
+    Combines Multiple Task Losses (Tversky, Focal Tversky) with configurable weights.
     """
     TASK_NAMES = ("lesion", "lvo", "cow")
 
@@ -21,23 +20,23 @@ class MultiTaskLoss(nn.Module):
             "cow": weights_cfg.get("cow", 0.8),
         }
         
-        # Criterions - Read detailed params from loss section
+        # Criterions - Logic selecting algorithm based on config or task
         loss_cfg = cfg.get("loss", {})
         les_p = loss_cfg.get("lesion", {})
         lvo_p = loss_cfg.get("lvo", {})
         cow_p = loss_cfg.get("cow", {})
 
         self.criterions = nn.ModuleDict({
-            "lesion": build_lesion_loss(
+            "lesion": build_tversky_loss(
                 alpha=les_p.get("alpha", 0.4), 
                 beta=les_p.get("beta", 0.6)
             ),
-            "lvo": build_lvo_loss(
+            "lvo": build_focal_tversky_loss(
                 alpha=lvo_p.get("alpha", 0.2), 
                 beta=lvo_p.get("beta", 0.8), 
-                gamma=lvo_p.get("gamma", 2.0)
+                gamma=lvo_p.get("gamma", 3.0)
             ),
-            "cow": build_cow_loss(
+            "cow": build_tversky_loss(
                 alpha=cow_p.get("alpha", 0.5), 
                 beta=cow_p.get("beta", 0.5)
             )

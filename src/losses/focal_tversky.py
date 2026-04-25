@@ -24,5 +24,5 @@ class FocalTverskyLoss(nn.Module):
         focal_tversky = torch.pow(tversky_loss + 1e-6, self.gamma)
         return focal_tversky.mean()
 
-def build_lvo_loss(alpha: float = 0.2, beta: float = 0.8, gamma: float = 2.0):
+def build_focal_tversky_loss(alpha: float = 0.2, beta: float = 0.8, gamma: float = 2.0):
     return FocalTverskyLoss(alpha=alpha, beta=beta, gamma=gamma)
