@@ -164,10 +164,15 @@ class MultiTaskTrainer:
                     f" ├─────────────────────────┼─────────────────────────┼─────────────────────────┤\n"
                     f" │ Lesion Dice: {val_metrics.get('dice_lesion', 0):8.4f} │ CoW Dice: {val_metrics.get('dice_cow', 0):8.4f}    │ LVO Recall: {val_metrics.get('recall_lvo', 0):8.4f}  │\n"
                     f" ├─────────────────────────┼─────────────────────────┼─────────────────────────┤\n"
-                    f" │ Score: {comp:14.4f} │ LR: {lr:.1e}           │ Time: {elapsed:10.1f}s     │\n"
+                    f" │ Score: {comp:14.4f} │ LVO Pos: {val_metrics.get('lvo_pos_rate', 0)*100:6.2f}%    │ LR: {lr:.1e}           │\n"
                     f" └─────────────────────────┴─────────────────────────┴─────────────────────────┘"
                 )
                 print(msg, flush=True)
+
+                # Sanity Check Message
+                lvo_pos_rate = val_metrics.get('lvo_pos_rate', 0) * 100
+                status = "✅ STABLE" if lvo_pos_rate < 5.0 else "⚠️ OVER-PREDICTING"
+                print(f" [Sanity Check] LVO Predicted Pixels: {lvo_pos_rate:.3f}% ({status})", flush=True)
 
                 # Checkpoint
                 if comp > self.best_composite:
@@ -259,7 +264,7 @@ class MultiTaskTrainer:
         running_loss = 0.0
         n_batches = 0
         task_loss_sums = {t: 0.0 for t in self.TASK_NAMES}
-        accum = torch.zeros(6, device=self.accelerator.device)
+        accum = torch.zeros(8, device=self.accelerator.device) # Increased to 8 for PosRate
 
         loader = self.val_loader
         if self.interactive:
@@ -296,6 +301,12 @@ class MultiTaskTrainer:
             inter_c, union_c = _dice_score(preds[2], y[:, 2:3], brain_mask)
             accum[4] += inter_c
             accum[5] += union_c
+            
+            # 4. LVO Positive Rate (Sanity Check)
+            lvo_pos = (torch.sigmoid(preds[1]) > 0.5).float().sum()
+            total_px = brain_mask.sum()
+            accum[6] += lvo_pos
+            accum[7] += total_px
 
         # Global sync
         accum = self.accelerator.reduce(accum, reduction="sum")
@@ -324,6 +335,7 @@ class MultiTaskTrainer:
                 "dice_lesion": d_les,
                 "recall_lvo": r_lvo,
                 "dice_cow": d_cow,
+                "lvo_pos_rate": (accum[6] / (accum[7] + 1e-6)).item(),
                 "composite_score": comp,
                 "task_losses": avg_tasks
             }
