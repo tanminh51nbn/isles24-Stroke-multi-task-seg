@@ -152,7 +152,7 @@ class Trainer:
                 f"({nan_input_batches} do dữ liệu lỗi, {nan_batches - nan_input_batches} do AMP overflow).",
                 flush=True
             )
-
+        return {"train_loss": total_loss / max(n_batches, 1)}
 
     # ── Validation ────────────────────────────────────────────────────────────
 
