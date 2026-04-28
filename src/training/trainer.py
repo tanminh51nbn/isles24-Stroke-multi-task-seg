@@ -80,15 +80,30 @@ class Trainer:
 
     def train_one_epoch(self, epoch: int) -> dict:
         self.model.train()
-        total_loss = 0.0
-        n_batches  = 0
+        total_loss  = 0.0
+        n_batches   = 0
         nan_batches = 0
-        # Flag dùng để đồng bộ quyết định NaN giữa các rank
+        nan_input_batches = 0
         nan_flag = torch.zeros(1, device=self.device)
 
         for batch_idx, batch in enumerate(self.train_loader):
             inp = batch["input"].to(self.device, non_blocking=True)   # (B, 18, H, W)
             lbl = batch["label"].to(self.device, non_blocking=True)   # (B, 3, H, W)
+
+            # ── Stage 1: Kiểm tra NaN trong Input Data ───────────────────────
+            # Nguyên nhân: một số file .npy Perfusion có thể chứa NaN/inf
+            # do lỗi trong quá trình tiền xử lý (chia 0, thiếu scan).
+            # Phải check TRƯỚC forward pass để tránh nhiễm toàn bộ batch.
+            nan_flag.fill_(0.0)
+            if not torch.isfinite(inp).all():
+                nan_flag.fill_(1.0)
+            dist.all_reduce(nan_flag, op=dist.ReduceOp.MAX)
+
+            if nan_flag.item() > 0:
+                nan_batches += 1
+                nan_input_batches += 1
+                continue  # Cả 2 rank đồng thuận skip → không deadlock
+            # ─────────────────────────────────────────────────────────────────
 
             self.optimizer.zero_grad(set_to_none=True)
 
@@ -97,21 +112,17 @@ class Trainer:
                 preds  = self.model(inp)
                 losses = self.loss_fn(preds, lbl)
 
-            # ── NaN Guard ────────────────────────────────────────────────────────
-            # Bắt buộc đồng bộ quyết định giữa các rank qua all_reduce.
-            # Nếu bỏ qua bằng `continue` độc lập, mỗi rank sẽ có số lượng
-            # ALLREDUCE khác nhau → NCCL deadlock (timeout sau 10 phút).
+            # ── Stage 2: Kiểm tra NaN trong Loss (AMP overflow) ──────────────
             nan_flag.fill_(0.0)
             if not torch.isfinite(losses["total"]):
                 nan_flag.fill_(1.0)
-            # Tất cả rank phải gọi all_reduce — nhận MAX (1 rank NaN → tất cả skip)
             dist.all_reduce(nan_flag, op=dist.ReduceOp.MAX)
 
             if nan_flag.item() > 0:
                 nan_batches += 1
                 self.optimizer.zero_grad(set_to_none=True)
                 continue
-            # ──────────────────────────────────────────────────────────────────
+            # ─────────────────────────────────────────────────────────────────
 
             # Backward với GradScaler
             self.scaler.scale(losses["total"]).backward()
@@ -136,11 +147,15 @@ class Trainer:
                 )
 
         if self.rank == 0 and nan_batches > 0:
-            print(f"  [WARN] Epoch {epoch+1}: {nan_batches}/{len(self.train_loader)} batches bị NaN (bỏ qua).", flush=True)
+            print(
+                f"  [WARN] Epoch {epoch+1}: {nan_batches}/{len(self.train_loader)} batches bị NaN "
+                f"({nan_input_batches} do dữ liệu lỗi, {nan_batches - nan_input_batches} do AMP overflow).",
+                flush=True
+            )
 
-        return {"train_loss": total_loss / max(n_batches, 1)}
 
     # ── Validation ────────────────────────────────────────────────────────────
+
 
     @torch.no_grad()
     def validate(self) -> dict:
