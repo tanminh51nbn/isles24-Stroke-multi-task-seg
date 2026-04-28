@@ -85,6 +85,12 @@ def train_worker(rank: int, world_size: int, args):
     config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
     config = load_configs(config_dir)
 
+    # Ghi đè đường dẫn weights nếu có truyền từ CLI
+    if args.cta_weights:
+        config["cta_encoder"]["weights"] = args.cta_weights
+    if args.perf_weights:
+        config["perfusion_encoder"]["weights"] = args.perf_weights
+
     # ── DataLoader ────────────────────────────────────────────────
     train_loader, val_loader = build_dataloaders(
         config=config,
@@ -171,7 +177,20 @@ def main():
         default="/kaggle/working/outputs",
         help="Thư mục lưu checkpoint và visualization",
     )
+    parser.add_argument(
+        "--cta_weights",
+        type=str,
+        default=None,
+        help="Đường dẫn tùy chỉnh tới trọng số ResNet50",
+    )
+    parser.add_argument(
+        "--perf_weights",
+        type=str,
+        default=None,
+        help="Đường dẫn tùy chỉnh tới trọng số DenseNet121",
+    )
     args = parser.parse_args()
+
 
     world_size = torch.cuda.device_count()
     if world_size < 1:
