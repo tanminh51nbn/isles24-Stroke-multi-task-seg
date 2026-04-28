@@ -99,7 +99,7 @@ class Trainer:
             if not torch.isfinite(losses["total"]):
                 nan_batches += 1
                 if self.rank == 0 and (batch_idx + 1) % self.log_interval == 0:
-                    print(f"  [WARN] Epoch {epoch+1} | Batch {batch_idx+1}: NaN loss detected, skipping batch.")
+                    print(f"  [WARN] Epoch {epoch+1} | Batch {batch_idx+1}: NaN loss detected, skipping batch.", flush=True)
                 self.optimizer.zero_grad(set_to_none=True)
                 continue
 
@@ -116,16 +116,17 @@ class Trainer:
             total_loss += losses["total"].item()
             n_batches  += 1
 
-            # Log mỗi N batch
+            # Log mỗi N batch — flush=True để output hiển thị ngay trong Kaggle Notebook
             if self.rank == 0 and (batch_idx + 1) % self.log_interval == 0:
                 print(
                     f"  Epoch {epoch+1} | Batch {batch_idx+1}/{len(self.train_loader)} "
                     f"| Loss: {losses['total']:.4f} "
-                    f"(L={losses['lesion']:.4f}, LVO={losses['lvo']:.4f}, C={losses['cow']:.4f})"
+                    f"(L={losses['lesion']:.4f}, LVO={losses['lvo']:.4f}, C={losses['cow']:.4f})",
+                    flush=True
                 )
 
         if self.rank == 0 and nan_batches > 0:
-            print(f"  [WARN] Epoch {epoch+1}: {nan_batches}/{len(self.train_loader)} batches bị NaN (bỏ qua).")
+            print(f"  [WARN] Epoch {epoch+1}: {nan_batches}/{len(self.train_loader)} batches bị NaN (bỏ qua).", flush=True)
 
         return {"train_loss": total_loss / max(n_batches, 1)}
 
@@ -198,7 +199,8 @@ class Trainer:
                     f"Dice_L: {val_metrics['dice_lesion']:.4f} | "
                     f"Recall_LVO: {val_metrics['recall_lvo']:.4f} | "
                     f"Dice_CoW: {val_metrics['dice_cow']:.4f} | "
-                    f"Composite: {val_metrics['composite']:.4f}"
+                    f"Composite: {val_metrics['composite']:.4f}",
+                    flush=True
                 )
 
             # Lưu history
@@ -212,7 +214,7 @@ class Trainer:
             if early_stopping is not None:
                 if early_stopping(val_metrics["composite"]):
                     if self.rank == 0:
-                        print(f"[Trainer] Early stopping tại epoch {epoch+1}")
+                        print(f"[Trainer] Early stopping tại epoch {epoch+1}", flush=True)
                     break
 
         return self.history
