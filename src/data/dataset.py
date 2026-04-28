@@ -36,8 +36,17 @@ class ISLES24Dataset(Dataset):
         # Input: float32, shape (18, 256, 256), range [0, 1]
         inp = torch.from_numpy(data["input"].astype(np.float32))
 
-        # Label: float32 (BCEWithLogitsLoss cần float), shape (3, 256, 256), values {0, 1}
+        # Label: float32, shape (3, 256, 256), values {0, 1}
         lbl = torch.from_numpy(data["label"].astype(np.float32))
+
+        # ── Sanitize NaN/inf ────────────────────────────────────────────────
+        # Một số kênh Perfusion (Tmax, CBF, CBV, MTT) có thể chứa NaN/inf
+        # do thiếu dữ liệu scan hoặc lỗi trong bước tiền xử lý (chia cho 0).
+        # Thay NaN → 0.0, +inf → 0.0, -inf → 0.0 để giữ tensor hợp lệ.
+        # nan_to_num an toàn: không thay đổi giá trị bình thường, chỉ xử lý giá trị lỗi.
+        inp = torch.nan_to_num(inp, nan=0.0, posinf=0.0, neginf=0.0)
+        lbl = torch.nan_to_num(lbl, nan=0.0, posinf=0.0, neginf=0.0)
+        # ────────────────────────────────────────────────────────────────────
 
         sample = {"input": inp, "label": lbl, "path": path}
 
@@ -45,6 +54,7 @@ class ISLES24Dataset(Dataset):
             sample = self.transform(sample)
 
         return sample
+
 
 
 def build_dataset(

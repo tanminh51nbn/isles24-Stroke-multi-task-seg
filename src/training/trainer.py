@@ -170,15 +170,24 @@ class Trainer:
             inp = batch["input"].to(self.device, non_blocking=True)
             lbl = batch["label"].to(self.device, non_blocking=True)
 
+            # Bỏ qua batch nếu input data bị NaN (file .npy lỗi)
+            if not torch.isfinite(inp).all():
+                continue
+
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 preds = self.model(inp)
+
+            # Bỏ qua batch nếu model output bị NaN
+            pred_ok = all(torch.isfinite(v).all() for v in preds.values())
+            if not pred_ok:
+                continue
 
             metrics = compute_all_metrics(preds, lbl, self.metric_weights)
             for k in sum_metrics:
                 sum_metrics[k] += metrics[k]
             n_batches += 1
 
-        # Mean qua tất cả batch
+        # Mean qua tất cả batch hợp lệ
         avg = {k: v / max(n_batches, 1) for k, v in sum_metrics.items()}
         return avg
 
