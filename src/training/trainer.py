@@ -18,7 +18,7 @@ Features:
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+import torch.distributed as dist
 from torch.utils.data import DataLoader
 from typing import Optional
 
@@ -83,6 +83,8 @@ class Trainer:
         total_loss = 0.0
         n_batches  = 0
         nan_batches = 0
+        # Flag dùng để đồng bộ quyết định NaN giữa các rank
+        nan_flag = torch.zeros(1, device=self.device)
 
         for batch_idx, batch in enumerate(self.train_loader):
             inp = batch["input"].to(self.device, non_blocking=True)   # (B, 18, H, W)
@@ -90,18 +92,26 @@ class Trainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            # Forward với AMP (API mới)
+            # Forward với AMP
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 preds  = self.model(inp)
                 losses = self.loss_fn(preds, lbl)
 
-            # NaN Guard: bỏ qua batch nếu loss bị tràn số (float16 overflow)
+            # ── NaN Guard ────────────────────────────────────────────────────────
+            # Bắt buộc đồng bộ quyết định giữa các rank qua all_reduce.
+            # Nếu bỏ qua bằng `continue` độc lập, mỗi rank sẽ có số lượng
+            # ALLREDUCE khác nhau → NCCL deadlock (timeout sau 10 phút).
+            nan_flag.fill_(0.0)
             if not torch.isfinite(losses["total"]):
+                nan_flag.fill_(1.0)
+            # Tất cả rank phải gọi all_reduce — nhận MAX (1 rank NaN → tất cả skip)
+            dist.all_reduce(nan_flag, op=dist.ReduceOp.MAX)
+
+            if nan_flag.item() > 0:
                 nan_batches += 1
-                if self.rank == 0 and (batch_idx + 1) % self.log_interval == 0:
-                    print(f"  [WARN] Epoch {epoch+1} | Batch {batch_idx+1}: NaN loss detected, skipping batch.", flush=True)
                 self.optimizer.zero_grad(set_to_none=True)
                 continue
+            # ──────────────────────────────────────────────────────────────────
 
             # Backward với GradScaler
             self.scaler.scale(losses["total"]).backward()
