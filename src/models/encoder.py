@@ -179,22 +179,29 @@ class DenseNet121Encoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         """
+        Skip connections được lấy TRƯỚC Transition layers (trước khi downsample).
+        Đảm bảo spatial size khớp với ResNet encoder ở mỗi level.
+
         Returns:
             List 5 feature maps từ nông → sâu:
-            [d1(64ch), d2(128ch), d3(256ch), d4(512ch), d5(1024ch)]
+            [d1(64,H/2), d2(256,H/4), d3(512,H/8), d4(1024,H/16), d5(1024,H/32)]
         """
-        d1  = self.stage0(x)           # (B, 64,   H/2,  W/2)
-        x   = self.pool(d1)            # (B, 64,   H/4,  W/4)
-        d2  = self.stage1(x)           # (B, 256,  H/4,  W/4)  — DenseNet raw
-        d2  = self.trans1(d2)          # (B, 128,  H/8,  W/8)  — sau transition
-        d3  = self.stage2(d2)          # (B, 512,  H/8,  W/8)
-        d3  = self.trans2(d3)          # (B, 256,  H/16, W/16)
-        d4  = self.stage3(d3)          # (B, 1024, H/16, W/16)
-        d4  = self.trans3(d4)          # (B, 512,  H/32, W/32)
-        d5  = self.stage4(d4)          # (B, 1024, H/32, W/32)
+        d1 = self.stage0(x)         # (B, 64,   H/2,  W/2)
+        x  = self.pool(d1)          # (B, 64,   H/4,  W/4)
 
-        # Lấy skip trước transition (độ phân giải đầy đủ hơn)
+        d2 = self.stage1(x)         # (B, 256,  H/4,  W/4) ← skip trước trans1
+        x  = self.trans1(d2)        # (B, 128,  H/8,  W/8)
+
+        d3 = self.stage2(x)         # (B, 512,  H/8,  W/8) ← skip trước trans2
+        x  = self.trans2(d3)        # (B, 256,  H/16, W/16)
+
+        d4 = self.stage3(x)         # (B, 1024, H/16, W/16) ← skip trước trans3
+        x  = self.trans3(d4)        # (B, 512,  H/32, W/32)
+
+        d5 = self.stage4(x)         # (B, 1024, H/32, W/32)
+
         return [d1, d2, d3, d4, d5]
+
 
 
 # ─── Factory ─────────────────────────────────────────────────────────────────

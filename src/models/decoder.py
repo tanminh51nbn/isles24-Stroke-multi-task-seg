@@ -87,11 +87,16 @@ class UNetDecoder(nn.Module):
             ConvBnRelu(1024, 1024),
         )
 
-        # skip_ch = tổng kênh skip từ 2 encoder tại mỗi level
-        self.dec4 = DecoderBlock(in_ch=1024, skip_ch=1536, out_ch=512)
-        self.dec3 = DecoderBlock(in_ch=512,  skip_ch=768,  out_ch=256)
-        self.dec2 = DecoderBlock(in_ch=256,  skip_ch=384,  out_ch=128)
+        # skip_ch = cta_skip + densenet_skip tại mỗi level (trước Transition)
+        # dec4: s4(1024) + d4(1024) = 2048
+        # dec3: s3(512)  + d3(512)  = 1024
+        # dec2: s2(256)  + d2(256)  = 512
+        # dec1: s1(64)   + d1(64)   = 128
+        self.dec4 = DecoderBlock(in_ch=1024, skip_ch=2048, out_ch=512)
+        self.dec3 = DecoderBlock(in_ch=512,  skip_ch=1024, out_ch=256)
+        self.dec2 = DecoderBlock(in_ch=256,  skip_ch=512,  out_ch=128)
         self.dec1 = DecoderBlock(in_ch=128,  skip_ch=128,  out_ch=64)
+
 
         # Upsample cuối từ H/2 → H (full resolution) + compress
         self.final_upsample = nn.Sequential(
