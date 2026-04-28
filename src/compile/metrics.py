@@ -69,12 +69,14 @@ def recall_score(
     TP = (preds * targets).sum(dim=1)
     FN = ((1 - preds) * targets).sum(dim=1)
 
-    # Chỉ tính recall cho những slice thực sự có LVO (tránh NaN khi target = 0)
-    has_lvo = targets.sum(dim=1) > 0
-    recall = (TP + smooth) / (TP + FN + smooth)
+    has_lvo = targets.sum(dim=1) > 0  # Chỉ tính trên slice thực sự có LVO
 
     if has_lvo.sum() == 0:
-        return torch.tensor(1.0)  # Không có LVO → không có gì để bỏ sót
+        # Batch không có LVO ground truth → trả về -1 (sentinel)
+        # Validate loop sẽ bỏ qua batch này, không tính vào trung bình
+        return torch.tensor(-1.0)
+
+    recall = (TP + smooth) / (TP + FN + smooth)
     return recall[has_lvo].mean()
 
 

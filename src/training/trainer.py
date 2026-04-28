@@ -161,10 +161,11 @@ class Trainer:
     def validate(self) -> dict:
         self.model.eval()
 
-        sum_metrics = {
-            "dice_lesion": 0.0, "recall_lvo": 0.0, "dice_cow": 0.0, "composite": 0.0
-        }
-        n_batches = 0
+        sum_dice_lesion = 0.0
+        sum_recall_lvo  = 0.0
+        sum_dice_cow    = 0.0
+        n_batches     = 0   # Batch hợp lệ (dùng cho Dice_L và Dice_CoW)
+        n_lvo_batches = 0   # Batch thực sự có LVO (dùng riêng cho Recall)
 
         for batch in self.val_loader:
             inp = batch["input"].to(self.device, non_blocking=True)
@@ -183,13 +184,33 @@ class Trainer:
                 continue
 
             metrics = compute_all_metrics(preds, lbl, self.metric_weights)
-            for k in sum_metrics:
-                sum_metrics[k] += metrics[k]
+
+            sum_dice_lesion += metrics["dice_lesion"]
+            sum_dice_cow    += metrics["dice_cow"]
             n_batches += 1
 
-        # Mean qua tất cả batch hợp lệ
-        avg = {k: v / max(n_batches, 1) for k, v in sum_metrics.items()}
-        return avg
+            # Recall_LVO: chỉ tính trên batch thực sự có LVO ground truth
+            # recall_score trả về -1.0 (sentinel) khi batch không có LVO
+            if metrics["recall_lvo"] >= 0:
+                sum_recall_lvo += metrics["recall_lvo"]
+                n_lvo_batches  += 1
+
+        avg_dice_lesion = sum_dice_lesion / max(n_batches, 1)
+        avg_recall_lvo  = sum_recall_lvo  / max(n_lvo_batches, 1)
+        avg_dice_cow    = sum_dice_cow    / max(n_batches, 1)
+        avg_composite   = (
+            self.metric_weights["dice_lesion_weight"] * avg_dice_lesion +
+            self.metric_weights["recall_lvo_weight"]  * avg_recall_lvo  +
+            self.metric_weights["dice_cow_weight"]    * avg_dice_cow
+        )
+
+        return {
+            "dice_lesion": avg_dice_lesion,
+            "recall_lvo":  avg_recall_lvo,
+            "dice_cow":    avg_dice_cow,
+            "composite":   avg_composite,
+        }
+
 
     # ── Vòng lặp chính ───────────────────────────────────────────────────────
 
