@@ -47,7 +47,7 @@ scheduler:
 
 # ── Training ────────────────────────────────────────────────────
 training:
-  epochs: 40
+  epochs: 50
   amp: true                 # Automatic Mixed Precision (float16) — bắt buộc trên T4
   grad_clip_norm: 1.0       # Clip gradient để tránh LVO loss explode (weight 10x)
   freeze_encoder_epochs: 5  # Đóng băng cả 2 encoder trong 5 epoch đầu

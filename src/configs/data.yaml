@@ -19,8 +19,8 @@ sampling:
 
 # ── DataLoader ───────────────────────────────────────────────────
 dataloader:
-  batch_size: 12            # Trên mỗi GPU (2 GPU → effective batch = 24)
-  num_workers: 4
+  batch_size: 16            # Trên mỗi GPU (2 GPU → effective batch = 24)
+  num_workers: 2
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
