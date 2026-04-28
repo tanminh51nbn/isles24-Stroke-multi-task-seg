@@ -9,20 +9,20 @@ loss:
     type: "tversky"
     alpha: 0.4              # Phạt FP (đoán nhầm vùng lành là bệnh)
     beta: 0.6               # Phạt FN (bỏ sót vùng bệnh) — quan trọng hơn
-    weight: 1.0             # Task weight trong tổng loss
+    weight: 2.0             # Task weight trong tổng loss
 
   lvo:
     type: "focal_tversky"
-    alpha: 0.2              # Tăng nhẹ alpha để cân bằng
-    beta: 0.8               # Giảm beta từ 0.8 -> 0.7 (bớt phạt nặng FN giai đoạn đầu)
+    alpha: 0.3              # Tăng nhẹ alpha để cân bằng
+    beta: 0.7               # Giảm beta từ 0.8 -> 0.7 (bớt phạt nặng FN giai đoạn đầu)
     gamma: 2.0              # Giảm gamma từ 3.0 -> 2.0 để tránh NaN/Gradient Explosion
-    weight: 5             # Giảm weight từ 10x -> 5x để ổn định training
+    weight: 3.25             # Giảm weight từ 10x -> 5x để ổn định training
 
   cow:
     type: "tversky"
     alpha: 0.5
     beta: 0.5               # Cân bằng — CoW là giải phẫu bình thường, ít biến động
-    weight: 0.5             # Nhiệm vụ phụ trợ
+    weight: 0.75             # Nhiệm vụ phụ trợ
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
@@ -42,7 +42,7 @@ optimizer:
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 8          # Linear ramp-up từ 0 → base_lr trong 8 epoch đầu
+  warmup_epochs: 10         # Linear ramp-up từ 0 → base_lr trong 8 epoch đầu
   min_lr: 1.0e-6            # Sàn cho CosineAnnealing
 
 # ── Training ────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ training:
   epochs: 50
   amp: true                 # Automatic Mixed Precision (float16) — bắt buộc trên T4
   grad_clip_norm: 1.0       # Clip gradient để tránh LVO loss explode (weight 10x)
-  freeze_encoder_epochs: 5  # Đóng băng cả 2 encoder trong 5 epoch đầu
+  freeze_encoder_epochs:10  # Đóng băng cả 2 encoder trong 5 epoch đầu
                             # Để Decoder + Heads ổn định trước khi fine-tune encoder
 
   # Checkpointing — 3 checkpoint cho 3 use-case lâm sàng
