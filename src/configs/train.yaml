@@ -68,7 +68,7 @@ training:
 
   # Logging
   logging:
-    log_interval: 31         # Cứ 10% epoch (31 batch) in log 1 lần cho gọn
+    log_interval: 58         # Cứ 25% epoch (58 batch) in log 1 lần cho gọn
     visualize_every: 5       # Visualize prediction overlay mỗi 5 epoch
     wandb:
       enabled: false         # Bật nếu có WANDB_API_KEY trên Kaggle
