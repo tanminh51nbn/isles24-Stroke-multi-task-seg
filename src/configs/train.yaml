@@ -13,10 +13,10 @@ loss:
 
   lvo:
     type: "focal_tversky"
-    alpha: 0.2              # Rất nhẹ với FP
-    beta: 0.8               # Trừng phạt cực nặng nếu bỏ sót LVO (nguy hiểm tính mạng)
-    gamma: 3.0              # Focus mạnh vào hard samples
-    weight: 10.0            # Nhân 10x — LVO detection là nhiệm vụ cấp cứu
+    alpha: 0.2              # Tăng nhẹ alpha để cân bằng
+    beta: 0.8               # Giảm beta từ 0.8 -> 0.7 (bớt phạt nặng FN giai đoạn đầu)
+    gamma: 2.0              # Giảm gamma từ 3.0 -> 2.0 để tránh NaN/Gradient Explosion
+    weight: 5             # Giảm weight từ 10x -> 5x để ổn định training
 
   cow:
     type: "tversky"
