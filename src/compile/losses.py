@@ -62,7 +62,13 @@ class TverskyLoss(nn.Module):
         FP = (probs * (1 - targets)).sum(dim=1)
         FN = ((1 - probs) * targets).sum(dim=1)
 
-        tversky_index = (TP + self.smooth) / (TP + self.alpha * FP + self.beta * FN + self.smooth)
+        # Sử dụng smooth lớn hơn (1e-5) cho float16 stability
+        numerator = TP + self.smooth
+        denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
+        
+        # Clamp denominator để tránh chia cho 0 tuyệt đối
+        tversky_index = numerator / denominator.clamp(min=self.smooth)
+        
         return 1.0 - tversky_index.mean()
 
 
@@ -100,8 +106,16 @@ class FocalTverskyLoss(nn.Module):
         FP = (probs * (1 - targets)).sum(dim=1)
         FN = ((1 - probs) * targets).sum(dim=1)
 
-        tversky_index = (TP + self.smooth) / (TP + self.alpha * FP + self.beta * FN + self.smooth)
-        focal_tversky = (1.0 - tversky_index) ** self.gamma
+        numerator = TP + self.smooth
+        denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
+        
+        tversky_index = numerator / denominator.clamp(min=self.smooth)
+        
+        # focal_tversky = (1 - TI)^gamma
+        # Thêm 1e-8 bên trong pow để tránh đạo hàm tại 0 bị nan
+        error = (1.0 - tversky_index).clamp(min=1e-7, max=1.0)
+        focal_tversky = torch.pow(error, self.gamma)
+        
         return focal_tversky.mean()
 
 
