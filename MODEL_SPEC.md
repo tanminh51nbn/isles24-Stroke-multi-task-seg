@@ -1,64 +1,72 @@
-# ISLES'24: Technical Whitepaper - Multi-Task 2.5D Stroke Segmentation (v3)
+# ISLES'24: Technical Whitepaper - Dual-Encoder Multi-Task 2.5D UNet (v4)
 
 ## 1. Model Architecture Deep-Dive
 
-### 1.1 Encoder (Backbone)
-- **Base:** ResNet50.
-- **Input Manifold:** 18 channels (NCCT x 1, CTA x 1, Perfusion Maps x 16).
-- **Inflation Layer:** The first `conv1` weight ($W \in \mathbb{R}^{64 \times 3 \times 7 \times 7}$) is transformed into $W_{new} \in \mathbb{R}^{64 \times 18 \times 7 \times 7}$ using:
-  $$W_{new} = \text{Repeat}(\text{Mean}(W, \text{dim}=1), 18) \times \frac{3}{18}$$
-  This ensures that the initial feature activation variance remains consistent with the pre-trained RadImageNet scale.
-- **Pre-trained Weights:** RadImageNet (specifically curated for radiology features like density shifts and vascular structures).
+### 1.1 Dual-Encoder (Backbones)
+To optimally extract both anatomical and functional features, the architecture utilizes two specialized encoders processing distinct sets of input channels from the 18-channel 2.5D stack.
 
-### 1.2 Shared Decoder & Multi-Head Branching
-- **Decoder:** Feature Pyramid style with skip-connections from ResNet blocks.
-- **Bottleneck:** Shared representation layer (16 channels) before splitting into task-specific heads.
-- **Head Separation:** Each head is a $1 \times 1$ Convolutional layer followed by an implicit Sigmoid (handled during loss for numerical stability).
+#### CTA Branch (Structural)
+- **Base:** ResNet-50.
+- **Input:** 6 channels (CTA_w1, CTA_w2 from slices Z-1, Z, Z+1).
+- **Purpose:** Extracts sharp, high-resolution anatomical boundaries and identifies hyperdense vessels/clots.
+- **Inflation:** `conv1` weight ($W \in \mathbb{R}^{64 \times 3 \times 7 \times 7}$) is transformed to $\mathbb{R}^{64 \times 6 \times 7 \times 7}$ using variance-preserving replication.
+- **Pre-trained Weights:** RadImageNet (optimized for CT/MRI).
+
+#### Perfusion Branch (Functional)
+- **Base:** DenseNet-121.
+- **Input:** 12 channels (Tmax, CBF, CBV, MTT from slices Z-1, Z, Z+1).
+- **Purpose:** Extracts semantic, regional changes in blood flow. Dense connections are highly effective at preserving soft gradient information (penumbra).
+- **Inflation:** `conv0` weight is transformed from 3 to 12 channels using variance-preserving replication.
+- **Pre-trained Weights:** RadImageNet.
+
+### 1.2 Multi-Level Fusion & Shared Decoder
+- **Fusion:** Feature maps from both encoders are concatenated at every skip-connection level (resolutions 1/2, 1/4, 1/8, 1/16, 1/32).
+- **Bottleneck:** Deepest features (2048 from ResNet + 1024 from DenseNet = 3072 channels) are concatenated and compressed to 1024 channels.
+- **Decoder:** 5-stage UNet decoder upsamples and refines the combined structural-functional representations, culminating in a 16-channel feature map.
+
+### 1.3 Multi-Task Segmentation Heads
+- **Architecture:** `Conv3x3 -> BN -> ReLU -> SpatialDropout2d(0.3) -> Conv1x1`.
+- **Heads:** Three independent heads output raw logits for Lesion, LVO, and CoW.
+- **Spatial Dropout:** Applied to entire feature maps (channels) rather than individual pixels to prevent co-adaptation in highly correlated medical imaging data.
 
 ## 2. Data Engineering & Augmentation
 
-### 2.1 Task-Balanced Sampling (Strict Ratio)
-To combat the sparsity of LVO (Large Vessel Occlusion), the sampler draws from 4 independent pools:
-- **LVO Pool:** Positive for arterial occlusion.
-- **Lesion Pool:** Positive for ischemic core (but LVO negative).
-- **CoW Pool:** Positive for Circle of Willis (Anatomy).
-- **Negative Pool:** Pure background/healthy tissue.
-**Batch Composition (N=24):** 3 LVO, 1 Lesion, 2 CoW, 1 Neg, 17 Mixed.
+### 2.1 Patient-Level Split & Sampling
+- **GroupShuffleSplit:** Ensures slices from the same patient (`sub-stroke[ID]`) are strictly kept in the same fold to prevent Data Leakage.
+- **Sampling Strategy:** 
+  - Downsamping negative (background-only) slices to 30%.
+  - Oversampling rare LVO-positive slices by a factor of 5.
 
-### 2.2 Spatial & Intensity Augmentation
-- **Affine Transforms:** Random Rotation ($\pm 15^\circ$), Scaling ($\pm 10\%$), Translation ($\pm 10$ pixels).
-- **Interpolation:** Bilinear for images; **Nearest Neighbor** for labels to preserve boundary integrity.
-- **Intensity Shifts:** Random Gaussian Noise ($\sigma=0.05$) and Random Intensity Scaling ($\pm 10\%$).
-- **LVO Softening:** Gaussian kernel ($\sigma=5px$) applied to LVO masks to create a learning gradient, while maintaining the "Hard Core" (GT=1.0) using `np.maximum`.
+### 2.2 Augmentation Pipeline
+- **Spatial (Synchronized on Input & Label):** Random Horizontal Flip (50%), Random Affine (Rotation $\pm 15^\circ$, Scale $\pm 10\%$, Translate $\pm 10px$). Interpolation uses Bilinear for inputs and Nearest-Neighbor for labels to preserve binary integrity.
+- **Intensity (Input Only):** Gaussian Noise ($\mu=0, \sigma=0.05$) and Intensity Scaling ($\pm 10\%$).
 
 ## 3. Training & Optimization Logic
 
-### 3.1 Loss Function Formulation
-The total loss is a weighted sum: $\mathcal{L}_{total} = \sum \lambda_i \mathcal{L}_i$
-- **$\mathcal{L}_{Lesion}$ (Tversky):** $\alpha=0.4, \beta=0.6$. Penalizes False Negatives more to ensure stroke coverage.
-- **$\mathcal{L}_{LVO}$ (Focal Tversky):** $\gamma=3.0$. Focuses the gradient on hard-to-detect small occlusions.
-- **$\mathcal{L}_{CoW}$ (Tversky):** $\alpha=0.5, \beta=0.5$. Balanced segmentation of major vessels.
+### 3.1 Task-Specific Loss Formulation
+The total loss is a weighted sum: $\mathcal{L}_{total} = \mathcal{W}_{Lesion}\mathcal{L}_{Lesion} + \mathcal{W}_{LVO}\mathcal{L}_{LVO} + \mathcal{W}_{CoW}\mathcal{L}_{CoW}$
+- **$\mathcal{L}_{Lesion}$ (Tversky):** $\alpha=0.4, \beta=0.6, \mathcal{W}=1.0$. Penalizes False Negatives more to ensure stroke core coverage.
+- **$\mathcal{L}_{LVO}$ (Focal Tversky):** $\alpha=0.2, \beta=0.8, \gamma=3.0, \mathcal{W}=10.0$. Heavily penalizes missed occlusions and focuses the gradient on hard-to-detect tiny LVOs. Given the highest clinical priority (10x multiplier).
+- **$\mathcal{L}_{CoW}$ (Tversky):** $\alpha=0.5, \beta=0.5, \mathcal{W}=0.5$. Balanced segmentation of major vessels.
 
 ### 3.2 Optimization Protocol
-- **Mixed Precision:** FP16 (AMP) for 2x faster throughput on T4 GPUs.
-- **Learning Rate:** $1.0 \times 10^{-4}$ with **Differential Scaling**.
-  - Encoder LR: $1.0 \times 10^{-5}$ (Fine-tuning).
-  - Decoder/Heads LR: $1.0 \times 10^{-4}$ (Active learning).
-- **Warmup:** 8-epoch linear ramp-up to prevent gradient explosion in early iterations.
-- **Freezing:** 5-epoch encoder freeze to allow the shared decoder to stabilize.
+- **Mixed Precision:** FP16 (AMP) with `GradScaler` for memory efficiency on Kaggle T4 GPUs.
+- **Gradient Clipping:** Max norm = 1.0 to prevent gradient explosions driven by the highly weighted LVO loss.
+- **Differential Learning Rate:**
+  - Base LR: $1.0 \times 10^{-4}$ (Decoder + Heads).
+  - Encoder LR: $1.0 \times 10^{-5}$ (Base LR $\times 0.1$). Protects the RadImageNet pre-trained weights from catastrophic forgetting.
+- **Scheduler:** 8-epoch Linear Warmup followed by Cosine Annealing.
+- **Freeze Strategy:** Encoders are frozen for the first 5 epochs to allow the randomly initialized decoder to stabilize.
 
-## 4. Evaluation & Inference Workflow
+## 4. Evaluation & Clinical Checkpointing
 
-### 4.1 Distributed 3D Inference
-- **Memory Optimization:** 3D volumes are processed in mini-batches of 16 slices.
-- **Aggregation:** Slices are reconstructed into $[Z, H, W]$ volumes.
-- **Post-processing:** Skull-masking is applied to zero out non-brain predictions.
+### 4.1 Metrics
+- **Volumetric Dice:** Evaluates Lesion and CoW spatial overlap.
+- **Recall (Sensitivity):** Primary metric for LVO. Clinically, detecting the presence of an occlusion is far more critical than pixel-perfect boundaries.
+- **Composite Score:** $0.4 \times \text{Dice}_{Lesion} + 0.4 \times \text{Recall}_{LVO} + 0.2 \times \text{Dice}_{CoW}$.
 
-### 4.2 Metrics
-- **Volumetric Dice:** Measures spatial overlap for Lesion and CoW.
-- **Object-level F1:** Centroid-based matching with a $3mm$ (3 voxel) tolerance. This is the primary clinical metric for LVO detection.
-- **Zero-Bias Aggregation:** Uses Global Sum/Count across all DDP ranks to ensure mathematical precision of the final report.
-
----
-*Target Hardware: Kaggle Dual T4 (2x16GB VRAM)*
-*Execution Time: ~11 Hours for 35 Epochs*
+### 4.2 Tri-Faceted Checkpointing
+The pipeline automatically saves three clinical variants of the model:
+1. `best_overall.pt`: Highest Composite Score (Primary deployment model).
+2. `best_lesion.pt`: Highest Lesion Dice (Optimized for infarct volume estimation).
+3. `best_lvo.pt`: Highest LVO Recall (Optimized for emergency triage and clot detection).

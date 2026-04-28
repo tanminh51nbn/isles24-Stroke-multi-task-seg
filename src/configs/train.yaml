@@ -1,0 +1,76 @@
+# ═══════════════════════════════════════════════════════════════
+#  ISLES'24 — Training Configuration
+#  Loss, Optimizer, Scheduler, Training params
+# ═══════════════════════════════════════════════════════════════
+
+# ── Loss Function (Task-Specific) ──────────────────────────────
+loss:
+  lesion:
+    type: "tversky"
+    alpha: 0.4              # Phạt FP (đoán nhầm vùng lành là bệnh)
+    beta: 0.6               # Phạt FN (bỏ sót vùng bệnh) — quan trọng hơn
+    weight: 1.0             # Task weight trong tổng loss
+
+  lvo:
+    type: "focal_tversky"
+    alpha: 0.2              # Rất nhẹ với FP
+    beta: 0.8               # Trừng phạt cực nặng nếu bỏ sót LVO (nguy hiểm tính mạng)
+    gamma: 3.0              # Focus mạnh vào hard samples
+    weight: 10.0            # Nhân 10x — LVO detection là nhiệm vụ cấp cứu
+
+  cow:
+    type: "tversky"
+    alpha: 0.5
+    beta: 0.5               # Cân bằng — CoW là giải phẫu bình thường, ít biến động
+    weight: 0.5             # Nhiệm vụ phụ trợ
+
+# ── Composite Validation Score ──────────────────────────────────
+# Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
+# Dùng Recall cho LVO (chỉ cần detect được, không cần viền chính xác)
+composite_score:
+  dice_lesion_weight: 0.4
+  recall_lvo_weight: 0.4
+  dice_cow_weight: 0.2
+
+# ── Optimizer ───────────────────────────────────────────────────
+optimizer:
+  type: "adamw"
+  lr: 1.0e-4                # Base LR cho Decoder và Heads
+  weight_decay: 1.0e-3      # L2 regularization
+  encoder_lr_scale: 0.1     # Encoder LR = 1e-4 × 0.1 = 1e-5
+                            # Bảo vệ RadImageNet weights, tránh quên kiến thức y tế
+
+# ── LR Scheduler ────────────────────────────────────────────────
+scheduler:
+  warmup_epochs: 8          # Linear ramp-up từ 0 → base_lr trong 8 epoch đầu
+  min_lr: 1.0e-6            # Sàn cho CosineAnnealing
+
+# ── Training ────────────────────────────────────────────────────
+training:
+  epochs: 40
+  amp: true                 # Automatic Mixed Precision (float16) — bắt buộc trên T4
+  grad_clip_norm: 1.0       # Clip gradient để tránh LVO loss explode (weight 10x)
+  freeze_encoder_epochs: 5  # Đóng băng cả 2 encoder trong 5 epoch đầu
+                            # Để Decoder + Heads ổn định trước khi fine-tune encoder
+
+  # Checkpointing — 3 checkpoint cho 3 use-case lâm sàng
+  checkpoint:
+    dir: "checkpoints"
+    save_best_overall: true   # Composite Score cao nhất → mô hình sản xuất
+    save_best_lesion: true    # Dice Lesion cao nhất → bác sĩ cần đo thể tích nhồi máu
+    save_best_lvo: true       # Recall LVO cao nhất → cấp cứu phát hiện tắc mạch
+
+  # Early Stopping
+  early_stopping:
+    enabled: true
+    patience: 15             # Dừng nếu 15 epoch liên tiếp không cải thiện
+    min_delta: 0.001         # Ngưỡng cải thiện tối thiểu
+
+  # Logging
+  logging:
+    log_interval: 10         # In log mỗi 10 batch
+    visualize_every: 5       # Visualize prediction overlay mỗi 5 epoch
+    wandb:
+      enabled: false         # Bật nếu có WANDB_API_KEY trên Kaggle
+      project: "isles24-stroke"
+      run_name: null         # Auto-generate

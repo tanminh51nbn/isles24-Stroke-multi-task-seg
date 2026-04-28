@@ -1,187 +1,77 @@
-# Dataset Specification — ISLES24 2.5D NPY
+# ISLES'24 - 18-Channel 2.5D Stroke Segmentation Dataset
 
-## Tổng quát dataset gốc
+Tài liệu này là đặc tả kỹ thuật chính thức và hướng dẫn sử dụng chi tiết cho bộ dữ liệu ISLES'24 đã qua tiền xử lý, được thiết kế chuyên biệt cho việc huấn luyện các mô hình Deep Learning trong chẩn đoán đột quỵ.
 
-Dataset gốc: ISLES'24 - A Real-World Longitudinal Multimodal Stroke Dataset | Version 7
+---
 
-### Mô tả
+## 1. Ngữ cảnh ra đời (Context & Genesis)
 
-- Dataset này chụp từ vùng basal ganglia lên đến đỉnh não, không phải toàn bộ đầu. Độ dài vùng này từ 70-90mm (70-90 lát cắt dày 1mm).
-- Số lương mẫu: 149 bệnh nhân (ID từ 1 đến 189, không đánh số liên tiếp).
-- Định dạng .nii.gz
-  > Có 5 bệnh nhân bất thường nhưng hợp lệ vì bị Perfusion kéo z min xuống: `Z gốc = 8 slices × spacing 5mm = 40mm FOV → sau resample 1mm ra ~36 slices`.
+Bộ dữ liệu nguyên bản ISLES 2024 (được cung cấp qua Zenodo) là một kho báu y khoa nhưng lại đi kèm với những thách thức kỹ thuật cực kỳ hóc búa. Dữ liệu thô bao gồm ảnh cắt lớp không cản quang (NCCT), ảnh mạch máu (CTA), và các bản đồ tưới máu não (Perfusion map: Tmax, CBF, CBV, MTT).
 
-| Case | Z gốc | Spacing Z | FOV thực | Sau resample 1mm |
-| ---- | ----- | --------- | -------- | ---------------- |
-| 0004 | 69    | 2.0mm     | 138mm    | 36               |
-| 0012 | 75    | 2.0mm     | 150mm    | 36               |
-| 0030 | 64    | 2.0mm     | 128mm    | 36               |
-| 0037 | 48    | 3.0mm     | 144mm    | 43               |
-| 0066 | 68    | 2.0mm     | 136mm    | 31               |
+**Những thách thức từ dữ liệu gốc:**
+- **Lệch hệ không gian (Spatial Misalignment):** Các bản chụp có độ phân giải, khung giới hạn (bounding box) và gốc tọa độ Z hoàn toàn khác biệt (ví dụ: gốc Z lệch nhau từ -453mm đến -201mm).
+- **Lỗi siêu dữ liệu (Corrupted Headers):** Các file phái sinh (`space-ncct`) thường bị lỗi ma trận không gian (ví dụ: `sform_code=0`), khiến các thư viện xử lý ảnh y tế chuẩn như `nilearn` hay `SimpleITK` không thể chiếu đúng không gian vật lý, dẫn đến sự sai lệch hoàn toàn khi nhân ma trận.
+- **Nhiễu xương sọ (Skull Interference):** Xương sọ trên ảnh CTA có độ cản quang (Hounsfield Units - HU) trùng lặp với mạch máu có thuốc cản quang. Nếu không loại bỏ, AI sẽ không thể phân biệt được đâu là xương, đâu là điểm tắc mạch (LVO).
+- **Khác biệt số lượng lát cắt (FOV Discrepancy):** Perfusion map chỉ chụp một vùng hẹp ở lõi não (khoảng 16 lát cắt), trong khi NCCT/CTA chụp toàn bộ sọ não (~75 lát cắt).
 
-### Phân tích cấu trúc
+**Quy trình "Luyện kim" (Từ Thô đến Tinh khiết):**
+Để biến mớ hỗn độn trên thành bộ dữ liệu sẵn sàng cho huấn luyện, chúng tôi đã triển khai một (Pipeline) nghiêm ngặt:
+1. **Đồng bộ hóa Affine (Affine Synchronization):** Ép buộc toàn bộ các hệ ảnh (CTA, Perfusion map, Labels) phải nhận chung một ma trận tọa độ không gian (Affine) của NCCT và sửa lỗi Header (`sform_code=1`), đảm bảo sự khớp nối 100% theo từng Voxel.
+2. **Lột sọ bảo tồn (Conservative Skull-Stripping):** Ứng dụng HD-BET để tạo mặt nạ não, sau đó làm phình (dilate) 3 pixel để đảm bảo không vô tình cắt phạm vào các mạch máu nằm sát vỏ não. Toàn bộ nền (background) được đưa về 0 tuyệt đối.
+3. **Ép chuẩn lâm sàng (Clinical Windowing):** Cắt lọc các khoảng HU và giới hạn lâm sàng đặc thù cho từng loại ảnh, sau đó chuẩn hóa Min-Max nghiêm ngặt về đoạn `[0, 1]`.
+- CTA_w1: [0, 90]
+- CTA_w2: [60, 400]
+- Tmax: [0, 7]
+- CBF: [0, 35]
+- CBV: [0, 10]
+- MTT: [0, 20]
+4. **Đúc 2.5D & Resizing (2.5D Stacking):** Để tạo bối cảnh không gian mà không tốn chi phí tính toán của 3D-CNN, dữ liệu được xếp chồng theo chiều Z: `(Z-1, Z, Z+1)`. Hình ảnh được resize về kích thước chuẩn `256x256` thông qua thuật toán padding kết hợp nội suy để bảo toàn tỷ lệ khung hình (Những ai bé hơn 256 thì pad vào, những ai lớn hơn 256 thì resize về).
+5. **Thanh lọc bóng ma (Ghost Purging):** Những lát cắt ở đỉnh đầu hoặc dưới cổ (nơi không chứa bất kỳ nhu mô não nào) được tự động quét và loại bỏ vĩnh viễn, tạo ra một bộ dataset "tinh khiết" không chứa dữ liệu rác.
 
-- raw_data: là dữ liệu thô chưa qua xử lý, lấy ngay sau khi bệnh nhân được chụp CT. Gồm: perfusion (cbf, cbfv, mtt, tmax), ncct, cta, ctp.
-  [ *Chỉ cần ncct* ]
-- derivatives: là dữ liệu đã qua xử lý, mọi dữ liệu trong này đã được xử lí về không gian ncct (space_ncct). Gồm hai session:
-  - ses-01:
-    Input: gồm perfusion (cbf, cbfv, mtt, tmax), cta, ctp.
-    Mask: lvo-msk, cow-msk.
-    [ *Không dùng ctp* ]
-  - ses-02: chỉ gồm lesion-msk, dwi, adc.
-    [ *Không dùng dwi, adc* ]
-- Phenotype: dữ liệu dạng bảng (.csv) chứa thông tin lâm sàn.
+---
 
-**Tóm lại:** Bộ dataset này đầy đủ các đặc trưng, không thiếu.
+## 2. Thông tin và Hướng dẫn sử dụng (Usage Guide)
 
-- INPUT: Sử dụng `ncct` trong raw_data để làm khung, ép các kênh thô khác khớp với nó vì nó chứa đầy đủ sơ đồ hình não chi tiết. `CTA` (Ảnh chụp CT Angiography , đây là sơ đồ máu) và `perfusion` gồm: `CBF` (Lưu lượng máu), `CBV` (Thể tích máu), `MTT` (Thời gian trung bình máu đi qua não), `Tmax` (Thời gian máu đạt đỉnh).
+Bộ dữ liệu này được lưu trữ dưới định dạng `NumPy (.npy)` - định dạng nạp dữ liệu siêu tốc độ cho PyTorch và TensorFlow.
 
-- LABEL: `lesion-msk` (vùng nhồi máu - hoại tử), `lvo-msk` (vị trí cục máu đông gây tắc mạch), `cow-msk` (phục vụ phân loại vòng nối gồm các động mạch lớn).
-  >- lesion: Vùng lớn, hình dạng bất quy tắc => Class imbalance nặng (vùng tổn thương nhỏ so với toàn não)
-  >- lvo: Điểm trên mạch máu, cực nhỏ => dễ bị model lướt qua.
-  >- cow: Cấu trúc mạng mạch máu dạng vòng => Mỏng, dài, topology phức tạp.
-
-## Tái cấu trúc thư mục và Tiền xử lý
-
-Chuyển từ .nii.gz sang .npy nhị phân thô để tăng tốc độ train, đồng thời tiền xử lí và chuẩn hóa sẵn luôn.
-
-```
-ISLES24_NPY_544x544x1mm/
-└── sub-XXXX/
-    ├── inputs/
-    │   ├── x_z000.npy
-    │   ├── x_z001.npy
-    │   └── ...
-    └── labels/
-        ├── y_z000.npy
-        ├── y_z001.npy
-        └── ...
+### 2.1. Cấu trúc thư mục
+Tất cả các file nằm chung trong một thư mục duy nhất:
+```text
+ISLES24_NPY_Dataset/
+├── sub-stroke0001_slice000.npy
+├── sub-stroke0001_slice001.npy
+├── ...
+└── sub-stroke0188_slice072.npy
 ```
 
-Bộ dữ liệu là hình các hình chụp không hoàn hảo, bệnh nhân không ở yên một và tùy cách xử lí hình, chúng ta sẽ tìm kích thước phù hợp dựa trên vùng tọa độ chứa nhãn cực biên (Global Bounding Box):
+### 2.2. Định dạng tên file
+Cú pháp: `sub-stroke[ID]_slice[Z].npy`
+- **`[ID]`**: Mã bệnh nhân (ví dụ: `0001`). **ĐẶC BIỆT LƯU Ý:** Khi chia tập Train/Validation/Test, phải chia theo nhóm `[ID]` (GroupKFold) để tránh rò rỉ dữ liệu (Data Leakage) giữa các lát cắt của cùng một người.
+- **`[Z]`**: Vị trí lát cắt gốc.
 
-- Trục X: [42 tới 511] -> Độ rộng cần: 469
-- Trục Y: [50 tới 575] -> Độ cao cần: 525
+### 2.3. Cấu trúc bên trong mỗi file `.npy`
+Mỗi file là một `Dictionary` chứa 2 khối dữ liệu (Tensors):
 
-  => Vậy ta có `Size` lớn nhất là `469 × 525` px. Chọn Resize thành `544 × 544` px.
+#### 🟩 `input`: Shape `(18, 256, 256)`, Kiểu dữ liệu `float32`
+Chứa 6 loại ảnh y tế được xếp dọc qua 3 lát cắt liên tiếp (Trọng số từ 0.0 đến 1.0).
+- **Channel 00 -> 05 (Lát cắt Z-1):** `[CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]`
+- **Channel 06 -> 11 (Lát cắt Z  ):** `[CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]`
+- **Channel 12 -> 17 (Lát cắt Z+1):** `[CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]`
 
-- Về chiều dày, chúng ta có thống kê như sau:
+*(Lưu ý về Dữ liệu khuyết: Do đặc thù FOV hẹp của Perfusion map, ở một số lát cắt trên cao hoặc dưới thấp, các kênh Perfusion map (Tmax, CBF, CBV, MTT) sẽ mang giá trị 0 toàn bộ. CTA sẽ vẫn có hình ảnh. Mô hình của bạn phải có khả năng học cách bỏ qua Perfusion map và tự chẩn đoán bằng CTA ở các lát cắt này).*
 
-| Chiều dày lát cắt (mm) | Số lượng bệnh nhân | Tỷ lệ (%) |
-| ---------------------- | ------------------ | --------- |
-| 0.4000                 | 67                 | 45.0      |
-| 0.7500                 | 44                 | 29.5      |
-| 0.4500                 | 8                  | 5.4       |
-| 0.6000                 | 7                  | 4.7       |
-| 0.9000                 | 3                  | 2.0       |
-| 2.0000                 | 2                  | 1.3       |
-| 3.0000                 | 2                  | 1.3       |
-| 1.5000                 | 2                  | 1.3       |
-| 1.0500                 | 1                  | 0.7       |
-| 0.3900                 | 1                  | 0.7       |
-| 0.9540                 | 1                  | 0.7       |
-| 0.9720                 | 1                  | 0.7       |
-| 0.9700                 | 1                  | 0.7       |
-| 0.9870                 | 1                  | 0.7       |
-| 1.0170                 | 1                  | 0.7       |
-| 0.4100                 | 1                  | 0.7       |
-| 1.0000                 | 1                  | 0.7       |
-| 2.0002                 | 1                  | 0.7       |
-| 1.6000                 | 1                  | 0.7       |
-| 2.5000                 | 1                  | 0.7       |
-| 0.9490                 | 1                  | 0.7       |
-| 0.8000                 | 1                  | 0.7       |
+#### 🟥 `label`: Shape `(3, 256, 256)`, Kiểu dữ liệu `uint8`
+Chứa 3 lớp mặt nạ (Mask) nhị phân (Giá trị 0 hoặc 1), tương ứng với lát cắt trung tâm `(Z)`.
+- **Channel 0 (`Lesion`):** Vùng lõi nhồi máu (Infarct core).
+- **Channel 1 (`LVO`):** Điểm tắc nghẽn mạch máu lớn (Large Vessel Occlusion).
+- **Channel 2 (`CoW`):** Cấu trúc giải phẫu hệ đa giác Willis.
 
-=> Vậy độ dày phù hợp để bộ dataset này không bị nén và giãn quá mức là 1mm cho một lát cắt
+---
 
-`Vậy chúng ta sẽ chọn kích thước là 544x544x1mm`
+## 3. Mục đích sử dụng (Intended Use Cases)
 
-## Input (`x_zXXX.npy`)
+Bộ dataset này là một bài test (benchmark) cực kỳ mạnh mẽ cho các kiến trúc Deep Learning tiên tiến, mở ra tiềm năng cho các bài toán:
 
-### Thông tin chung
-
-| Thuộc tính   | Giá trị                                    |
-| ------------ | ------------------------------------------ |
-| Shape        | `[18, 544, 544]`                           |
-| Dtype        | `float16`                                  |
-| Channels     | 18 = 6 modalities × 3 slices (z-1, z, z+1) |
-| Edge padding | Clamp — lặp lại slice biên                 |
-
-### Thứ tự channels
-
-| Index | Modality | Phương pháp normalize             | Range      |
-| ----- | -------- | --------------------------------- | ---------- |
-| 0–2   | NCCT     | ScaleIntensityRange `[0, 80]`     | `[-1, +1]` |
-| 3–5   | CTA      | ScaleIntensityRange `[-150, 300]` | `[-1, +1]` |
-| 6–8   | Tmax     | zscore nonzero per-channel        | `~N(0,1)`  |
-| 9–11  | CBF      | zscore nonzero per-channel        | `~N(0,1)`  |
-| 12–14 | CBV      | zscore nonzero per-channel        | `~N(0,1)`  |
-| 15–17 | MTT      | zscore nonzero per-channel        | `~N(0,1)`  |
-
-## Label (`y_zXXX.npy`)
-
-### Thông tin chung
-
-| Thuộc tính | Giá trị         |
-| ---------- | --------------- |
-| Shape      | `[3, 544, 544]` |
-| Dtype      | `uint8`         |
-| Giá trị    | Binary `{0, 1}` |
-
-### Thứ tự channels
-
-| Index | Channel  |
-| ----- | -------- |
-| 0     | `lesion` |
-| 1     | `lvo`    |
-| 2     | `cow`    |
-
-## Spatial
-
-| Thuộc tính         | Giá trị                              |
-| ------------------ | ------------------------------------ |
-| Resolution XY      | 544×544 px (center crop sau padding) |
-| Slice thickness Z  | 1.0 mm (resampled)                   |
-| Interpolation ảnh  | Bilinear                             |
-| Interpolation nhãn | Nearest                              |
-
-**KẾT LUẬN**
-
-Toàn bộ dataset đều nằm gọn trong trong khung crop `544x544` với cách cắt theo trọng tâm của ảnh, hướng phát triển là chọn trọng tâm của não thay vì cả ảnh. Dưới đây là 4 case cực biên:
-
-```
-sub-stroke0096:
-  Shape: (512, 577, 74), Center: (256, 288)
-  Crop X: [-16, 528]      Não X: [85, 511] | ✓
-  Crop Y: [16, 560]       Não Y: [161, 526] | ✓
-
-sub-stroke0117:
-  Shape: (512, 512, 69), Center: (256, 256)
-  Crop X: [-16, 528]      Não X: [81, 353] | ✓
-  Crop Y: [-16, 528]      Não Y: [50, 345] | ✓
-
-sub-stroke0153:
-  Shape: (512, 560, 44), Center: (256, 280)
-  Crop X: [-16, 528]      Não X: [42, 286] | ✓
-  Crop Y: [8, 552]        Não Y: [104, 483] | ✓
-
-sub-stroke0182:
-  Shape: (512, 667, 41), Center: (256, 333)
-  Crop X: [-16, 528]      Não X: [179, 443] | ✓
-  Crop Y: [61, 605]       Não Y: [210, 575] | ✓
-```
-
-## Lưu ý khi train
-
-> **Bắt buộc** cast input về `float32` trong dataloader trước khi đưa vào model.
-
-```python
-x = np.load(path).astype(np.float32)
-```
-
-- NCCT và CTA ở `[-1, +1]`, Perfusion ở `~N(0,1)` — **không normalize thêm**
-- Slice index `z` trong tên file tương ứng với slice trung tâm của 2.5D stack
-- Mỗi file input chứa context 3 slices liên tiếp, không phải 1 slice đơn lẻ
-- Dataset được đẩy lên Kaggle (136.43 GB), nó được chia làm 2 phần:
-  - Part 1 (64.17 GB): gồm 75 case đầu tiên (isles24-stroke-dataset-part-1)
-  - Part 2 (72.26 GB): gồm 74 case cuối cùng (isles24-stroke-dataset-part-2)
+1. **Multi-task Segmentation (Phân vùng đa nhiệm):** Huấn luyện một mạng Neural duy nhất có khả năng chia 3 nhánh (3-head decoder) để đồng thời: (a) Vẽ vùng đột quỵ, (b) Chỉ điểm cục máu đông, (c) Lập bản đồ mạch máu.
+2. **Nghiên cứu kiến trúc 2.5D/3D-Aware:** Hoàn hảo để thử nghiệm các kiến trúc như `DenseNet-UNet`, `ResUNet`, hoặc `SegFormer`, nơi các lớp tích chập (Convolution) có thể khai thác sự liền mạch theo chiều Z thông qua 18 kênh Channel đầu vào.
+3. **Mô hình chống chịu khuyết thiếu Modality (Modality-Missing Robustness):** Giải quyết một bài toán lâm sàng rất phổ biến: Chẩn đoán đột quỵ chính xác ngay cả khi bệnh viện không có máy chụp Perfusion map, hoặc dữ liệu Perfusion map bị lỗi/nhiễu, bằng cách ép mô hình tập trung suy luận từ CTA.

@@ -1,0 +1,51 @@
+# ═══════════════════════════════════════════════════════════════
+#  ISLES'24 — Dual-Encoder Multi-Task UNet Configuration
+#  CTA Branch: ResNet-50 (RadImageNet)
+#  Perfusion Branch: DenseNet-121 (RadImageNet)
+# ═══════════════════════════════════════════════════════════════
+
+# ── Channel Split ───────────────────────────────────────────────
+# Input tensor shape: (18, 256, 256)
+# Each Z-slice contains 6 channels: [CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]
+# Layout: [Z-1: 0-5] [Z: 6-11] [Z+1: 12-17]
+channel_split:
+  cta_indices: [0, 1, 6, 7, 12, 13]         # CTA_w1, CTA_w2 from each slice
+  perfusion_indices: [2, 3, 4, 5, 8, 9, 10, 11, 14, 15, 16, 17]  # Tmax,CBF,CBV,MTT from each slice
+
+# ── CTA Encoder (ResNet-50) ──────────────────────────────────────
+cta_encoder:
+  name: "resnet50"
+  in_channels: 6
+  # RadImageNet PyTorch weights — download from:
+  # https://drive.google.com/file/d/1RHt2GnuOYlc_gcoTETtBDSW73mFyRAtR/view
+  weights: "/kaggle/input/radimagenet/RadImageNet-ResNet50_notop_torch.pth"
+  # Conv1 inflation: mean(W, dim=1, keepdim=True).repeat(1, in_channels, 1, 1) * (3 / in_channels)
+  output_channels: [64, 256, 512, 1024, 2048]  # Skip levels 1-5
+
+# ── Perfusion Encoder (DenseNet-121) ────────────────────────────
+perfusion_encoder:
+  name: "densenet121"
+  in_channels: 12
+  weights: "/kaggle/input/radimagenet/RadImageNet-DenseNet121_notop_torch.pth"
+  # Conv0 inflation: same formula, repeat 4x (12/3=4)
+  output_channels: [64, 128, 256, 512, 1024]   # Skip levels 1-5
+
+# ── Decoder ─────────────────────────────────────────────────────
+decoder:
+  # Concatenated skip channels at each level (cta + perfusion):
+  # Level 1: 64+64=128, L2: 256+128=384, L3: 512+256=768, L4: 1024+512=1536, L5(bottleneck): 2048+1024=3072
+  out_channels: [256, 128, 64, 32, 16]  # Output channels after each decoder block
+
+# ── Heads ────────────────────────────────────────────────────────
+heads:
+  dropout: 0.3            # Spatial Dropout2d
+  lesion:
+    out_channels: 1       # Binary — infarct core
+  lvo:
+    out_channels: 1       # Binary — large vessel occlusion
+  cow:
+    out_channels: 1       # Binary — Circle of Willis
+
+# ── Output ──────────────────────────────────────────────────────
+# Raw logits (NO sigmoid/softmax in model forward)
+# BCEWithLogitsLoss handles sigmoid internally for numerical stability

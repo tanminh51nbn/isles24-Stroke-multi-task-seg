@@ -1,68 +1,94 @@
-from pathlib import Path
-from typing import List, Tuple, Union
-import numpy as np
-from sklearn.model_selection import train_test_split
+"""
+fold_split.py — Chia train/val theo patient-level (GroupShuffleSplit)
 
-def build_kfold_splits(
-    data_dir: Union[str, List[str]],
-    cfg: dict
-) -> Tuple[List[Path], List[Path]]:
+Nguyên tắc bắt buộc:
+    TOÀN BỘ lát cắt của một bệnh nhân phải nằm trong CÙNG một tập.
+    Nếu vi phạm → Data Leakage → mô hình "học bài" → điểm validation ảo.
+
+Cách hoạt động:
+    1. Trích patient_id từ tên file (sub-stroke0001_slice030.npy → 0001)
+    2. Chia 149 bệnh nhân theo tỷ lệ (80/20)
+    3. Map bệnh nhân → danh sách file tương ứng
+"""
+
+import os
+import random
+from typing import List, Tuple
+
+
+def _extract_patient_id(filename: str) -> str:
     """
-    Splits patient directories into train/val.
-    - Hỗ trợ single path hoặc list of paths (multi-root cho Part_1 + Part_2)
-    - Stratified theo (has_lvo, has_lesion) để đảm bảo val set đại diện
+    Trích patient ID từ tên file.
+    'sub-stroke0001_slice030.npy' → 'sub-stroke0001'
     """
-    # Lấy tham số từ config
-    k_cfg = cfg.get("kfold", {})
-    val_ratio = k_cfg.get("val_ratio", 0.2)
-    seed = k_cfg.get("seed", 42)
+    basename = os.path.basename(filename)
+    return basename.split("_")[0]
 
-    # Thu thập tất cả patient dirs từ một hoặc nhiều root
-    if isinstance(data_dir, (list, tuple)):
-        patients = []
-        for d in data_dir:
-            patients.extend(
-                sorted([p for p in Path(d).iterdir() if p.is_dir()])
-            )
-    else:
-        patients = sorted([p for p in Path(data_dir).iterdir() if p.is_dir()])
 
-    if len(patients) == 0:
-        raise ValueError(f"No patient directories found in {data_dir}")
+def build_patient_split(
+    file_list: List[str],
+    val_ratio: float = 0.2,
+    seed: int = 42,
+) -> Tuple[List[str], List[str]]:
+    """
+    Chia file_list thành train/val theo patient-level GroupShuffleSplit.
 
-    # Tạo stratify label dựa trên has_lvo + has_lesion
-    # Check 5 slice quanh vùng giữa (Z median=0.55) vì LVO tập trung ở đó
-    strat_labels = []
-    for p in patients:
-        label_files = sorted((p / "labels").glob("y_z*.npy"))
-        has_lvo = False
-        has_lesion = False
-        
-        mid = len(label_files) // 2
-        sample_files = label_files[max(0, mid - 2): mid + 3]  # 5 slice quanh vùng giữa
-        for lf in sample_files:
-            lbl = np.load(lf, mmap_mode='r')
-            if lbl[1].max() > 0:
-                has_lvo = True
-            if lbl[0].max() > 0:
-                has_lesion = True
-            if has_lvo and has_lesion:
-                break
+    Args:
+        file_list: Danh sách đường dẫn tất cả file .npy
+        val_ratio: Tỷ lệ bệnh nhân dùng cho validation (default 0.2 = 20%)
+        seed:      Random seed để tái lập kết quả
 
-        if has_lvo and has_lesion:
-            strat_labels.append("lvo_les")
-        elif has_lesion:
-            strat_labels.append("les_only")
-        elif has_lvo:
-            strat_labels.append("lvo_only")
-        else:
-            strat_labels.append("neg")
+    Returns:
+        (train_files, val_files): 2 danh sách file, không overlap bệnh nhân
+    """
+    # Nhóm file theo bệnh nhân
+    patient_to_files: dict = {}
+    for f in file_list:
+        pid = _extract_patient_id(f)
+        patient_to_files.setdefault(pid, []).append(f)
 
-    train_patients, val_patients = train_test_split(
-        patients,
-        test_size=val_ratio,
-        random_state=seed,
-        stratify=strat_labels
-    )
+    # Shuffle danh sách bệnh nhân
+    patients = sorted(patient_to_files.keys())
+    rng = random.Random(seed)
+    rng.shuffle(patients)
 
-    return train_patients, val_patients
+    # Chia bệnh nhân
+    n_val = max(1, int(len(patients) * val_ratio))
+    val_patients  = set(patients[:n_val])
+    train_patients = set(patients[n_val:])
+
+    # Map bệnh nhân → file
+    train_files = [f for pid in train_patients for f in patient_to_files[pid]]
+    val_files   = [f for pid in val_patients   for f in patient_to_files[pid]]
+
+    print(f"[fold_split] Bệnh nhân Train: {len(train_patients)} | Val: {len(val_patients)}")
+    print(f"[fold_split] Slice Train: {len(train_files)} | Val: {len(val_files)}")
+
+    return train_files, val_files
+
+
+def apply_sampling(
+    train_files: List[str],
+    downsample_neg_ratio: float = 0.3,
+    lvo_oversample_factor: int = 5,
+) -> List[str]:
+    """
+    Cân bằng tập train bằng cách:
+        - Giữ lại một phần slice all-negative (background)
+        - Lặp lại slice có LVO nhiều lần (oversample)
+
+    Lưu ý: Hàm này cần metadata để biết file nào có LVO.
+    Nếu không có metadata, dùng tên file để đoán (không chính xác).
+    Tốt hơn là nạp từ dataset_metadata.csv.
+
+    Args:
+        train_files:           Danh sách file train
+        downsample_neg_ratio:  Tỷ lệ giữ lại slice all-negative
+        lvo_oversample_factor: Số lần lặp slice có LVO
+
+    Returns:
+        Danh sách file đã được cân bằng (có thể có duplicate)
+    """
+    # Placeholder — logic đầy đủ cần đọc metadata CSV
+    # PINELINE.py sẽ truyền metadata vào để thực hiện sampling chính xác
+    return train_files

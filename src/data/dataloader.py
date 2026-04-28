@@ -1,69 +1,95 @@
-import logging
-from torch.utils.data import DataLoader, WeightedRandomSampler
+"""
+dataloader.py — Xây dựng DataLoader cho training phân tán (DDP 2 GPU)
+
+Chiến lược:
+    - Train: DistributedSampler (shuffle=True) → đảm bảo mỗi GPU thấy dữ liệu khác nhau
+    - Val:   DistributedSampler (shuffle=False) → đánh giá nhất quán
+    - pin_memory=True: Tăng tốc transfer CPU→GPU
+    - persistent_workers=True: Tránh tạo lại worker process mỗi epoch
+"""
+
 import torch
-import numpy as np
+from torch.utils.data import DataLoader, DistributedSampler
+from typing import Tuple
 
-logger = logging.getLogger(__name__)
+from .dataset import ISLES24Dataset
+from .transforms import build_train_transforms, build_val_transforms
+from .fold_split import build_patient_split
 
-def build_dataloaders(train_dataset, val_dataset, cfg: dict):
+import os
+import glob
+
+
+def build_dataloaders(
+    config: dict,
+    dataset_dir: str,
+    rank: int = 0,
+    world_size: int = 1,
+) -> Tuple[DataLoader, DataLoader]:
     """
-    Builds Dataloaders. 
-    Implements WeightedRandomSampler if enabled in config.
+    Xây dựng train/val DataLoader từ config và thư mục dataset.
+
+    Args:
+        config:       Dict đọc từ data.yaml
+        dataset_dir:  Đường dẫn đến thư mục chứa file .npy
+        rank:         GPU rank hiện tại (DDP)
+        world_size:   Tổng số GPU
+
+    Returns:
+        (train_loader, val_loader)
     """
-    dl_cfg             = cfg.get("dataloader", {})
-    batch_size         = dl_cfg.get("batch_size", 4)
-    num_workers        = dl_cfg.get("num_workers", 4)
-    pin_memory         = dl_cfg.get("pin_memory", True)
-    persistent_workers = dl_cfg.get("persistent_workers", True)
-    prefetch_factor    = dl_cfg.get("prefetch_factor", 2)
-    drop_last_train    = dl_cfg.get("drop_last", True)
-    
-    # Validation Loader is always sequential
+    # Thu thập tất cả file
+    all_files = sorted(glob.glob(os.path.join(dataset_dir, "*.npy")))
+    if len(all_files) == 0:
+        raise FileNotFoundError(f"Không tìm thấy file .npy trong: {dataset_dir}")
+
+    # Chia train/val theo bệnh nhân
+    split_cfg = config["split"]
+    train_files, val_files = build_patient_split(
+        all_files,
+        val_ratio=split_cfg["val_ratio"],
+        seed=split_cfg["seed"],
+    )
+
+    # Build Dataset
+    train_dataset = ISLES24Dataset(train_files, transform=build_train_transforms(config))
+    val_dataset   = ISLES24Dataset(val_files,   transform=build_val_transforms())
+
+    # Sampler cho DDP
+    train_sampler = DistributedSampler(
+        train_dataset, num_replicas=world_size, rank=rank, shuffle=True
+    ) if world_size > 1 else None
+
+    val_sampler = DistributedSampler(
+        val_dataset, num_replicas=world_size, rank=rank, shuffle=False
+    ) if world_size > 1 else None
+
+    dl_cfg = config["dataloader"]
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=dl_cfg["batch_size"],
+        sampler=train_sampler,
+        shuffle=(train_sampler is None),  # Shuffle nếu không dùng DDP sampler
+        num_workers=dl_cfg["num_workers"],
+        pin_memory=dl_cfg["pin_memory"],
+        persistent_workers=dl_cfg.get("persistent_workers", True),
+        prefetch_factor=dl_cfg.get("prefetch_factor", 2),
+        drop_last=dl_cfg.get("drop_last", True),
+    )
+
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=dl_cfg["batch_size"],
+        sampler=val_sampler,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
-        prefetch_factor=prefetch_factor,
-        drop_last=False
+        num_workers=dl_cfg["num_workers"],
+        pin_memory=dl_cfg["pin_memory"],
+        persistent_workers=dl_cfg.get("persistent_workers", True),
+        drop_last=False,
     )
-    
-    # Training Loader
-    samp_cfg = cfg.get("sampling", {})
-    if samp_cfg.get("enabled", True):
-        from .sampler import TaskBalancedBatchSampler
-        import os
-        
-        # Build Task-Balanced Batch Sampler
-        train_sampler = TaskBalancedBatchSampler(
-            task_indices=train_dataset.get_task_indices(),
-            batch_size=batch_size,
-            num_batches=samp_cfg.get("num_batches", 800),
-            rank=int(os.environ.get("RANK", "0")),
-            world_size=int(os.environ.get("WORLD_SIZE", "1"))
-        )
-        
-        train_loader = DataLoader(
-            train_dataset,
-            batch_sampler=train_sampler,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
-            prefetch_factor=prefetch_factor
-        )
-        logger.info(f"Using TaskBalancedBatchSampler: {batch_size} BS, 1000 batches/epoch")
-    else:
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
-            prefetch_factor=prefetch_factor,
-            drop_last=drop_last_train
-        )
-    
+
+    if rank == 0:
+        print(f"[DataLoader] Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
+
     return train_loader, val_loader

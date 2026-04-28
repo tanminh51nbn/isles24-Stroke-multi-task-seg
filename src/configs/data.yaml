@@ -1,0 +1,49 @@
+# ═══════════════════════════════════════════════════════════════
+#  ISLES'24 — Data Pipeline Configuration
+#  Không chứa đường dẫn dataset (truyền runtime từ notebook)
+# ═══════════════════════════════════════════════════════════════
+
+# ── Patient-level Split ──────────────────────────────────────────
+split:
+  val_ratio: 0.2
+  seed: 42
+  # GroupShuffleSplit theo patient_id — chống Data Leakage
+
+# ── Sampling ─────────────────────────────────────────────────────
+sampling:
+  # Tỷ lệ downsampling cho lát cắt all-negative (background hoàn toàn)
+  # Giữ lại 30% để model biết "não bình thường trông như thế nào"
+  downsample_neg_ratio: 0.3
+  # Oversample lát cắt có LVO (rất hiếm) lên 5 lần
+  lvo_oversample_factor: 5
+
+# ── DataLoader ───────────────────────────────────────────────────
+dataloader:
+  batch_size: 12            # Trên mỗi GPU (2 GPU → effective batch = 24)
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  drop_last: true           # Tránh batch size 1 ở cuối epoch
+
+# ── Augmentation ─────────────────────────────────────────────────
+augmentation:
+  enabled: true
+
+  horizontal_flip:
+    prob: 0.5               # Não đối xứng — flip là augmentation hợp lệ
+
+  affine:
+    prob: 0.5
+    rotate_deg: 15          # ±15 độ
+    scale_range: 0.1        # ±10%
+    translate_px: 10        # ±10 pixels
+
+  gaussian_noise:
+    prob: 0.3
+    mean: 0.0
+    std: 0.05               # Nhỏ — CT đã được chuẩn hóa [0,1]
+
+  intensity_scale:
+    prob: 0.3
+    factor: 0.1             # ±10% brightness

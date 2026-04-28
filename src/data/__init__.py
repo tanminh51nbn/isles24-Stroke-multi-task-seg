@@ -1,7 +1,7 @@
 from .dataset import ISLES24Dataset, build_dataset
 from .dataloader import build_dataloaders
 from .transforms import build_train_transforms, build_val_transforms
-from .fold_split import build_kfold_splits
+from .fold_split import build_patient_split, apply_sampling
 
 __all__ = [
     "ISLES24Dataset",
@@ -9,5 +9,6 @@ __all__ = [
     "build_dataloaders",
     "build_train_transforms",
     "build_val_transforms",
-    "build_kfold_splits",
+    "build_patient_split",
+    "apply_sampling",
 ]
