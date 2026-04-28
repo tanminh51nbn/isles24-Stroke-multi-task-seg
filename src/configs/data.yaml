@@ -31,13 +31,14 @@ augmentation:
   enabled: true
 
   horizontal_flip:
-    prob: 0.5               # Não đối xứng — flip là augmentation hợp lệ
+    prob: 0.0               # TẮT — ISLES'24 không chuẩn hóa orientation về MNI,
+                            # LVO có tính laterality (MCA trái/phải), flip tạo giải phẫu sai
 
   affine:
     prob: 0.5
-    rotate_deg: 15          # ±15 độ
-    scale_range: 0.1        # ±10%
-    translate_px: 10        # ±10 pixels
+    rotate_deg: 12          # ±12 độ
+    scale_range: 0.08       # ±8%
+    translate_px: 8         # ±8 pixels
 
   gaussian_noise:
     prob: 0.3
