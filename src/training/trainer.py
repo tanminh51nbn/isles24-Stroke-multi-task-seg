@@ -72,7 +72,8 @@ class Trainer:
         self.log_interval      = int(train_cfg["logging"]["log_interval"])
         self.metric_weights    = config["composite_score"]
 
-        self.scaler = GradScaler(enabled=self.amp_enabled)
+        # API mới của PyTorch (tránh FutureWarning)
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self.amp_enabled)
         self.history = []
 
     # ── Một epoch train ──────────────────────────────────────────────────────
@@ -81,6 +82,7 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
         n_batches  = 0
+        nan_batches = 0
 
         for batch_idx, batch in enumerate(self.train_loader):
             inp = batch["input"].to(self.device, non_blocking=True)   # (B, 18, H, W)
@@ -88,10 +90,18 @@ class Trainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            # Forward với AMP
-            with autocast(enabled=self.amp_enabled):
-                preds = self.model(inp)
+            # Forward với AMP (API mới)
+            with torch.amp.autocast('cuda', enabled=self.amp_enabled):
+                preds  = self.model(inp)
                 losses = self.loss_fn(preds, lbl)
+
+            # NaN Guard: bỏ qua batch nếu loss bị tràn số (float16 overflow)
+            if not torch.isfinite(losses["total"]):
+                nan_batches += 1
+                if self.rank == 0 and (batch_idx + 1) % self.log_interval == 0:
+                    print(f"  [WARN] Epoch {epoch+1} | Batch {batch_idx+1}: NaN loss detected, skipping batch.")
+                self.optimizer.zero_grad(set_to_none=True)
+                continue
 
             # Backward với GradScaler
             self.scaler.scale(losses["total"]).backward()
@@ -114,6 +124,9 @@ class Trainer:
                     f"(L={losses['lesion']:.4f}, LVO={losses['lvo']:.4f}, C={losses['cow']:.4f})"
                 )
 
+        if self.rank == 0 and nan_batches > 0:
+            print(f"  [WARN] Epoch {epoch+1}: {nan_batches}/{len(self.train_loader)} batches bị NaN (bỏ qua).")
+
         return {"train_loss": total_loss / max(n_batches, 1)}
 
     # ── Validation ────────────────────────────────────────────────────────────
@@ -131,7 +144,7 @@ class Trainer:
             inp = batch["input"].to(self.device, non_blocking=True)
             lbl = batch["label"].to(self.device, non_blocking=True)
 
-            with autocast(enabled=self.amp_enabled):
+            with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 preds = self.model(inp)
 
             metrics = compute_all_metrics(preds, lbl, self.metric_weights)
