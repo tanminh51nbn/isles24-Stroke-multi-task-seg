@@ -75,11 +75,16 @@ def train_worker(rank: int, world_size: int, args):
     device = torch.device(f"cuda:{rank}")
     torch.cuda.set_device(device)
 
-    if rank == 0:
-        print("=" * 60)
-        print(" ISLES'24 Dual-Encoder Multi-Task UNet")
-        print(f" World size: {world_size} GPU(s)")
-        print("=" * 60)
+    # ── Chỉ GPU 0 in log — tắt stdout của các GPU còn lại ────────────────────
+    import sys as _sys
+    import io as _io
+    if rank != 0:
+        _sys.stdout = _io.StringIO()  # Redirect sang buffer rỗng, không in gì cả
+
+    print("=" * 60)
+    print(" ISLES'24 Dual-Encoder Multi-Task UNet")
+    print(f" World size: {world_size} GPU(s)")
+    print("=" * 60)
 
     # Load config
     config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
@@ -102,7 +107,9 @@ def train_worker(rank: int, world_size: int, args):
     # ── Model ─────────────────────────────────────────────────────
     model = build_model(config)
     model = model.to(device)
-    model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+    # find_unused_parameters=True: Bắt buộc khi encoder bị freeze
+    # DDP cần biết một số parameter không nhận gradient (frozen) là intentional
+    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     # ── Loss / Optimizer / Scheduler ──────────────────────────────
     loss_fn   = MultiTaskLoss(config).to(device)
