@@ -22,7 +22,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from typing import Optional
 
-from ..compile.metrics import compute_all_metrics
+from compile.metrics import compute_all_metrics
 
 
 class Trainer:

@@ -16,9 +16,9 @@ import torch
 import torch.nn as nn
 from typing import List
 
-from .encoder import ResNet50Encoder, DenseNet121Encoder
-from .decoder import UNetDecoder
-from .heads import MultiTaskHeads
+from models.encoder import ResNet50Encoder, DenseNet121Encoder
+from models.decoder import UNetDecoder
+from models.heads import MultiTaskHeads
 
 
 class DualEncoderUNet(nn.Module):
