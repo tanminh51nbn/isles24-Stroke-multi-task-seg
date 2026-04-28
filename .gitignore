@@ -1,11 +1,9 @@
 # Bỏ qua toàn bộ trong notebooks/ trừ file train_exp0.py
 notebooks/*
 !notebooks/train_exp0.py
+script-check/
 
 # Bỏ qua các file nháp và tài liệu thiết kế (theo yêu cầu "bỏ hết")
-Context.md
-System_Design_Plan_ISLES24.md
-MODEL_SPEC.md
 
 # Bỏ qua thư viện và biến môi trường
 venv/
@@ -25,3 +23,6 @@ runs/
 *.log
 .DS_Store
 Thumbs.db
+
+# Bỏ qua các file cá nhân
+.agents/
