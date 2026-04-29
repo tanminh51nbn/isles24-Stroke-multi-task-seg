@@ -95,6 +95,8 @@ def train_worker(rank: int, world_size: int, args):
         config["cta_encoder"]["weights"] = args.cta_weights
     if args.perf_weights:
         config["perfusion_encoder"]["weights"] = args.perf_weights
+    if args.metadata_path:
+        config["sampling"]["metadata_csv"] = args.metadata_path
 
     # ── DataLoader ────────────────────────────────────────────────
     train_loader, val_loader = build_dataloaders(
@@ -195,6 +197,12 @@ def main():
         type=str,
         default=None,
         help="Đường dẫn tùy chỉnh tới trọng số DenseNet121",
+    )
+    parser.add_argument(
+        "--metadata_path",
+        type=str,
+        default="/kaggle/working/dataset_metadata.csv",
+        help="Đường dẫn tới file metadata CSV (phục vụ sampling)",
     )
     args = parser.parse_args()
 
