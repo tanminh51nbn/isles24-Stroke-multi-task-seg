@@ -31,6 +31,10 @@ composite_score:
   dice_lesion_weight: 0.4
   recall_lvo_weight: 0.4
   dice_cow_weight: 0.2
+  thresholds:
+    lesion: 0.5
+    lvo: 0.4               # Ưu tiên Recall cho LVO (ngưỡng thấp hơn)
+    cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
