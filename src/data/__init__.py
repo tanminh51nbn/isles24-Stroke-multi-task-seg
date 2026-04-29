@@ -2,6 +2,7 @@ from .dataset import ISLES24Dataset, build_dataset
 from .dataloader import build_dataloaders
 from .transforms import build_train_transforms, build_val_transforms
 from .fold_split import build_patient_split, apply_sampling
+from .metadata_builder import scan_dataset
 
 __all__ = [
     "ISLES24Dataset",
@@ -11,4 +12,5 @@ __all__ = [
     "build_val_transforms",
     "build_patient_split",
     "apply_sampling",
+    "scan_dataset",
 ]
