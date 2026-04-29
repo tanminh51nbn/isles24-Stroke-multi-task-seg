@@ -114,14 +114,16 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict) -> di
     Args:
         preds:   dict {'lesion', 'lvo', 'cow'} — raw logits
         targets: (B, 3, H, W) — binary masks
-        weights: dict composite score weights từ train.yaml
+        weights: dict composite score weights VÀ thresholds từ train.yaml
 
     Returns:
         dict {'dice_lesion', 'recall_lvo', 'dice_cow', 'composite'}
     """
-    d_lesion = dice_score(preds["lesion"],  targets[:, 0:1]).item()
-    r_lvo    = recall_score(preds["lvo"],   targets[:, 1:2]).item()
-    d_cow    = dice_score(preds["cow"],     targets[:, 2:3]).item()
+    thresholds = weights.get("thresholds", {"lesion": 0.5, "lvo": 0.5, "cow": 0.5})
+
+    d_lesion = dice_score(preds["lesion"],  targets[:, 0:1], threshold=thresholds["lesion"]).item()
+    r_lvo    = recall_score(preds["lvo"],   targets[:, 1:2], threshold=thresholds["lvo"]).item()
+    d_cow    = dice_score(preds["cow"],     targets[:, 2:3], threshold=thresholds["cow"]).item()
     comp     = composite_score(d_lesion, r_lvo, d_cow, weights)
 
     return {
