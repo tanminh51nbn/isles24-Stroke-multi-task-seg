@@ -161,6 +161,7 @@ class Trainer:
     def validate(self) -> dict:
         self.model.eval()
 
+        total_loss      = 0.0
         sum_dice_lesion = 0.0
         sum_recall_lvo  = 0.0
         sum_dice_cow    = 0.0
@@ -176,13 +177,15 @@ class Trainer:
                 continue
 
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
-                preds = self.model(inp)
+                preds  = self.model(inp)
+                losses = self.loss_fn(preds, lbl)
 
             # Bỏ qua batch nếu model output bị NaN
             pred_ok = all(torch.isfinite(v).all() for v in preds.values())
             if not pred_ok:
                 continue
 
+            total_loss += losses["total"].item()
             metrics = compute_all_metrics(preds, lbl, self.metric_weights)
 
             sum_dice_lesion += metrics["dice_lesion"]
@@ -190,11 +193,11 @@ class Trainer:
             n_batches += 1
 
             # Recall_LVO: chỉ tính trên batch thực sự có LVO ground truth
-            # recall_score trả về -1.0 (sentinel) khi batch không có LVO
             if metrics["recall_lvo"] >= 0:
                 sum_recall_lvo += metrics["recall_lvo"]
                 n_lvo_batches  += 1
 
+        avg_loss        = total_loss / max(n_batches, 1)
         avg_dice_lesion = sum_dice_lesion / max(n_batches, 1)
         avg_recall_lvo  = sum_recall_lvo  / max(n_lvo_batches, 1)
         avg_dice_cow    = sum_dice_cow    / max(n_batches, 1)
@@ -205,6 +208,7 @@ class Trainer:
         )
 
         return {
+            "val_loss":    avg_loss,
             "dice_lesion": avg_dice_lesion,
             "recall_lvo":  avg_recall_lvo,
             "dice_cow":    avg_dice_cow,
@@ -250,10 +254,9 @@ class Trainer:
             if self.rank == 0:
                 print(
                     f"\n[Epoch {epoch+1:03d}/{self.epochs}] "
-                    f"Train Loss: {train_metrics['train_loss']:.4f} | "
+                    f"Loss(T/V): {train_metrics['train_loss']:.4f}/{val_metrics['val_loss']:.4f} | "
                     f"Dice_L: {val_metrics['dice_lesion']:.4f} | "
                     f"Recall_LVO: {val_metrics['recall_lvo']:.4f} | "
-                    f"Dice_CoW: {val_metrics['dice_cow']:.4f} | "
                     f"Composite: {val_metrics['composite']:.4f}",
                     flush=True
                 )
