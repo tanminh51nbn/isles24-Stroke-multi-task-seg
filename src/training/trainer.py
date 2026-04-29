@@ -92,19 +92,13 @@ class Trainer:
             inp = batch["input"].to(self.device, non_blocking=True)   # (B, 18, H, W)
             lbl = batch["label"].to(self.device, non_blocking=True)   # (B, 3, H, W)
 
-            # ── Stage 1: Kiểm tra NaN trong Input Data ───────────────────────
-            # Nguyên nhân: một số file .npy Perfusion có thể chứa NaN/inf
-            # do lỗi trong quá trình tiền xử lý (chia 0, thiếu scan).
-            # Phải check TRƯỚC forward pass để tránh nhiễm toàn bộ batch.
-            nan_flag.fill_(0.0)
+            # ── Stage 1: Xử lý NaN trong Input Data ─────────────────────────
+            # Thay vì skip batch, thay NaN/inf bằng 0 để không mất dữ liệu.
+            # Nguyên nhân NaN: kênh Perfusion (CBF, Tmax) có thể chứa NaN
+            # do lỗi tiền xử lý (chia 0, scan bị thiếu).
             if not torch.isfinite(inp).all():
-                nan_flag.fill_(1.0)
-            dist.all_reduce(nan_flag, op=dist.ReduceOp.MAX)
-
-            if nan_flag.item() > 0:
-                nan_batches += 1
                 nan_input_batches += 1
-                continue  # Cả 2 rank đồng thuận skip → không deadlock
+                inp = torch.nan_to_num(inp, nan=0.0, posinf=0.0, neginf=0.0)
             # ─────────────────────────────────────────────────────────────────
 
             self.optimizer.zero_grad(set_to_none=True)
@@ -115,12 +109,7 @@ class Trainer:
                 losses = self.loss_fn(preds, lbl)
 
             # ── Stage 2: Kiểm tra NaN trong Loss (AMP overflow) ──────────────
-            nan_flag.fill_(0.0)
             if not torch.isfinite(losses["total"]):
-                nan_flag.fill_(1.0)
-            dist.all_reduce(nan_flag, op=dist.ReduceOp.MAX)
-
-            if nan_flag.item() > 0:
                 nan_batches += 1
                 self.optimizer.zero_grad(set_to_none=True)
                 continue
@@ -203,12 +192,12 @@ class Trainer:
 
             # --- Thực hiện vẽ ảnh (chỉ mẫu đầu tiên của batch đầu tiên hợp lệ) ---
             if should_visualize and not visualized:
-                save_dir = os.path.join(self.config["training"]["checkpoint"]["dir"], "visualizations")
+                vis_dir = os.path.join(self.config["training"]["checkpoint"]["dir"], "visualizations")
                 overlay_predictions(
                     sample={"input": inp[0], "label": lbl[0], "path": batch["path"][0]},
-                    preds={k: v[0:1] for k, v in preds.items()}, # Lấy mẫu đầu tiên
+                    preds={k: v[0:1] for k, v in preds.items()},
                     epoch=epoch,
-                    save_dir=os.path.join(self.device.type == 'cuda' and '/kaggle/working' or '.', save_dir),
+                    save_dir=vis_dir,
                     threshold=self.metric_weights.get("thresholds", {}).get("lesion", 0.5)
                 )
                 visualized = True
