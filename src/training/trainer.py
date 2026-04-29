@@ -252,9 +252,6 @@ class Trainer:
             # Validate
             val_metrics = self.validate(epoch + 1)
 
-            # Scheduler step
-            self.scheduler.step()
-
             # Log kết quả epoch
             if self.rank == 0:
                 print(
@@ -279,5 +276,8 @@ class Trainer:
                     if self.rank == 0:
                         print(f"[Trainer] Early stopping tại epoch {epoch+1}", flush=True)
                     break
+            
+            # Cập nhật LR sau mỗi epoch (Sau optimizer.step đã chạy trong train_one_epoch)
+            self.scheduler.step()
 
         return self.history
