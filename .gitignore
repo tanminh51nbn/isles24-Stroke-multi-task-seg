@@ -2,7 +2,7 @@
 notebooks/*
 !notebooks/train_exp0.py
 script-check/
-
+Notebook.py
 # Bỏ qua các file nháp và tài liệu thiết kế (theo yêu cầu "bỏ hết")
 
 # Bỏ qua thư viện và biến môi trường
