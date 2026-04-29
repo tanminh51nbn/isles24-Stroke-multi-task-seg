@@ -7,22 +7,22 @@
 loss:
   lesion:
     type: "tversky"
-    alpha: 0.4              # Phạt FP (đoán nhầm vùng lành là bệnh)
-    beta: 0.6               # Phạt FN (bỏ sót vùng bệnh) — quan trọng hơn
-    weight: 2.0             # Task weight trong tổng loss
+    alpha: 0.4
+    beta: 0.6
+    weight: 0.35
 
   lvo:
     type: "focal_tversky"
-    alpha: 0.3              # Tăng nhẹ alpha để cân bằng
-    beta: 0.7               # Giảm beta từ 0.8 -> 0.7 (bớt phạt nặng FN giai đoạn đầu)
-    gamma: 2.0              # Giảm gamma từ 3.0 -> 2.0 để tránh NaN/Gradient Explosion
-    weight: 3.25             # Giảm weight từ 10x -> 5x để ổn định training
+    alpha: 0.2
+    beta: 0.8
+    gamma: 2.0
+    weight: 0.55
 
   cow:
     type: "tversky"
     alpha: 0.5
-    beta: 0.5               # Cân bằng — CoW là giải phẫu bình thường, ít biến động
-    weight: 0.75             # Nhiệm vụ phụ trợ
+    beta: 0.5
+    weight: 0.10
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
