@@ -37,39 +37,26 @@ class TverskyLoss(nn.Module):
         smooth:  Epsilon để tránh division by zero
     """
 
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1e-6):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1e-5):
         super().__init__()
         self.alpha  = alpha
         self.beta   = beta
         self.smooth = smooth
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            logits:  (B, 1, H, W) — raw logits
-            targets: (B, 1, H, W) — binary mask {0.0, 1.0}
-
-        Returns:
-            Scalar loss
-        """
         probs = torch.sigmoid(logits)
-
-        # Flatten spatial dims để tính tổng
-        probs   = probs.view(probs.size(0), -1)    # (B, H*W)
-        targets = targets.view(targets.size(0), -1)  # (B, H*W)
+        probs   = probs.view(probs.size(0), -1)
+        targets = targets.view(targets.size(0), -1)
 
         TP = (probs * targets).sum(dim=1)
         FP = (probs * (1 - targets)).sum(dim=1)
         FN = ((1 - probs) * targets).sum(dim=1)
 
-        # Sử dụng smooth lớn hơn (1e-5) cho float16 stability
-        numerator = TP + self.smooth
+        numerator   = TP + self.smooth
         denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
-        
-        # Clamp denominator để tránh chia cho 0 tuyệt đối
         tversky_index = numerator / denominator.clamp(min=self.smooth)
-        
-        return 1.0 - tversky_index.mean()
+
+        return (1.0 - tversky_index.mean()).clamp(min=0.0, max=1.0)
 
 
 # ─── Focal Tversky Loss ───────────────────────────────────────────────────────
@@ -106,17 +93,17 @@ class FocalTverskyLoss(nn.Module):
         FP = (probs * (1 - targets)).sum(dim=1)
         FN = ((1 - probs) * targets).sum(dim=1)
 
-        numerator = TP + self.smooth
+        numerator   = TP + self.smooth
         denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
-        
         tversky_index = numerator / denominator.clamp(min=self.smooth)
-        
-        # focal_tversky = (1 - TI)^gamma
-        # Dùng clamp an toàn hơn cho float16
+
+        # Clamp error trong [1e-6, 1.0] trước khi pow() để tránh float16 overflow
+        # float16 max = 65504. pow(1.0, 3.0) = 1.0 (safe). pow(1.0001, 3.0) có thể inf.
         error = (1.0 - tversky_index).clamp(min=1e-6, max=1.0)
         focal_tversky = torch.pow(error, self.gamma)
-        
-        return focal_tversky.mean()
+
+        # Clamp output cuối để đảm bảo loss luôn hữu hạn kể cả khi AMP overflow
+        return focal_tversky.mean().clamp(max=10.0)
 
 
 # ─── Multi-Task Loss ──────────────────────────────────────────────────────────
