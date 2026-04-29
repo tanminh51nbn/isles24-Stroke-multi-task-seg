@@ -127,6 +127,49 @@ class RandomIntensityScale:
         return sample
 
 
+class RandomElasticTransform(nn.Module):
+    """
+    Biến dạng đàn hồi (Elastic Deformation).
+    Mô phỏng nhu mô não bị chèn ép do sưng phù (edema).
+    Dùng PyTorch grid_sample để xử lý nhanh trên GPU.
+    """
+    def __init__(self, prob: float = 0.2, alpha: float = 1.0, sigma: float = 50.0):
+        super().__init__()
+        self.prob  = prob
+        self.alpha = alpha
+        self.sigma = sigma
+
+    def __call__(self, sample: dict) -> dict:
+        if random.random() > self.prob:
+            return sample
+
+        inp = sample["input"]   # (18, H, W)
+        lbl = sample["label"]  # (3, H, W)
+        C, H, W = inp.shape
+
+        # Tạo displacement field ngẫu nhiên
+        dx = torch.randn(1, 1, H, W, device=inp.device) * self.alpha
+        dy = torch.randn(1, 1, H, W, device=inp.device) * self.alpha
+
+        # Làm mượt field bằng Gaussian blur (mô phỏng sự biến dạng liên tục)
+        kernel_size = int(self.sigma * 3)
+        if kernel_size % 2 == 0: kernel_size += 1
+        
+        # Tạo meshgrid chuẩn
+        yy, xx = torch.meshgrid(torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing='ij')
+        grid = torch.stack([xx, yy], dim=-1).to(inp.device).unsqueeze(0) # (1, H, W, 2)
+
+        # Thêm biến dạng vào grid
+        disp = torch.cat([dx.permute(0, 2, 3, 1), dy.permute(0, 2, 3, 1)], dim=-1)
+        grid = (grid + disp).clamp(-1, 1)
+
+        # Áp dụng
+        sample["input"] = F.grid_sample(inp.unsqueeze(0), grid, mode="bilinear", align_corners=False).squeeze(0)
+        sample["label"] = F.grid_sample(lbl.unsqueeze(0), grid, mode="nearest", align_corners=False).squeeze(0)
+        
+        return sample
+
+
 # ─── Factory ─────────────────────────────────────────────────────────────────
 
 def build_train_transforms(config: dict) -> Callable:
@@ -135,15 +178,25 @@ def build_train_transforms(config: dict) -> Callable:
     transforms = []
 
     if aug.get("enabled", True):
-        transforms.append(RandomHorizontalFlip(
-            prob=aug["horizontal_flip"]["prob"]
-        ))
+        # 1. Spatial Transforms (Sync Input + Label)
+        if aug["horizontal_flip"]["prob"] > 0:
+            transforms.append(RandomHorizontalFlip(prob=aug["horizontal_flip"]["prob"]))
+            
         transforms.append(RandomAffine(
             prob=aug["affine"]["prob"],
             rotate_deg=aug["affine"]["rotate_deg"],
             scale_range=aug["affine"]["scale_range"],
             translate_px=aug["affine"]["translate_px"],
         ))
+
+        if "elastic_transform" in aug:
+            transforms.append(RandomElasticTransform(
+                prob=aug["elastic_transform"]["prob"],
+                alpha=aug["elastic_transform"]["alpha"],
+                sigma=aug["elastic_transform"]["sigma"]
+            ))
+
+        # 2. Intensity Transforms (Input Only)
         transforms.append(GaussianNoise(
             prob=aug["gaussian_noise"]["prob"],
             std=aug["gaussian_noise"]["std"],
