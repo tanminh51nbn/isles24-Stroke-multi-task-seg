@@ -33,19 +33,20 @@ perfusion_encoder:
 
 # ── Decoder ─────────────────────────────────────────────────────
 decoder:
-  # Concatenated skip channels at each level (cta + perfusion):
-  # Level 1: 64+64=128, L2: 256+128=384, L3: 512+256=768, L4: 1024+512=1536, L5(bottleneck): 2048+1024=3072
-  out_channels: [256, 128, 64, 32, 16]  # Output channels after each decoder block
+  attention_type: "dual"  # "dual", "ag", or null
+  out_channels: [512, 256, 128, 64]
+  final_ch: 16
 
-# ── Heads ────────────────────────────────────────────────────────
+# ── Heads (Residual Task Blocks) ────────────────────────────────
 heads:
-  dropout: 0.3            # Spatial Dropout2d
+  dropout: 0.3
+  activation: "GELU"
   lesion:
-    out_channels: 1       # Binary — infarct core
+    out_channels: 1
   lvo:
-    out_channels: 1       # Binary — large vessel occlusion
+    out_channels: 1
   cow:
-    out_channels: 1       # Binary — Circle of Willis
+    out_channels: 1
 
 # ── Output ──────────────────────────────────────────────────────
 # Raw logits (NO sigmoid/softmax in model forward)
