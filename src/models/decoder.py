@@ -173,16 +173,15 @@ class UNetDecoder(nn.Module):
             ConvBnGelu(1024, 1024),
         )
 
-        # skip_ch: Tổng số kênh skip (CTA + Perf) tại mỗi level
-        # Level 4: Res(1024) + Dense(512) = 1536
-        # Level 3: Res(512)  + Dense(256) = 768
-        # Level 2: Res(256)  + Dense(128) = 384
-        # Level 1: Res(64)   + Dense(64)  = 128
+        # Kênh THỰC TẾ từ Encoder (đã xác minh từ encoder.py):
+        # ResNet50:   [s1=64,   s2=256,  s3=512,  s4=1024, s5=2048]
+        # DenseNet121:[d1=64,   d2=256,  d3=512,  d4=1024, d5=1024]
+        # Tổng Skip:  [L1=128,  L2=512,  L3=1024, L4=2048, BN=3072]
         
-        self.dec4 = DecoderBlock(1024, 1536, dec_ch[0], attn_type)
-        self.dec3 = DecoderBlock(dec_ch[0], 768, dec_ch[1], attn_type)
-        self.dec2 = DecoderBlock(dec_ch[1], 384, dec_ch[2], attn_type)
-        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)
+        self.dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type) # s4+d4 = 1024+1024
+        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type) # s3+d3 = 512+512
+        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type)  # s2+d2 = 256+256
+        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)  # s1+d1 = 64+64
 
         # Upsample cuối từ H/2 → H (full resolution) + Refinement
         self.final_upsample = nn.Sequential(
