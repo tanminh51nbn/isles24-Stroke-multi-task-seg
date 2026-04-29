@@ -167,6 +167,8 @@ def train_worker(rank: int, world_size: int, args):
         print(f"  Composite:      {best['composite']:.4f}")
         print("=" * 60)
 
+    # Đợi tất cả GPU làm xong (đặc biệt là rank 0 vẽ hình)
+    dist.barrier()
     dist.destroy_process_group()
 
 
