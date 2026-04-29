@@ -14,7 +14,7 @@ from typing import Tuple
 
 from .dataset import ISLES24Dataset
 from .transforms import build_train_transforms, build_val_transforms
-from .fold_split import build_patient_split
+from .fold_split import build_patient_split, apply_sampling
 
 import os
 import glob
@@ -50,6 +50,9 @@ def build_dataloaders(
         val_ratio=split_cfg["val_ratio"],
         seed=split_cfg["seed"],
     )
+
+    # Thực hiện Smart Sampling (chỉ áp dụng cho tập train)
+    train_files = apply_sampling(train_files, config)
 
     # Build Dataset
     train_dataset = ISLES24Dataset(train_files, transform=build_train_transforms(config))
