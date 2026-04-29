@@ -173,17 +173,17 @@ class UNetDecoder(nn.Module):
             ConvBnGelu(1024, 1024),
         )
 
-        # skip_ch corrected values:
+        # skip_ch corrected values for ResNet50 (2048) + DenseNet121 (1024):
+        # Level 5 (Bottleneck): Res(2048) + Dense(1024) = 3072
         # Level 4: Res(1024) + Dense(512) = 1536
         # Level 3: Res(512)  + Dense(256) = 768
         # Level 2: Res(256)  + Dense(128) = 384
-        # Level 4: Res(1024) + Dense(512) = 1536  (Dùng cho dec4)
-        # Level 5 (Bottleneck): Res(2048) + Dense(1024) = 3072 (Dùng làm input cho dec4)
+        # Level 1: Res(64)   + Dense(64)  = 128
         
-        self.dec4 = DecoderBlock(3072, 1536, dec_ch[0], attn_type)
-        self.dec3 = DecoderBlock(dec_ch[0], 768, dec_ch[1], attn_type)
-        self.dec2 = DecoderBlock(dec_ch[1], 384, dec_ch[2], attn_type)
-        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)
+        self.dec4 = DecoderBlock(1024, 3072, dec_ch[0], attn_type) # Skip: 2048+1024
+        self.dec3 = DecoderBlock(dec_ch[0], 1536, dec_ch[1], attn_type) # Skip: 1024+512
+        self.dec2 = DecoderBlock(dec_ch[1], 768, dec_ch[2], attn_type)  # Skip: 512+256
+        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)  # Skip: 64+64
 
         # Upsample cuối từ H/2 → H (full resolution) + Refinement
         self.final_upsample = nn.Sequential(
