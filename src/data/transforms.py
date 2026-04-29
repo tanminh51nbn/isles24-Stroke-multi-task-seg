@@ -9,6 +9,7 @@ Nguyên tắc:
 """
 
 import torch
+import torch.nn as nn
 import numpy as np
 import random
 from typing import Callable
