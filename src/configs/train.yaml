@@ -38,6 +38,7 @@ optimizer:
   lr: 5.0e-4                # Base LR cho Decoder và Heads
   weight_decay: 1.0e-3      # L2 regularization
   encoder_lr_scale: 0.1     # Encoder LR = 1e-4 × 0.1 = 1e-5
+  eps: 1.0e-7               # Cải thiện độ ổn định cho AMP (Mixed Precision)
                             # Bảo vệ RadImageNet weights, tránh quên kiến thức y tế
 
 # ── LR Scheduler ────────────────────────────────────────────────
