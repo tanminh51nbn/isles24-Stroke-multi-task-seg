@@ -13,36 +13,42 @@ import torch
 import torch.nn as nn
 
 
+class ResidualBlock(nn.Module):
+    """Khối Residual nhỏ để chuyên môn hóa đặc trưng cho từng task."""
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(channels)
+        self.gelu  = nn.GELU()
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn2   = nn.BatchNorm2d(channels)
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.gelu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        return self.gelu(out + residual)
+
+
 class SegmentationHead(nn.Module):
     """
-    Đầu phân vùng cho một task.
-
-    Kiến trúc:
-        Conv 3×3 (in_ch → in_ch) → BN → ReLU
-        → SpatialDropout2d (regularization theo channel)
-        → Conv 1×1 (in_ch → out_ch)  [raw logit]
+    Đầu phân vùng chuyên gia cho một task.
+    Cấu trúc: ResidualBlock -> Dropout -> Conv1x1
     """
 
     def __init__(self, in_ch: int, out_ch: int = 1, dropout: float = 0.3):
-        """
-        Args:
-            in_ch:   Số kênh đầu vào (từ decoder output, mặc định 16)
-            out_ch:  Số kênh đầu ra (1 cho binary segmentation)
-            dropout: Xác suất Spatial Dropout (theo kênh, không theo pixel)
-        """
         super().__init__()
-        self.head = nn.Sequential(
-            nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(in_ch),
-            nn.ReLU(inplace=True),
-            # Spatial Dropout2d drop toàn bộ feature map của một kênh
-            # Hiệu quả hơn Dropout thông thường cho segmentation (Tompson et al.)
-            nn.Dropout2d(p=dropout),
-            nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=True),
-        )
+        self.res_block = ResidualBlock(in_ch)
+        self.dropout   = nn.Dropout2d(p=dropout)
+        self.conv_out  = nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.head(x)
+        x = self.res_block(x)
+        x = self.dropout(x)
+        return self.conv_out(x)
 
 
 class MultiTaskHeads(nn.Module):
