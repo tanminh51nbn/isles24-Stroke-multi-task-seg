@@ -67,28 +67,60 @@ def build_patient_split(
     return train_files, val_files
 
 
+import pandas as pd
+
 def apply_sampling(
     train_files: List[str],
-    downsample_neg_ratio: float = 0.3,
-    lvo_oversample_factor: int = 5,
+    config: dict,
 ) -> List[str]:
     """
-    Cân bằng tập train bằng cách:
-        - Giữ lại một phần slice all-negative (background)
-        - Lặp lại slice có LVO nhiều lần (oversample)
-
-    Lưu ý: Hàm này cần metadata để biết file nào có LVO.
-    Nếu không có metadata, dùng tên file để đoán (không chính xác).
-    Tốt hơn là nạp từ dataset_metadata.csv.
-
-    Args:
-        train_files:           Danh sách file train
-        downsample_neg_ratio:  Tỷ lệ giữ lại slice all-negative
-        lvo_oversample_factor: Số lần lặp slice có LVO
-
-    Returns:
-        Danh sách file đã được cân bằng (có thể có duplicate)
+    Cân bằng tập train dựa trên cấu hình trong data.yaml.
     """
-    # Placeholder — logic đầy đủ cần đọc metadata CSV
-    # PINELINE.py sẽ truyền metadata vào để thực hiện sampling chính xác
-    return train_files
+    sampling_cfg = config["sampling"]
+    if not sampling_cfg.get("enabled", False):
+        return train_files
+
+    metadata_csv = sampling_cfg["metadata_csv"]
+    if not os.path.exists(metadata_csv):
+        print(f"[Warning] Không tìm thấy {metadata_csv}. Bỏ qua sampling.")
+        return train_files
+
+    lvo_oversample_factor = sampling_cfg.get("lvo_oversample_factor", 5)
+    downsample_neg_ratio  = sampling_cfg.get("downsample_neg_ratio", 0.3)
+
+    df = pd.read_csv(metadata_csv)
+    # Lọc chỉ lấy những file nằm trong tập train_files hiện tại
+    train_basenames = {os.path.basename(f) for f in train_files}
+    df_train = df[df["filepath"].isin(train_basenames)].copy()
+
+    # Phân loại
+    lvo_files = df_train[df_train["has_lvo"] == 1]["filepath"].tolist()
+    neg_files = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["filepath"].tolist()
+    other_files = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["filepath"].tolist()
+
+    # Thực hiện lấy mẫu
+    sampled_files = []
+    
+    # 1. Nhân bản LVO
+    for _ in range(lvo_oversample_factor):
+        sampled_files.extend(lvo_files)
+    
+    # 2. Giữ nguyên các ca có Lesion nhưng không LVO
+    sampled_files.extend(other_files)
+
+    # 3. Downsample các ca toàn màu đen
+    n_neg = int(len(neg_files) * downsample_neg_ratio)
+    if len(neg_files) > 0:
+        sampled_files.extend(random.sample(neg_files, n_neg))
+
+    # Chuyển basename ngược lại thành full path
+    path_map = {os.path.basename(f): f for f in train_files}
+    final_list = [path_map[b] for b in sampled_files]
+    
+    random.shuffle(final_list)
+    
+    print(f"[Sampling] LVO: {len(lvo_files)} -> {len(lvo_files)*lvo_oversample_factor}")
+    print(f"[Sampling] Background Downsampled: {len(neg_files)} -> {n_neg}")
+    print(f"[Sampling] Tổng số file sau khi balance: {len(final_list)}")
+
+    return final_list
