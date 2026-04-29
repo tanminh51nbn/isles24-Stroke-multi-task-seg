@@ -18,43 +18,50 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR, SequentialLR
 
 def build_scheduler(optimizer, config: dict, steps_per_epoch: int = 1):
     """
-    Xây dựng scheduler: Linear Warmup → CosineAnnealing.
+    Xây dựng scheduler 3 giai đoạn: Linear Warmup → Constant Hold → CosineAnnealing.
 
     Args:
         optimizer:       AdamW optimizer
         config:          Dict đọc từ train.yaml
-        steps_per_epoch: Số batch mỗi epoch (dùng nếu muốn step-level scheduling)
+        steps_per_epoch: Số batch mỗi epoch
 
     Returns:
-        SequentialLR (warmup → cosine)
+        SequentialLR (warmup → hold → cosine)
     """
     sched_cfg   = config["scheduler"]
     train_cfg   = config["training"]
     warmup_ep   = int(sched_cfg["warmup_epochs"])
+    hold_ep     = int(sched_cfg.get("hold_epochs", 0))
     total_ep    = int(train_cfg["epochs"])
     min_lr      = float(sched_cfg["min_lr"])
 
-    # --- Warmup: Linear tăng từ 0 → 1 (× base_lr) ---
+    # 1. --- Warmup: Linear tăng từ 0 → 1 (× base_lr) ---
     def warmup_lambda(epoch):
-        if epoch < warmup_ep:
-            return float(epoch + 1) / float(warmup_ep)
-        return 1.0
+        return float(epoch + 1) / float(warmup_ep)
 
     warmup_scheduler = LambdaLR(optimizer, lr_lambda=warmup_lambda)
 
-    # --- Cosine Annealing sau warmup ---
+    # 2. --- Hold: Giữ nguyên base_lr (Constant LR) ---
+    # LambdaLR trả về constant 1.0 (nhân với base_lr)
+    hold_scheduler = LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+
+    # 3. --- Cosine Annealing sau giai đoạn Hold ---
     cosine_scheduler = CosineAnnealingLR(
         optimizer,
-        T_max=total_ep - warmup_ep,
+        T_max=total_ep - warmup_ep - hold_ep,
         eta_min=min_lr,
     )
 
-    # Kết hợp: warmup_ep epoch đầu dùng warmup, còn lại dùng cosine
+    # Kết hợp 3 giai đoạn bằng SequentialLR
     scheduler = SequentialLR(
         optimizer,
-        schedulers=[warmup_scheduler, cosine_scheduler],
-        milestones=[warmup_ep],
+        schedulers=[warmup_scheduler, hold_scheduler, cosine_scheduler],
+        milestones=[warmup_ep, warmup_ep + hold_ep],
     )
 
-    print(f"[Scheduler] Warmup {warmup_ep} epochs → CosineAnnealing {total_ep - warmup_ep} epochs (min_lr={min_lr:.2e})")
+    print(
+        f"[Scheduler] Phased Strategy: Warmup({warmup_ep}ep) "
+        f"→ Hold({hold_ep}ep) → Cosine({total_ep - warmup_ep - hold_ep}ep) | "
+        f"min_lr={min_lr:.2e}"
+    )
     return scheduler
