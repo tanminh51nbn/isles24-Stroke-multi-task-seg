@@ -16,6 +16,7 @@ Features:
     - Logging per-batch và per-epoch
 """
 
+import os
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -23,6 +24,7 @@ from torch.utils.data import DataLoader
 from typing import Optional
 
 from compile.metrics import compute_all_metrics
+from evaluation.visualize import overlay_predictions
 
 
 class Trainer:
@@ -158,21 +160,25 @@ class Trainer:
 
 
     @torch.no_grad()
-    def validate(self) -> dict:
+    def validate(self, epoch: int) -> dict:
         self.model.eval()
 
         total_loss      = 0.0
         sum_dice_lesion = 0.0
         sum_recall_lvo  = 0.0
         sum_dice_cow    = 0.0
-        n_batches     = 0   # Batch hợp lệ (dùng cho Dice_L và Dice_CoW)
-        n_lvo_batches = 0   # Batch thực sự có LVO (dùng riêng cho Recall)
+        n_batches     = 0
+        n_lvo_batches = 0
+        
+        # Biến để kiểm tra xem đã vẽ ảnh cho epoch này chưa
+        visualized = False
+        vis_interval = self.config["training"]["logging"].get("visualize_every", 5)
+        should_visualize = (epoch % vis_interval == 0) and (self.rank == 0)
 
-        for batch in self.val_loader:
+        for batch_idx, batch in enumerate(self.val_loader):
             inp = batch["input"].to(self.device, non_blocking=True)
             lbl = batch["label"].to(self.device, non_blocking=True)
 
-            # Bỏ qua batch nếu input data bị NaN (file .npy lỗi)
             if not torch.isfinite(inp).all():
                 continue
 
@@ -180,7 +186,6 @@ class Trainer:
                 preds  = self.model(inp)
                 losses = self.loss_fn(preds, lbl)
 
-            # Bỏ qua batch nếu model output bị NaN
             pred_ok = all(torch.isfinite(v).all() for v in preds.values())
             if not pred_ok:
                 continue
@@ -192,10 +197,21 @@ class Trainer:
             sum_dice_cow    += metrics["dice_cow"]
             n_batches += 1
 
-            # Recall_LVO: chỉ tính trên batch thực sự có LVO ground truth
             if metrics["recall_lvo"] >= 0:
                 sum_recall_lvo += metrics["recall_lvo"]
                 n_lvo_batches  += 1
+
+            # --- Thực hiện vẽ ảnh (chỉ mẫu đầu tiên của batch đầu tiên hợp lệ) ---
+            if should_visualize and not visualized:
+                save_dir = os.path.join(self.config["training"]["checkpoint"]["dir"], "visualizations")
+                overlay_predictions(
+                    sample={"input": inp[0], "label": lbl[0], "path": batch["path"][0]},
+                    preds={k: v[0:1] for k, v in preds.items()}, # Lấy mẫu đầu tiên
+                    epoch=epoch,
+                    save_dir=os.path.join(self.device.type == 'cuda' and '/kaggle/working' or '.', save_dir),
+                    threshold=self.metric_weights.get("thresholds", {}).get("lesion", 0.5)
+                )
+                visualized = True
 
         avg_loss        = total_loss / max(n_batches, 1)
         avg_dice_lesion = sum_dice_lesion / max(n_batches, 1)
@@ -245,7 +261,7 @@ class Trainer:
             train_metrics = self.train_one_epoch(epoch)
 
             # Validate
-            val_metrics = self.validate()
+            val_metrics = self.validate(epoch + 1)
 
             # Scheduler step
             self.scheduler.step()
