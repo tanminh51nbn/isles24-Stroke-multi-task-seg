@@ -28,6 +28,7 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     """
     epochs       = [h["epoch"] for h in history]
     train_losses = [h["train_loss"]   for h in history]
+    val_losses   = [h["val_loss"]     for h in history]
     dice_lesion  = [h["dice_lesion"]  for h in history]
     recall_lvo   = [h["recall_lvo"]   for h in history]
     dice_cow     = [h["dice_cow"]     for h in history]
@@ -38,7 +39,8 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
 
     # Panel 1: Loss
     axes[0].plot(epochs, train_losses, color="#E74C3C", linewidth=2, label="Train Loss")
-    axes[0].set_title("Training Loss")
+    axes[0].plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss", linestyle="--")
+    axes[0].set_title("Training & Validation Loss")
     axes[0].set_xlabel("Epoch")
     axes[0].set_ylabel("Loss")
     axes[0].legend()
