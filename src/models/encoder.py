@@ -59,7 +59,7 @@ class SliceAttention(nn.Module):
         # Shared MLP giữa Avg và Max
         self.fc = nn.Sequential(
             nn.Linear(in_channels, in_channels // 2 + 1),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Linear(in_channels // 2 + 1, in_channels)
         )
         # Note: Nếu muốn dùng Concat (thông minh hơn), đổi nn.Linear(in_channels*2, ...) 
@@ -114,7 +114,7 @@ class ResNet50Encoder(nn.Module):
             bias=False,
         )
         self.bn1   = backbone.bn1
-        self.relu  = backbone.relu
+        self.gelu  = nn.GELU()
 
         # Load RadImageNet weights (nếu có)
         if weights_path is not None:
@@ -127,7 +127,7 @@ class ResNet50Encoder(nn.Module):
                 )
 
         # Tách thành 5 stage để lấy skip connections
-        self.stage0 = nn.Sequential(self.slice_attention, self.conv1, self.bn1, self.relu)  # 64ch, /2
+        self.stage0 = nn.Sequential(self.slice_attention, self.conv1, self.bn1, self.gelu)  # 64ch, /2
         self.pool   = backbone.maxpool  # /4 tổng
         self.stage1 = backbone.layer1   # 256ch,  /4
         self.stage2 = backbone.layer2   # 512ch,  /8
@@ -206,7 +206,7 @@ class DenseNet121Encoder(nn.Module):
             bias=False,
         )
         self.norm0 = features.norm0
-        self.relu0 = features.relu0
+        self.gelu0 = nn.GELU()
 
         # Load RadImageNet weights
         if weights_path is not None:
@@ -220,7 +220,7 @@ class DenseNet121Encoder(nn.Module):
 
         # Tách 5 stage để lấy skip connections
         self.stage0 = nn.Sequential(
-            self.slice_attention, self.conv0, self.norm0, self.relu0
+            self.slice_attention, self.conv0, self.norm0, self.gelu0
         )                                          # 64ch, /2
         self.pool   = features.pool0               # /4 tổng
         self.stage1 = features.denseblock1         # 128ch (256 in original, half out)
