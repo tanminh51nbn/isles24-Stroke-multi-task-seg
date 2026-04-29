@@ -19,32 +19,44 @@ sampling:
 
 # ── DataLoader ───────────────────────────────────────────────────
 dataloader:
-  batch_size: 16            # Trên mỗi GPU (2 GPU → effective batch = 24)
+  batch_size: 16 # Trên mỗi GPU (2 GPU → effective batch = 24)
   num_workers: 4
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
-  drop_last: true           # Tránh batch size 1 ở cuối epoch
+  drop_last: true # Tránh batch size 1 ở cuối epoch
+
+# ── Sampling Strategy ────────────────────────────────────────────
+sampling:
+  enabled: true
+  metadata_csv: "/kaggle/working/dataset_metadata.csv"
+  lvo_oversample_factor: 5   # Nhân bản slice có LVO gấp 5 lần
+  downsample_neg_ratio: 0.3  # Chỉ giữ lại 30% slice all-negative (không bệnh)
 
 # ── Augmentation ─────────────────────────────────────────────────
 augmentation:
   enabled: true
 
   horizontal_flip:
-    prob: 0.0               # TẮT — ISLES'24 không chuẩn hóa orientation về MNI,
-                            # LVO có tính laterality (MCA trái/phải), flip tạo giải phẫu sai
+    prob: 0.0
 
   affine:
     prob: 0.5
-    rotate_deg: 12          # ±12 độ
-    scale_range: 0.08       # ±8%
-    translate_px: 8         # ±8 pixels
+    rotate_deg: 15
+    scale_range: 0.1
+    translate_px: 10
+
+  elastic_transform:
+    prob: 0.2
+    alpha: 1.0
+    sigma: 50
+    alpha_affine: 50
 
   gaussian_noise:
     prob: 0.3
     mean: 0.0
-    std: 0.05               # Nhỏ — CT đã được chuẩn hóa [0,1]
+    std: 0.05
 
   intensity_scale:
     prob: 0.3
-    factor: 0.1             # ±10% brightness
+    factor: 0.1
