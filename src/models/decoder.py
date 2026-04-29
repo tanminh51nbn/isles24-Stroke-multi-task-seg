@@ -177,9 +177,10 @@ class UNetDecoder(nn.Module):
         # Level 4: Res(1024) + Dense(512) = 1536
         # Level 3: Res(512)  + Dense(256) = 768
         # Level 2: Res(256)  + Dense(128) = 384
-        # Level 1: Res(64)   + Dense(64)  = 128
+        # Level 4: Res(1024) + Dense(512) = 1536  (Dùng cho dec4)
+        # Level 5 (Bottleneck): Res(2048) + Dense(1024) = 3072 (Dùng làm input cho dec4)
         
-        self.dec4 = DecoderBlock(1024, 1536, dec_ch[0], attn_type)
+        self.dec4 = DecoderBlock(3072, 1536, dec_ch[0], attn_type)
         self.dec3 = DecoderBlock(dec_ch[0], 768, dec_ch[1], attn_type)
         self.dec2 = DecoderBlock(dec_ch[1], 384, dec_ch[2], attn_type)
         self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)
