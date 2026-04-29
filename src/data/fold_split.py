@@ -91,12 +91,12 @@ def apply_sampling(
     df = pd.read_csv(metadata_csv)
     # Lọc chỉ lấy những file nằm trong tập train_files hiện tại
     train_basenames = {os.path.basename(f) for f in train_files}
-    df_train = df[df["filepath"].isin(train_basenames)].copy()
+    df_train = df[df["path"].isin(train_basenames)].copy()
 
     # Phân loại
-    lvo_files = df_train[df_train["has_lvo"] == 1]["filepath"].tolist()
-    neg_files = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["filepath"].tolist()
-    other_files = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["filepath"].tolist()
+    lvo_files = df_train[df_train["has_lvo"] == 1]["path"].tolist()
+    neg_files = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["path"].tolist()
+    other_files = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["path"].tolist()
 
     # Thực hiện lấy mẫu
     sampled_files = []
