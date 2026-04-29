@@ -89,7 +89,7 @@ class FocalTverskyLoss(nn.Module):
         alpha: float = 0.5,
         beta: float  = 0.5,
         gamma: float = 2.0,
-        smooth: float = 1e-6,
+        smooth: float = 1e-5, # Tăng nhẹ để ổn định AMP
     ):
         super().__init__()
         self.alpha  = alpha
@@ -112,8 +112,8 @@ class FocalTverskyLoss(nn.Module):
         tversky_index = numerator / denominator.clamp(min=self.smooth)
         
         # focal_tversky = (1 - TI)^gamma
-        # Thêm 1e-8 bên trong pow để tránh đạo hàm tại 0 bị nan
-        error = (1.0 - tversky_index).clamp(min=1e-7, max=1.0)
+        # Dùng clamp an toàn hơn cho float16
+        error = (1.0 - tversky_index).clamp(min=1e-6, max=1.0)
         focal_tversky = torch.pow(error, self.gamma)
         
         return focal_tversky.mean()
