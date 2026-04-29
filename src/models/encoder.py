@@ -21,23 +21,68 @@ from typing import List
 
 def inflate_weights(weight: torch.Tensor, target_channels: int) -> torch.Tensor:
     """
-    Thổi phồng weight conv đầu từ 3 kênh sang target_channels kênh.
-    Công thức: mean → repeat → scale để bảo toàn variance.
-
-    Args:
-        weight: Tensor shape (out_ch, 3, kH, kW) — weight gốc 3 kênh
-        target_channels: Số kênh đầu vào mới
-
-    Returns:
-        Tensor shape (out_ch, target_channels, kH, kW)
+    NÂNG CẤP: Thổi phồng weight với trọng số tập trung vào tâm (Center-Weighted).
+    Giả định lát cắt ở giữa chứa thông tin quan trọng nhất, các lát cắt rìa là bối cảnh.
     """
-    # Mean qua trục kênh → (out_ch, 1, kH, kW)
-    mean_weight = weight.mean(dim=1, keepdim=True)
-    # Repeat → (out_ch, target_channels, kH, kW)
+    out_ch, in_ch, kH, kW = weight.shape # in_ch thường là 3
+    
+    # 1. Lấy đặc trưng trung bình từ 3 kênh gốc
+    mean_weight = weight.mean(dim=1, keepdim=True) # (out_ch, 1, kH, kW)
+    
+    # 2. Tạo profile trọng số cho các lát cắt (Gaussian-like)
+    # Ví dụ với 9 kênh: [0.5, 0.7, 0.9, 1.0, 1.1, 1.0, 0.9, 0.7, 0.5]
+    center = target_channels // 2
+    indices = torch.arange(target_channels).float()
+    # Tính khoảng cách tới tâm, càng xa tâm trọng số càng giảm nhẹ
+    weights = torch.exp(-0.1 * (indices - center)**2)
+    weights = weights / weights.sum() * 3.0 # Chuẩn hóa để tổng năng lượng tương đương 3 kênh gốc
+    
+    # 3. Thổi phồng và áp trọng số
     new_weight = mean_weight.repeat(1, target_channels, 1, 1)
-    # Scale để bảo toàn phương sai
-    new_weight = new_weight * (3.0 / target_channels)
+    for i in range(target_channels):
+        new_weight[:, i, :, :] *= weights[i]
+        
     return new_weight
+
+
+class SliceAttention(nn.Module):
+    """
+    Learnable Slice Attention (Dual Pooling): 
+    Kết hợp Global Average Pooling (Context) và Global Max Pooling (Saliency) 
+    để mô hình tự học cách nhấn mạnh các lát cắt quan trọng.
+    """
+    def __init__(self, in_channels: int):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        
+        # Shared MLP giữa Avg và Max
+        self.fc = nn.Sequential(
+            nn.Linear(in_channels, in_channels // 2 + 1),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_channels // 2 + 1, in_channels)
+        )
+        # Note: Nếu muốn dùng Concat (thông minh hơn), đổi nn.Linear(in_channels*2, ...) 
+        # và sửa logic trong forward()
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        
+        # Branch 1: Avg
+        avg_out = self.avg_pool(x).view(b, c)
+        avg_out = self.fc(avg_out)
+        
+        # Branch 2: Max
+        max_out = self.max_pool(x).view(b, c)
+        max_out = self.fc(max_out)
+        
+        # Combine (Dùng Add cho Baseline)
+        # Để dùng Concat: combined = torch.cat([avg_out, max_out], dim=1) -> out = fc(combined)
+        out = self.sigmoid(avg_out + max_out).view(b, c, 1, 1)
+        
+        return x * out.expand_as(x)
 
 
 # ─── ResNet-50 Encoder (Nhánh CTA — 6 kênh) ─────────────────────────────────
@@ -55,49 +100,64 @@ class ResNet50Encoder(nn.Module):
         # Load backbone chuẩn (ImageNet) để lấy cấu trúc
         backbone = models.resnet50(weights=None)
 
-        # Inflate conv1: (64, 3, 7, 7) → (64, in_channels, 7, 7)
-        old_conv1 = backbone.conv1
-        new_conv1 = nn.Conv2d(
+        # 1. Slice Attention để học trọng số lát cắt
+        self.slice_attention = SliceAttention(in_channels)
+
+        # 2. Backbone Setup
+        # Chúng ta khởi tạo Conv1 với số kênh mong muốn, trọng số sẽ được nạp sau
+        self.conv1 = nn.Conv2d(
             in_channels,
-            old_conv1.out_channels,
-            kernel_size=old_conv1.kernel_size,
-            stride=old_conv1.stride,
-            padding=old_conv1.padding,
+            64,
+            kernel_size=7,
+            stride=2,
+            padding=3,
             bias=False,
         )
-
-        # Khởi tạo weight bằng inflation trước khi load RadImageNet
-        with torch.no_grad():
-            new_conv1.weight.copy_(
-                inflate_weights(old_conv1.weight, in_channels)
-            )
-        backbone.conv1 = new_conv1
+        self.bn1   = backbone.bn1
+        self.relu  = backbone.relu
 
         # Load RadImageNet weights (nếu có)
         if weights_path is not None:
-            self._load_radimagenet(backbone, weights_path, in_channels)
+            self._load_radimagenet(weights_path, in_channels)
+        else:
+            # Fallback: Inflate từ ImageNet nếu không có RadImageNet path
+            with torch.no_grad():
+                self.conv1.weight.copy_(
+                    inflate_weights(backbone.conv1.weight, in_channels)
+                )
 
         # Tách thành 5 stage để lấy skip connections
-        self.stage0 = nn.Sequential(backbone.conv1, backbone.bn1, backbone.relu)  # 64ch, /2
-        self.pool   = backbone.maxpool                                              # /4 tổng
+        self.stage0 = nn.Sequential(self.slice_attention, self.conv1, self.bn1, self.relu)  # 64ch, /2
+        self.pool   = backbone.maxpool  # /4 tổng
         self.stage1 = backbone.layer1   # 256ch,  /4
         self.stage2 = backbone.layer2   # 512ch,  /8
         self.stage3 = backbone.layer3   # 1024ch, /16
         self.stage4 = backbone.layer4   # 2048ch, /32
 
-    def _load_radimagenet(self, backbone: nn.Module, path: str, in_channels: int):
-        """Load RadImageNet checkpoint, skip conv1 (đã inflate riêng)."""
+    def _load_radimagenet(self, path: str, in_channels: int):
+        """Load RadImageNet checkpoint, thực hiện inflate conv1 từ trọng số y tế."""
         state_dict = torch.load(path, map_location="cpu")
-        # Một số checkpoint có wrapper key
+        
+        # Xử lý wrapper
         if "model" in state_dict:
             state_dict = state_dict["model"]
         if "state_dict" in state_dict:
             state_dict = state_dict["state_dict"]
 
-        # Loại bỏ key của conv1 để giữ weight inflation
-        state_dict = {k: v for k, v in state_dict.items() if not k.startswith("conv1")}
-        backbone.load_state_dict(state_dict, strict=False)
-        print(f"[ResNet50Encoder] Loaded RadImageNet weights from: {path}")
+        # 1. Trích xuất và Inflate Conv1 từ RadImageNet (Chuẩn y tế)
+        if "conv1.weight" in state_dict:
+            rad_conv1_weight = state_dict["conv1.weight"]
+            with torch.no_grad():
+                self.conv1.weight.copy_(
+                    inflate_weights(rad_conv1_weight, in_channels)
+                )
+            # Xóa conv1 khỏi state_dict để không gây lỗi size mismatch khi load_state_dict cho phần còn lại
+            del state_dict["conv1.weight"]
+
+        # 2. Load các layer còn lại (layer1-4, bn1, v.v.) vào chính model này
+        # Lưu ý: Chúng ta load vào 'self' thay vì 'backbone' vì các thuộc tính đã được gán sang self
+        msg = self.load_state_dict(state_dict, strict=False)
+        print(f"[ResNet50Encoder] Pure RadImageNet Loaded. Missing keys: {len(msg.missing_keys)}")
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         """
@@ -132,27 +192,35 @@ class DenseNet121Encoder(nn.Module):
 
         # Inflate conv0: (64, 3, 7, 7) → (64, in_channels, 7, 7)
         old_conv0 = features.conv0
-        new_conv0 = nn.Conv2d(
+        # 1. Slice Attention để học trọng số lát cắt
+        self.slice_attention = SliceAttention(in_channels)
+
+        # 2. Backbone Setup
+        # DenseNet dùng features.conv0 thay vì conv1
+        self.conv0 = nn.Conv2d(
             in_channels,
-            old_conv0.out_channels,
-            kernel_size=old_conv0.kernel_size,
-            stride=old_conv0.stride,
-            padding=old_conv0.padding,
+            64,
+            kernel_size=7,
+            stride=2,
+            padding=3,
             bias=False,
         )
-        with torch.no_grad():
-            new_conv0.weight.copy_(
-                inflate_weights(old_conv0.weight, in_channels)
-            )
-        features.conv0 = new_conv0
+        self.norm0 = features.norm0
+        self.relu0 = features.relu0
 
         # Load RadImageNet weights
         if weights_path is not None:
-            self._load_radimagenet(backbone, weights_path, in_channels)
+            self._load_radimagenet(weights_path, in_channels)
+        else:
+            # Fallback: Inflate từ ImageNet
+            with torch.no_grad():
+                self.conv0.weight.copy_(
+                    inflate_weights(features.conv0.weight, in_channels)
+                )
 
         # Tách 5 stage để lấy skip connections
         self.stage0 = nn.Sequential(
-            features.conv0, features.norm0, features.relu0
+            self.slice_attention, self.conv0, self.norm0, self.relu0
         )                                          # 64ch, /2
         self.pool   = features.pool0               # /4 tổng
         self.stage1 = features.denseblock1         # 128ch (256 in original, half out)
@@ -165,17 +233,27 @@ class DenseNet121Encoder(nn.Module):
             features.denseblock4, features.norm5
         )                                          # 1024ch, /32
 
-    def _load_radimagenet(self, backbone: nn.Module, path: str, in_channels: int):
+    def _load_radimagenet(self, path: str, in_channels: int):
+        """Load RadImageNet cho DenseNet, thực hiện inflate conv0 từ trọng số y tế."""
         state_dict = torch.load(path, map_location="cpu")
+        
         if "model" in state_dict:
             state_dict = state_dict["model"]
         if "state_dict" in state_dict:
             state_dict = state_dict["state_dict"]
-        # Skip conv0 weight
-        state_dict = {k: v for k, v in state_dict.items()
-                      if not k.startswith("features.conv0")}
-        backbone.load_state_dict(state_dict, strict=False)
-        print(f"[DenseNet121Encoder] Loaded RadImageNet weights from: {path}")
+
+        # 1. Inflate Conv0 (features.conv0.weight trong RadImageNet)
+        if "features.conv0.weight" in state_dict:
+            rad_conv0_weight = state_dict["features.conv0.weight"]
+            with torch.no_grad():
+                self.conv0.weight.copy_(
+                    inflate_weights(rad_conv0_weight, in_channels)
+                )
+            del state_dict["features.conv0.weight"]
+
+        # 2. Load các layer còn lại
+        msg = self.load_state_dict(state_dict, strict=False)
+        print(f"[DenseNet121Encoder] Pure RadImageNet Loaded. Missing: {len(msg.missing_keys)}")
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         """
@@ -184,7 +262,7 @@ class DenseNet121Encoder(nn.Module):
 
         Returns:
             List 5 feature maps từ nông → sâu:
-            [d1(64,H/2), d2(256,H/4), d3(512,H/8), d4(1024,H/16), d5(1024,H/32)]
+            [d1(64,H/2), d2(128,H/4), d3(256,H/8), d4(512,H/16), d5(1024,H/32)]
         """
         d1 = self.stage0(x)         # (B, 64,   H/2,  W/2)
         x  = self.pool(d1)          # (B, 64,   H/4,  W/4)
