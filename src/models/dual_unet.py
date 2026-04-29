@@ -55,11 +55,13 @@ class DualEncoderUNet(nn.Module):
         )
 
         # Decoder kết hợp skip features từ 2 encoder
-        self.decoder = UNetDecoder()
+        self.decoder = UNetDecoder(config)
 
         # 3 heads độc lập
+        # Lấy in_ch từ config của decoder (mặc định là 16)
+        decoder_final_ch = config["decoder"].get("final_ch", 16)
         self.heads = MultiTaskHeads(
-            in_ch=16,  # Output của decoder final_upsample
+            in_ch=decoder_final_ch,
             dropout=config["heads"]["dropout"],
         )
 
