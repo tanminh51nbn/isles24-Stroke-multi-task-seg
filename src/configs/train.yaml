@@ -43,7 +43,8 @@ optimizer:
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 10         # Linear ramp-up từ 0 → base_lr trong 8 epoch đầu
+  warmup_epochs: 10         # Linear ramp-up từ 0 → base_lr trong 10 epoch đầu
+  hold_epochs: 5            # Giữ nguyên base_lr trong 5 epoch sau khi unfreeze để ổn định
   min_lr: 1.0e-6            # Sàn cho CosineAnnealing
 
 # ── Training ────────────────────────────────────────────────────
