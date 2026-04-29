@@ -28,13 +28,14 @@ def build_optimizer(model, config: dict) -> AdamW:
     base_lr  = float(opt_cfg["lr"])
     enc_lr   = base_lr * float(opt_cfg["encoder_lr_scale"])
     wd       = float(opt_cfg["weight_decay"])
+    eps      = float(opt_cfg.get("eps", 1e-8))
 
     param_groups = model.get_param_groups(
         encoder_lr=enc_lr,
         decoder_lr=base_lr,
     )
 
-    optimizer = AdamW(param_groups, weight_decay=wd)
+    optimizer = AdamW(param_groups, weight_decay=wd, eps=eps)
 
-    print(f"[Optimizer] AdamW | Encoder LR: {enc_lr:.2e} | Decoder LR: {base_lr:.2e} | WD: {wd:.2e}")
+    print(f"[Optimizer] AdamW | Encoder LR: {enc_lr:.2e} | Decoder LR: {base_lr:.2e} | WD: {wd:.2e} | Eps: {eps:.1e}")
     return optimizer
