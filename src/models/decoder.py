@@ -173,17 +173,16 @@ class UNetDecoder(nn.Module):
             ConvBnGelu(1024, 1024),
         )
 
-        # skip_ch corrected values for ResNet50 (2048) + DenseNet121 (1024):
-        # Level 5 (Bottleneck): Res(2048) + Dense(1024) = 3072
+        # skip_ch: Tổng số kênh skip (CTA + Perf) tại mỗi level
         # Level 4: Res(1024) + Dense(512) = 1536
         # Level 3: Res(512)  + Dense(256) = 768
         # Level 2: Res(256)  + Dense(128) = 384
         # Level 1: Res(64)   + Dense(64)  = 128
         
-        self.dec4 = DecoderBlock(1024, 3072, dec_ch[0], attn_type) # Skip: 2048+1024
-        self.dec3 = DecoderBlock(dec_ch[0], 1536, dec_ch[1], attn_type) # Skip: 1024+512
-        self.dec2 = DecoderBlock(dec_ch[1], 768, dec_ch[2], attn_type)  # Skip: 512+256
-        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)  # Skip: 64+64
+        self.dec4 = DecoderBlock(1024, 1536, dec_ch[0], attn_type)
+        self.dec3 = DecoderBlock(dec_ch[0], 768, dec_ch[1], attn_type)
+        self.dec2 = DecoderBlock(dec_ch[1], 384, dec_ch[2], attn_type)
+        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)
 
         # Upsample cuối từ H/2 → H (full resolution) + Refinement
         self.final_upsample = nn.Sequential(
@@ -209,14 +208,14 @@ class UNetDecoder(nn.Module):
         d1, d2, d3, d4, d5 = perf_skips
 
         # Bottleneck: Concat deepest features
-        x = torch.cat([s5, d5], dim=1)  # (B, 3072, H/32, W/32)
+        x = torch.cat([s5, d5], dim=1)  # (B, 2048+1024=3072, H/32, W/32)
         x = self.bottleneck(x)           # (B, 1024, H/32, W/32)
 
         # Decode từ sâu → nông
-        x = self.dec4(x, s4, d4)        # (B, 512,  H/16, W/16)
-        x = self.dec3(x, s3, d3)        # (B, 256,  H/8,  W/8)
-        x = self.dec2(x, s2, d2)        # (B, 128,  H/4,  W/4)
-        x = self.dec1(x, s1, d1)        # (B, 64,   H/2,  W/2)
+        x = self.dec4(x, s4, d4)        # s4=1024, d4=512 -> skip=1536
+        x = self.dec3(x, s3, d3)        # s3=512,  d3=256 -> skip=768
+        x = self.dec2(x, s2, d2)        # s2=256,  d2=128 -> skip=384
+        x = self.dec1(x, s1, d1)        # s1=64,   d1=64  -> skip=128
 
         x = self.final_upsample(x)      # (B, final_ch, H, W)
         return x
