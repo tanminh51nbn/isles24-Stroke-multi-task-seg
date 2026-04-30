@@ -13,8 +13,8 @@ loss:
 
   lvo:
     type: "focal_tversky"
-    alpha: 0.2
-    beta: 0.8
+    alpha: 0.15
+    beta: 0.85
     gamma: 3
     weight: 0.65
 
@@ -33,7 +33,7 @@ composite_score:
   dice_cow_weight: 0.2
   thresholds:
     lesion: 0.5
-    lvo: 0.4               # Ưu tiên Recall cho LVO (ngưỡng thấp hơn)
+    lvo: 0.25               # Hạ ngưỡng nhạy cảm để tăng Recall tối đa
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
