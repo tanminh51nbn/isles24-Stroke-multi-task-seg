@@ -243,10 +243,12 @@ class Trainer:
             avg_recall_lvo  = v[2] / max(v[5], 1)
             avg_dice_cow    = v[3] / max(v[4], 1)
 
-        avg_composite   = (
-            self.metric_weights["dice_lesion_weight"] * avg_dice_lesion +
-            self.metric_weights["recall_lvo_weight"]  * avg_recall_lvo  +
-            self.metric_weights["dice_cow_weight"]    * avg_dice_cow
+        # 3. Tính Composite Score
+        w = self.metric_weights
+        composite = (
+            w["dice_lesion_weight"] * avg_dice_lesion +
+            w["recall_lvo_weight"]  * avg_recall_lvo  +
+            w["dice_cow_weight"]    * avg_dice_cow
         )
 
         return {
@@ -254,7 +256,7 @@ class Trainer:
             "dice_lesion": avg_dice_lesion,
             "recall_lvo":  avg_recall_lvo,
             "dice_cow":    avg_dice_cow,
-            "composite":   avg_composite,
+            "composite":   composite,
         }
 
 
@@ -294,10 +296,11 @@ class Trainer:
                 curr_lr = self.optimizer.param_groups[0]['lr']
                 print(
                     f"=> |[Epoch {epoch+1:03d}/{self.epochs}] | LR: {curr_lr:.2e} "
+                    f"\n   Dice_L: {val_metrics['dice_lesion']:.4f} | "
+                    f"Recall_LVO: {val_metrics['recall_lvo']:.4f} | "
+                    f"Dice_C: {val_metrics['dice_cow']:.4f}"
                     f"\n   |Loss(T/V): {train_metrics['train_loss']:.4f}/{val_metrics['val_loss']:.4f} | "
-                    f"Dice_L: {val_metrics['dice_lesion']:.4f} | "
-                    f"Recall_LVO: {val_metrics['recall_lvo']:.4f}"
-                    f"\n   |Composite: {val_metrics['composite']:.4f}",
+                    f"|Composite: {val_metrics['composite']:.4f}",
                     flush=True
                 )
 
