@@ -57,7 +57,7 @@ class LightweightDualAttention(nn.Module):
     """
     def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
-        # 1. Channel Attention: "Cái gì" quan trọng?
+        # 1. Channel Attention
         # Kết hợp MaxPool (Saliency) và AvgPool (Context)
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
@@ -68,7 +68,7 @@ class LightweightDualAttention(nn.Module):
             nn.Linear(channels // reduction, channels, bias=False)
         )
         
-        # 2. Spatial Attention: "Ở đâu" quan trọng?
+        # 2. Spatial Attention
         # Conv 7x7 để có tầm nhìn rộng, bao quát được các mạch máu dài
         self.spatial_conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
         self.sigmoid = nn.Sigmoid()
