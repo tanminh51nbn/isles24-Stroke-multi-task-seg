@@ -50,7 +50,8 @@ def run_single_mode(args, model, train_cfg, device):
             overlay_predictions(
                 sample={"input": inp[0], "label": batch["label"][0], "path": path},
                 preds={k: v for k, v in preds.items()},
-                epoch=999, save_dir=args.save_dir, threshold=threshold
+                epoch=999, save_dir=args.save_dir, 
+                thresholds=train_cfg["composite_score"]["thresholds"]
             )
     print(f"[Xong] Lưu tại: {args.save_dir}")
 
@@ -78,8 +79,9 @@ def run_compare_mode(args, model, train_cfg, device):
             model = load_model_from_ckpt(model, ckpt_path, device)
             with torch.no_grad():
                 preds = model(inp)
-                # Lấy kết quả Lesion làm chuẩn so sánh
-                mask = (torch.sigmoid(preds["lesion"]) > 0.4).cpu().numpy()[0, 0]
+                # Lấy kết quả Lesion làm chuẩn so sánh, dùng ngưỡng từ config
+                thresh = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
+                mask = (torch.sigmoid(preds["lesion"]) > thresh).cpu().numpy()[0, 0]
                 axes[i+1].imshow(sample["input"][2], cmap='gray')
                 axes[i+1].imshow(mask, cmap='jet', alpha=0.4)
                 axes[i+1].set_title(f"Model: {name.upper()}")

@@ -200,18 +200,22 @@ class Trainer:
                 sum_recall_lvo += metrics["recall_lvo"]
                 n_lvo_batches  += 1
 
-            # --- Thực hiện vẽ ảnh (chỉ mẫu đầu tiên của batch đầu tiên hợp lệ) ---
+            # --- Thực hiện vẽ ảnh (chọn ngẫu nhiên 1 mẫu trong batch đầu tiên hợp lệ) ---
             if should_visualize and not visualized:
+                import random
+                idx = random.randint(0, inp.size(0) - 1)
+                
                 # Sử dụng đường dẫn tuyệt đối
                 vis_base = self.config["training"]["checkpoint"]["dir"]
                 vis_dir = os.path.join(self.output_dir, vis_base, "visualizations")
                 os.makedirs(vis_dir, exist_ok=True)
+                
                 overlay_predictions(
-                    sample={"input": inp[0], "label": lbl[0], "path": batch["path"][0]},
-                    preds={k: v[0:1] for k, v in preds.items()},
+                    sample={"input": inp[idx], "label": lbl[idx], "path": batch["path"][idx]},
+                    preds={k: v[idx:idx+1] for k, v in preds.items()},
                     epoch=epoch,
                     save_dir=vis_dir,
-                    threshold=self.metric_weights.get("thresholds", {}).get("lesion", 0.5)
+                    thresholds=self.metric_weights.get("thresholds", {})
                 )
                 visualized = True
 
