@@ -156,6 +156,12 @@ def train_worker(rank: int, world_size: int, args):
         curve_path = os.path.join(output_dir, "training_curves.png")
         plot_training_curves(history, save_path=curve_path)
 
+        # Lưu lịch sử ra file CSV để tải về phân tích sau
+        import pandas as pd
+        history_df = pd.DataFrame(history)
+        history_df.to_csv(os.path.join(output_dir, "training_history.csv"), index=False)
+        print(f"[PINELINE] History saved to: {os.path.join(output_dir, 'training_history.csv')}")
+
         # In báo cáo kết quả cuối
         best = max(history, key=lambda h: h["composite"])
         print("\n" + "=" * 60)
