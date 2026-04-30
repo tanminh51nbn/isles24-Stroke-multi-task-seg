@@ -9,23 +9,23 @@ loss:
     type: "tversky"
     alpha: 0.4
     beta: 0.6
-    weight: 0.30
-    boundary_weight: 0.1
+    weight: 0.2
+    boundary_weight: 0.15
 
   lvo:
     type: "focal_tversky"
     alpha: 0.15
     beta: 0.85
     gamma: 3
-    weight: 0.65
+    weight: 0.78
     boundary_weight: 0.5
 
   cow:
     type: "tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.05
-    boundary_weight: 0.05
+    weight: 0.02
+    boundary_weight: 0.25
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW

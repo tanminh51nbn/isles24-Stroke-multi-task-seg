@@ -53,36 +53,41 @@ class AttentionGate(nn.Module):
 class LightweightDualAttention(nn.Module):
     """
     CBAM-style Dual Attention (Channel + Spatial).
-    Tối ưu cho Dual-Encoder (CTA + Perfusion).
+    Thiết kế "Kính lọc thông minh" để lọc đặc trưng CTA + Perfusion.
     """
     def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
-        # 1. Channel Attention (Squeeze-and-Excitation cải tiến)
+        # 1. Channel Attention: "Cái gì" quan trọng?
+        # Kết hợp MaxPool (Saliency) và AvgPool (Context)
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
+        
         self.fc = nn.Sequential(
             nn.Linear(channels, channels // reduction, bias=False),
             nn.GELU(),
             nn.Linear(channels // reduction, channels, bias=False)
         )
-        # 2. Spatial Attention (Conv 7x7)
+        
+        # 2. Spatial Attention: "Ở đâu" quan trọng?
+        # Conv 7x7 để có tầm nhìn rộng, bao quát được các mạch máu dài
         self.spatial_conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        # Channel Attention
+        # Bước 1: Lọc Channel
         b, c, _, _ = x.size()
         avg_out = self.fc(self.avg_pool(x).view(b, c))
         max_out = self.fc(self.max_pool(x).view(b, c))
-        out = self.sigmoid(avg_out + max_out).view(b, c, 1, 1)
-        x = x * out
+        channel_weight = self.sigmoid(avg_out + max_out).view(b, c, 1, 1)
+        x = x * channel_weight
 
-        # Spatial Attention
-        avg_out = torch.mean(x, dim=1, keepdim=True)
-        max_out, _ = torch.max(x, dim=1, keepdim=True)
-        spatial_out = torch.cat([avg_out, max_out], dim=1)
-        spatial_out = self.sigmoid(self.spatial_conv(spatial_out))
-        return x * spatial_out
+        # Bước 2: Lọc Spatial
+        avg_mask = torch.mean(x, dim=1, keepdim=True)
+        max_mask, _ = torch.max(x, dim=1, keepdim=True)
+        spatial_mask = torch.cat([avg_mask, max_mask], dim=1)
+        spatial_weight = self.sigmoid(self.spatial_conv(spatial_mask))
+        
+        return x * spatial_weight
 
 
 class ConvBnGelu(nn.Module):
@@ -103,91 +108,81 @@ class ConvBnGelu(nn.Module):
 class DecoderBlock(nn.Module):
     """
     Một cấp decoder:
-        1. Upsample 2x (bilinear)
-        2. Concatenate skip features từ 2 encoder
-        3. 2× ConvBnGelu để học cách kết hợp thông tin
+        1. Upsample 2x
+        2. Tích hợp Attention (AG hoặc Dual CBAM)
+        3. Kết hợp Skip features từ CTA & Perfusion
     """
 
     def __init__(self, in_ch: int, skip_ch: int, out_ch: int, attention_type: Optional[str] = None):
         super().__init__()
         self.attention_type = attention_type
         
-        # Cấu hình Attention
+        # Cấu hình Attention lên nhánh Skip
         if attention_type == "ag":
-            # Gating signal (in_ch) + Skip signal (skip_ch)
             self.ag = AttentionGate(F_g=in_ch, F_l=skip_ch, F_int=skip_ch // 2)
         elif attention_type == "dual":
             self.dual_attn = LightweightDualAttention(channels=skip_ch)
         
-        # Sau khi kết hợp (Upsampled x + Skip)
-        total_in = in_ch + skip_ch
-        self.conv1 = ConvBnGelu(total_in, out_ch)
+        # Sau khi concat (Upsampled + Skip)
+        self.conv1 = ConvBnGelu(in_ch + skip_ch, out_ch)
         self.conv2 = ConvBnGelu(out_ch, out_ch)
 
     def forward(self, x: torch.Tensor, skip_cta: torch.Tensor, skip_perf: torch.Tensor) -> torch.Tensor:
-        # 1. Upsample feature map từ tầng sâu (Gating signal)
-        x_upsampled = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        # 1. Upsample signal từ tầng sâu
+        x_up = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
         
-        # 2. Chuẩn bị Skip signal (CTA + Perfusion)
+        # 2. Kết hợp Skip CTA & Perfusion
         skip = torch.cat([skip_cta, skip_perf], dim=1)
         
-        # 3. Áp dụng Attention
+        # 3. Lọc thông tin qua Attention
         if self.attention_type == "ag":
-            # AG dùng x_upsampled để lọc skip
-            skip = self.ag(g=x_upsampled, x=skip)
+            skip = self.ag(g=x_up, x=skip)
         elif self.attention_type == "dual":
-            # Dual Attention tự lọc chính nó dựa trên channel & spatial
             skip = self.dual_attn(skip)
             
-        # 4. Nối và xử lý
-        x = torch.cat([x_upsampled, skip], dim=1)
-        x = self.conv1(x)
-        x = self.conv2(x)
-        return x
+        # 4. Concat và xử lý đặc trưng kết hợp
+        out = torch.cat([x_up, skip], dim=1)
+        out = self.conv1(out)
+        out = self.conv2(out)
+        return out
 
 
 class UNetDecoder(nn.Module):
     """
-    UNet Decoder 5 cấp nhận skip features từ Dual-Encoder.
-
-    Chiều sâu đặt theo plan:
-        Bottleneck: ResNet(2048) + Dense(1024) = 3072 ch → compress thành 1024 ch
-        Level 4: skip(1024+512=1536) + prev(1024) → out 512 ch
-        Level 3: skip(512+256=768)   + prev(512)  → out 256 ch
-        Level 2: skip(256+128=384)   + prev(256)  → out 128 ch
-        Level 1: skip(64+64=128)     + prev(128)  → out 64 ch
-        Final: Upsample × 2 → 16 ch (kết nối vào heads)
+    UNet Decoder nhận skip features từ Dual-Encoder.
+    
+    Cấu hình kênh thực tế:
+        Bottleneck (BN): s5(2048) + d5(1024) = 3072 ch
+        Level 4 (dec4): skip(s4:1024 + d4:1024 = 2048) + prev(1024)
+        Level 3 (dec3): skip(s3:512  + d3:512  = 1024) + prev(512)
+        Level 2 (dec2): skip(s2:256  + d2:256  = 512)  + prev(256)
+        Level 1 (dec1): skip(s1:64   + d1:64   = 128)  + prev(128)
     """
 
     def __init__(self, config: dict):
         super().__init__()
         
-        # Lấy thông số từ config (model.yaml)
         dec_ch = config["decoder"]["out_channels"] # [512, 256, 128, 64]
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
-        # Bottleneck: ResNet(2048) + Dense(1024) = 3072 ch
+        # Bottleneck: Nén thông tin từ mức sâu nhất
         self.bottleneck = nn.Sequential(
             ConvBnGelu(3072, 1024),
             ConvBnGelu(1024, 1024),
         )
 
-        # Kênh THỰC TẾ từ Encoder (đã xác minh từ encoder.py):
-        # ResNet50:   [s1=64,   s2=256,  s3=512,  s4=1024, s5=2048]
-        # DenseNet121:[d1=64,   d2=256,  d3=512,  d4=1024, d5=1024]
-        # Tổng Skip:  [L1=128,  L2=512,  L3=1024, L4=2048, BN=3072]
-        
-        self.dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type) # s4+d4 = 1024+1024
-        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type) # s3+d3 = 512+512
-        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type)  # s2+d2 = 256+256
-        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)  # s1+d1 = 64+64
+        # 4 Cấp giải mã với Skip Connections
+        self.dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type)
+        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type)
+        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type)
+        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)
 
-        # Upsample cuối từ H/2 → H (full resolution) + Refinement
+        # Upsample cuối cùng và tinh chỉnh đặc trưng
         self.final_upsample = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
             ConvBnGelu(dec_ch[3], final_ch * 2),
-            ConvBnGelu(final_ch * 2, final_ch), # Thêm 1 lớp để tăng độ mịn
+            ConvBnGelu(final_ch * 2, final_ch),
         )
 
     def forward(
@@ -195,26 +190,20 @@ class UNetDecoder(nn.Module):
         cta_skips: List[torch.Tensor],
         perf_skips: List[torch.Tensor],
     ) -> torch.Tensor:
-        """
-        Args:
-            cta_skips:  [s1(64), s2(256), s3(512), s4(1024), s5(2048)] — nông→sâu
-            perf_skips: [d1(64), d2(128), d3(256), d4(512),  d5(1024)] — nông→sâu
-
-        Returns:
-            Tensor (B, final_ch, H, W) — feature map cuối, đưa vào heads
-        """
+        # Lấy đặc trưng từ Encoders (ResNet & DenseNet)
         s1, s2, s3, s4, s5 = cta_skips
         d1, d2, d3, d4, d5 = perf_skips
 
-        # Bottleneck: Concat deepest features
-        x = torch.cat([s5, d5], dim=1)  # (B, 2048+1024=3072, H/32, W/32)
-        x = self.bottleneck(x)           # (B, 1024, H/32, W/32)
+        # Bước 1: Bottleneck
+        x = torch.cat([s5, d5], dim=1) # (B, 3072, H/32, W/32)
+        x = self.bottleneck(x)         # (B, 1024, H/32, W/32)
 
-        # Decode từ sâu → nông
-        x = self.dec4(x, s4, d4)        # s4=1024, d4=512 -> skip=1536
-        x = self.dec3(x, s3, d3)        # s3=512,  d3=256 -> skip=768
-        x = self.dec2(x, s2, d2)        # s2=256,  d2=128 -> skip=384
-        x = self.dec1(x, s1, d1)        # s1=64,   d1=64  -> skip=128
+        # Bước 2: Giải mã qua các tầng có Attention
+        x = self.dec4(x, s4, d4)       # (B, 512, H/16, W/16)
+        x = self.dec3(x, s3, d3)       # (B, 256, H/8, W/8)
+        x = self.dec2(x, s2, d2)       # (B, 128, H/4, W/4)
+        x = self.dec1(x, s1, d1)       # (B, 64, H/2, W/2)
 
-        x = self.final_upsample(x)      # (B, final_ch, H, W)
+        # Bước 3: Upsample về kích thước gốc
+        x = self.final_upsample(x)     # (B, final_ch, H, W)
         return x
