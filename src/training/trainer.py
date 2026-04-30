@@ -138,7 +138,7 @@ class Trainer:
                 print(
                     f"   Epoch {epoch+1} | Batch {batch_idx+1}/{len(self.train_loader)} "
                     f"| Loss: {losses['total']:.4f} "
-                    f"(L:{losses['lesion']:.3f}, LVO:{losses['lvo']:.3f}, C:{losses['cow']:.3f})",
+                    f"(L:{losses['lesion']:.3f}, LVO:{losses['lvo']:.3f}, C:{losses['cow']:.3f}, B:{losses['boundary']:.3f})",
                     flush=True
                 )
 
@@ -295,12 +295,13 @@ class Trainer:
             if self.rank == 0:
                 curr_lr = self.optimizer.param_groups[0]['lr']
                 print(
-                    f"=> |[Epoch {epoch+1:03d}/{self.epochs}] | LR: {curr_lr:.2e} "
-                    f"\n   Dice_L: {val_metrics['dice_lesion']:.4f} | "
+                    f"--------------------------------------------------"
+                    f"=> | [Epoch {epoch+1:03d}/{self.epochs}] | LR: {curr_lr:.2e} "
+                    f"\n   | Dice_L: {val_metrics['dice_lesion']:.4f} | "
                     f"Recall_LVO: {val_metrics['recall_lvo']:.4f} | "
                     f"Dice_C: {val_metrics['dice_cow']:.4f}"
-                    f"\n   |Loss(T/V): {train_metrics['train_loss']:.4f}/{val_metrics['val_loss']:.4f} | "
-                    f"|Composite: {val_metrics['composite']:.4f}",
+                    f"\n   | Loss(T/V): {train_metrics['train_loss']:.4f}/{val_metrics['val_loss']:.4f} | "
+                    f"Composite: {val_metrics['composite']:.4f}",
                     flush=True
                 )
 

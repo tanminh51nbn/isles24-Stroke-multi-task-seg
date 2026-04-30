@@ -108,61 +108,91 @@ class FocalTverskyLoss(nn.Module):
 
 # ─── Multi-Task Loss ──────────────────────────────────────────────────────────
 
+# ─── Boundary Loss (Soft Boundary Dice) ───────────────────────────────────────
+
+class BoundaryLoss(nn.Module):
+    """
+    Boundary Loss — Phạt các lỗi tại đường biên của vật thể.
+    Tận dụng MaxPool để tìm boundary của nhãn và dự đoán một cách vi phân.
+    
+    L_boundary = 1 - 2*|P_b ∩ T_b| / (|P_b| + |T_b|)
+    """
+    def __init__(self, kernel_size: int = 3):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.padding = kernel_size // 2
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits)
+        
+        # Tách biên của nhãn (Boundary = Target - Erode(Target))
+        # Erode(T) ≈ 1 - MaxPool(1 - T)
+        targets_boundary = targets - (1.0 - F.max_pool2d(1.0 - targets, kernel_size=self.kernel_size, stride=1, padding=self.padding))
+        targets_boundary = torch.clamp(targets_boundary, min=0.0)
+        
+        # Tách biên của dự đoán (Soft boundary)
+        probs_boundary = probs - (1.0 - F.max_pool2d(1.0 - probs, kernel_size=self.kernel_size, stride=1, padding=self.padding))
+        probs_boundary = torch.clamp(probs_boundary, min=0.0)
+        
+        # Dice trên vùng biên
+        intersection = (probs_boundary * targets_boundary).sum(dim=(1, 2, 3))
+        union = probs_boundary.sum(dim=(1, 2, 3)) + targets_boundary.sum(dim=(1, 2, 3))
+        
+        boundary_dice = (2.0 * intersection + 1e-5) / (union + 1e-5)
+        return 1.0 - boundary_dice.mean()
+
+
+# ─── Multi-Task Loss ──────────────────────────────────────────────────────────
+
 class MultiTaskLoss(nn.Module):
     """
     Tổng hợp loss từ 3 tasks với trọng số riêng.
-
-    L_total = w_lesion * L_lesion + w_lvo * L_lvo + w_cow * L_cow
-
-    w_lvo = 10.0 vì phát hiện LVO là nhiệm vụ cấp cứu — sai lầm = tử vong.
+    Hỗ trợ kết hợp Tversky/FocalTversky với Boundary Loss.
     """
 
     def __init__(self, config: dict):
         super().__init__()
         loss_cfg = config["loss"]
 
-        # Lesion: Tversky
+        # 1. Lesion Task
         lesion_cfg = loss_cfg["lesion"]
-        self.lesion_loss = TverskyLoss(
-            alpha=lesion_cfg["alpha"],
-            beta=lesion_cfg["beta"],
-        )
+        self.lesion_main_loss = TverskyLoss(alpha=lesion_cfg["alpha"], beta=lesion_cfg["beta"])
         self.w_lesion = lesion_cfg["weight"]
+        self.w_lesion_boundary = lesion_cfg.get("boundary_weight", 0.0)
 
-        # LVO: Focal Tversky
+        # 2. LVO Task
         lvo_cfg = loss_cfg["lvo"]
-        self.lvo_loss = FocalTverskyLoss(
-            alpha=lvo_cfg["alpha"],
-            beta=lvo_cfg["beta"],
-            gamma=lvo_cfg["gamma"],
-        )
+        self.lvo_main_loss = FocalTverskyLoss(alpha=lvo_cfg["alpha"], beta=lvo_cfg["beta"], gamma=lvo_cfg["gamma"])
         self.w_lvo = lvo_cfg["weight"]
+        self.w_lvo_boundary = lvo_cfg.get("boundary_weight", 0.0)
 
-        # CoW: Tversky (balanced)
+        # 3. CoW Task
         cow_cfg = loss_cfg["cow"]
-        self.cow_loss = TverskyLoss(
-            alpha=cow_cfg["alpha"],
-            beta=cow_cfg["beta"],
-        )
+        self.cow_main_loss = TverskyLoss(alpha=cow_cfg["alpha"], beta=cow_cfg["beta"])
         self.w_cow = cow_cfg["weight"]
+        self.w_cow_boundary = cow_cfg.get("boundary_weight", 0.0)
+
+        # Công cụ Boundary Loss dùng chung
+        self.boundary_loss = BoundaryLoss(kernel_size=3)
 
     def forward(self, preds: dict, targets: torch.Tensor) -> dict:
-        """
-        Args:
-            preds:   dict {'lesion': (B,1,H,W), 'lvo': (B,1,H,W), 'cow': (B,1,H,W)} — logits
-            targets: (B, 3, H, W) — binary masks [lesion, lvo, cow]
+        # --- Lesion ---
+        l_lesion_main = self.lesion_main_loss(preds["lesion"], targets[:, 0:1])
+        l_lesion_bd   = self.boundary_loss(preds["lesion"], targets[:, 0:1])
+        l_lesion      = (1.0 - self.w_lesion_boundary) * l_lesion_main + self.w_lesion_boundary * l_lesion_bd
 
-        Returns:
-            dict với keys: 'total', 'lesion', 'lvo', 'cow'
-        """
-        l_lesion = self.lesion_loss(preds["lesion"], targets[:, 0:1])
-        l_lvo    = self.lvo_loss(preds["lvo"],       targets[:, 1:2])
-        l_cow    = self.cow_loss(preds["cow"],        targets[:, 2:3])
+        # --- LVO ---
+        l_lvo_main = self.lvo_main_loss(preds["lvo"], targets[:, 1:2])
+        l_lvo_bd   = self.boundary_loss(preds["lvo"], targets[:, 1:2])
+        l_lvo      = (1.0 - self.w_lvo_boundary) * l_lvo_main + self.w_lvo_boundary * l_lvo_bd
 
-        # Tính tổng loss dựa TRỰC TIẾP trên trọng số config (không nhân thêm 10x)
+        # --- CoW ---
+        l_cow_main = self.cow_main_loss(preds["cow"], targets[:, 2:3])
+        l_cow_bd   = self.boundary_loss(preds["cow"], targets[:, 2:3])
+        l_cow      = (1.0 - self.w_cow_boundary) * l_cow_main + self.w_cow_boundary * l_cow_bd
+
+        # Tổng hợp loss theo trọng số chính
         total = self.w_lesion * l_lesion + self.w_lvo * l_lvo + self.w_cow * l_cow
-
-        # Đảm bảo total loss không bao giờ bị NaN/Inf để trainer không skip batch
         total = torch.nan_to_num(total, nan=1.0, posinf=1.0, neginf=1.0)
 
         return {
@@ -170,4 +200,5 @@ class MultiTaskLoss(nn.Module):
             "lesion": l_lesion,
             "lvo":    l_lvo,
             "cow":    l_cow,
+            "boundary": (l_lesion_bd + l_lvo_bd + l_cow_bd) / 3.0
         }
