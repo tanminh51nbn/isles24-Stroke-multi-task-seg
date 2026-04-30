@@ -296,7 +296,7 @@ class Trainer:
                 curr_lr = self.optimizer.param_groups[0]['lr']
                 print(
                     f"--------------------------------------------------"
-                    f"=> | [Epoch {epoch+1:03d}/{self.epochs}] | LR: {curr_lr:.2e} "
+                    f"\n=> | [Epoch {epoch+1:03d}/{self.epochs}] | LR: {curr_lr:.2e} "
                     f"\n   | Dice_L: {val_metrics['dice_lesion']:.4f} | "
                     f"Recall_LVO: {val_metrics['recall_lvo']:.4f} | "
                     f"Dice_C: {val_metrics['dice_cow']:.4f}"
