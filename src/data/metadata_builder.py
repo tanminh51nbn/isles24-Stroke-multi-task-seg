@@ -11,8 +11,8 @@ METADATA_PATH = "/kaggle/working/dataset_metadata.csv"
 
 CTA_WEIGHTS   = "/kaggle/input/datasets/muynhmuynh/radimagenet-pytorch/ResNet50.pt"
 PERF_WEIGHTS  = "/kaggle/input/datasets/muynhmuynh/radimagenet-pytorch/DenseNet121.pt"
-# ─── Hàm quét Metadata (Chạy trực tiếp trong Notebook để tránh lỗi import) ───
-def scan_dataset_notebook(input_dir, output_csv):
+# ─── Hàm quét Metadata ───
+def scan_dataset(input_dir, output_csv):
     all_files = glob(os.path.join(input_dir, "*.npy"))
     if not all_files:
         print(f"!!! KHÔNG TÌM THẤY FILE .NPY NÀO TẠI {input_dir} !!!")
@@ -64,9 +64,10 @@ def scan_dataset_notebook(input_dir, output_csv):
     print(f"\n--- Hoàn thành! Metadata lưu tại: {output_csv} ---")
     print(df[["has_lesion", "has_lvo", "has_cow"]].sum())
 
-# Thực thi
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-if not os.path.exists(METADATA_PATH):
-    scan_dataset_notebook(DATASET_DIR, METADATA_PATH)
-else:
-    print(f"Metadata đã tồn tại tại: {METADATA_PATH}")
+# Thực thi (Chỉ khi chạy trực tiếp script này)
+if __name__ == "__main__":
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    if not os.path.exists(METADATA_PATH):
+        scan_dataset(DATASET_DIR, METADATA_PATH)
+    else:
+        print(f"Metadata đã tồn tại tại: {METADATA_PATH}")

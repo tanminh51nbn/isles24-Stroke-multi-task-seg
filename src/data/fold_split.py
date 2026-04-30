@@ -101,6 +101,10 @@ def apply_sampling(
     neg_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["basename"].tolist()
     other_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["basename"].tolist()
 
+    # Sử dụng seed cố định để đảm bảo tính nhất quán khi chạy đa GPU (DDP)
+    sampling_seed = config["split"].get("seed", 42)
+    rng = random.Random(sampling_seed)
+
     # Thực hiện lấy mẫu
     sampled_basenames = []
     
@@ -114,13 +118,15 @@ def apply_sampling(
     # 3. Downsample các ca toàn màu đen
     n_neg = int(len(neg_list) * downsample_neg_ratio)
     if len(neg_list) > 0:
-        sampled_basenames.extend(random.sample(neg_list, n_neg))
+        # Sử dụng rng của instance để cố định kết quả
+        sampled_basenames.extend(rng.sample(neg_list, n_neg))
 
     # Chuyển basename ngược lại thành full path của môi trường hiện tại
     path_map = {os.path.basename(f): f for f in train_files}
     final_list = [path_map[b] for b in sampled_basenames]
     
-    random.shuffle(final_list)
+    # Shuffle với seed cố định
+    rng.shuffle(final_list)
     
     print(f"[Sampling] LVO: {len(lvo_list)} -> {len(lvo_list)*lvo_oversample_factor}")
     print(f"[Sampling] Background Downsampled: {len(neg_list)} -> {n_neg}")
