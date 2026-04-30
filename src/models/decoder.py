@@ -52,13 +52,12 @@ class AttentionGate(nn.Module):
 
 class LightweightDualAttention(nn.Module):
     """
-    CBAM-style Dual Attention (Channel + Spatial).
-    Thiết kế "Kính lọc thông minh" để lọc đặc trưng CTA + Perfusion.
+    CBAM-style Dual Attention (Channel + Spatial) với KẾT NỐI RESIDUAL.
+    Thiết kế "Bảo hiểm" để không làm mất tín hiệu gốc của LVO.
     """
     def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
         # 1. Channel Attention
-        # Kết hợp MaxPool (Saliency) và AvgPool (Context)
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
         
@@ -69,11 +68,13 @@ class LightweightDualAttention(nn.Module):
         )
         
         # 2. Spatial Attention
-        # Conv 7x7 để có tầm nhìn rộng, bao quát được các mạch máu dài
         self.spatial_conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
+        # Giữ lại thông tin gốc (Residual connection)
+        identity = x
+
         # Bước 1: Lọc Channel
         b, c, _, _ = x.size()
         avg_out = self.fc(self.avg_pool(x).view(b, c))
@@ -87,7 +88,9 @@ class LightweightDualAttention(nn.Module):
         spatial_mask = torch.cat([avg_mask, max_mask], dim=1)
         spatial_weight = self.sigmoid(self.spatial_conv(spatial_mask))
         
-        return x * spatial_weight
+        # BẢO HIỂM RESIDUAL: Cộng lại đặc trưng gốc
+        # Giúp AI chỉ "tô đậm" vùng quan trọng mà không xóa bỏ thông tin nền
+        return identity + (x * spatial_weight)
 
 
 class ConvBnGelu(nn.Module):
