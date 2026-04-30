@@ -65,6 +65,7 @@ class Trainer:
         self.config       = config
         self.device       = device
         self.rank         = rank
+        self.output_dir   = config.get("output_dir", "outputs") # Thêm dòng này
 
         train_cfg = config["training"]
         self.epochs            = int(train_cfg["epochs"])
@@ -201,7 +202,10 @@ class Trainer:
 
             # --- Thực hiện vẽ ảnh (chỉ mẫu đầu tiên của batch đầu tiên hợp lệ) ---
             if should_visualize and not visualized:
-                vis_dir = os.path.join(self.config["training"]["checkpoint"]["dir"], "visualizations")
+                # Sử dụng đường dẫn tuyệt đối
+                vis_base = self.config["training"]["checkpoint"]["dir"]
+                vis_dir = os.path.join(self.output_dir, vis_base, "visualizations")
+                os.makedirs(vis_dir, exist_ok=True)
                 overlay_predictions(
                     sample={"input": inp[0], "label": lbl[0], "path": batch["path"][0]},
                     preds={k: v[0:1] for k, v in preds.items()},

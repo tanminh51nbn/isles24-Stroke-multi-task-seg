@@ -133,6 +133,7 @@ def train_worker(rank: int, world_size: int, args):
     ) if rank == 0 else None
 
     # ── Training ──────────────────────────────────────────────────
+    config["output_dir"] = output_dir
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
