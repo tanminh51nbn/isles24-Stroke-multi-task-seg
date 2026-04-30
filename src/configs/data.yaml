@@ -11,7 +11,7 @@ split:
 
 # ── DataLoader ───────────────────────────────────────────────────
 dataloader:
-  batch_size: 16 # Trên mỗi GPU (2 GPU → effective batch = 32)
+  batch_size: 32 # Trên mỗi GPU (2 GPU → effective batch = 64)
   num_workers: 4
   pin_memory: true
   persistent_workers: true
