@@ -163,9 +163,16 @@ def train_worker(rank: int, world_size: int, args):
         print(f"[PINELINE] History saved to: {os.path.join(output_dir, 'training_history.csv')}")
 
         # In báo cáo kết quả cuối
-        best = max(history, key=lambda h: h["composite"])
+        # In báo cáo kết quả cuối (Chỉ tính từ epoch bắt đầu ổn định - start_epoch)
+        start_eval = config["training"]["checkpoint"].get("start_epoch", 1)
+        relevant_history = [h for h in history if h["epoch"] >= start_eval]
+        
+        if not relevant_history:
+            relevant_history = history  # Fallback nếu không đủ epoch
+            
+        best = max(relevant_history, key=lambda h: h["composite"])
         print("\n" + "=" * 60)
-        print(" TRAINING COMPLETE — BEST RESULTS")
+        print(f" TRAINING COMPLETE — BEST RESULTS (From Epoch {start_eval}+)")
         print(f"  Epoch:          {best['epoch']}")
         print(f"  Dice Lesion:    {best['dice_lesion']:.4f}")
         print(f"  Recall LVO:     {best['recall_lvo']:.4f}")
