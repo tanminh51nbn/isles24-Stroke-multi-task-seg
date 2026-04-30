@@ -13,9 +13,9 @@ loss:
 
   lvo:
     type: "focal_tversky"
-    alpha: 0.2
-    beta: 0.8
-    gamma: 1.5
+    alpha: 0.3
+    beta: 0.7
+    gamma: 2
     weight: 0.55
 
   cow:
