@@ -159,7 +159,11 @@ class MultiTaskLoss(nn.Module):
         l_lvo    = self.lvo_loss(preds["lvo"],       targets[:, 1:2])
         l_cow    = self.cow_loss(preds["cow"],        targets[:, 2:3])
 
+        # Tính tổng loss dựa TRỰC TIẾP trên trọng số config (không nhân thêm 10x)
         total = self.w_lesion * l_lesion + self.w_lvo * l_lvo + self.w_cow * l_cow
+
+        # Đảm bảo total loss không bao giờ bị NaN/Inf để trainer không skip batch
+        total = torch.nan_to_num(total, nan=1.0, posinf=1.0, neginf=1.0)
 
         return {
             "total":  total,

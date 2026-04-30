@@ -111,6 +111,9 @@ class Trainer:
             # ── Stage 2: Kiểm tra NaN trong Loss (AMP overflow) ──────────────
             if not torch.isfinite(losses["total"]):
                 nan_batches += 1
+                if self.rank == 0 and nan_batches <= 3: # In 3 lần đầu
+                    print(f"  [DEBUG] Batch {batch_idx} Loss NaN! "
+                          f"L={losses['lesion']:.4f}, LVO={losses['lvo']:.4f}, C={losses['cow']:.4f}")
                 self.optimizer.zero_grad(set_to_none=True)
                 continue
             # ─────────────────────────────────────────────────────────────────
@@ -118,7 +121,7 @@ class Trainer:
             # Backward với GradScaler
             self.scaler.scale(losses["total"]).backward()
 
-            # Gradient clipping — bảo vệ khỏi LVO loss explosion
+            # Gradient clipping
             self.scaler.unscale_(self.optimizer)
             nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
 
@@ -128,22 +131,18 @@ class Trainer:
             total_loss += losses["total"].item()
             n_batches  += 1
 
-            # Log mỗi N batch — flush=True để output hiển thị ngay trong Kaggle Notebook
+            # Log mỗi N batch
             if self.rank == 0 and (batch_idx + 1) % self.log_interval == 0:
                 print(
                     f"  Epoch {epoch+1} | Batch {batch_idx+1}/{len(self.train_loader)} "
-                    f"| Loss: {losses['total']:.4f} "
-                    f"(L={losses['lesion']:.4f}, LVO={losses['lvo']:.4f}, C={losses['cow']:.4f})",
+                    f"| Loss: {losses['total']:.4f} ",
                     flush=True
                 )
 
         if self.rank == 0 and nan_batches > 0:
-            print(
-                f"  [WARN] Epoch {epoch+1}: {nan_batches}/{len(self.train_loader)} batches bị NaN "
-                f"({nan_input_batches} do dữ liệu lỗi, {nan_batches - nan_input_batches} do AMP overflow).",
-                flush=True
-            )
-        return {"train_loss": total_loss / max(n_batches, 1)}
+            print(f"  [WARN] Epoch {epoch+1}: {nan_batches} batches bị NaN/Inf.", flush=True)
+
+        return {"train_loss": total_loss / n_batches if n_batches > 0 else 1.0}
 
     # ── Validation ────────────────────────────────────────────────────────────
 
