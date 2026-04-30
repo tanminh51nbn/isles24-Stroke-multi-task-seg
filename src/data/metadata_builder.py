@@ -1,59 +1,72 @@
-"""
-metadata_builder.py — Quét dataset và tạo file CSV thông tin nhãn.
-Dùng để hỗ trợ Smart Sampling (Oversampling LVO).
-Thiết kế: Có thể chạy độc lập hoặc gọi từ Notebook.
-"""
-
-import os
-import glob
 import numpy as np
+import os
 import pandas as pd
+from glob import glob
 from tqdm.auto import tqdm
 
-def scan_dataset(dataset_dir: str, output_csv: str):
-    """
-    Quét thư mục dataset và trích xuất thông tin nhãn vào file CSV.
-    
-    Args:
-        dataset_dir: Đường dẫn đến thư mục chứa các file .npy
-        output_csv:  Đường dẫn lưu file CSV kết quả (nên để ở /kaggle/working)
-    """
-    print(f"Bắt đầu quét dataset tại: {dataset_dir}")
-    file_list = sorted(glob.glob(os.path.join(dataset_dir, "*.npy")))
-    
-    if not file_list:
-        print(f"LỖI: Không tìm thấy file .npy nào trong {dataset_dir}")
+# ─── PATHS ───
+DATASET_DIR   = "/kaggle/input/datasets/muynhmuynh/isles24-stroke-segmentation-dataset"
+OUTPUT_DIR    = "/kaggle/working/outputs"
+METADATA_PATH = "/kaggle/working/dataset_metadata.csv"
+
+CTA_WEIGHTS   = "/kaggle/input/datasets/muynhmuynh/radimagenet-pytorch/ResNet50.pt"
+PERF_WEIGHTS  = "/kaggle/input/datasets/muynhmuynh/radimagenet-pytorch/DenseNet121.pt"
+# ─── Hàm quét Metadata (Chạy trực tiếp trong Notebook để tránh lỗi import) ───
+def scan_dataset_notebook(input_dir, output_csv):
+    all_files = glob(os.path.join(input_dir, "*.npy"))
+    if not all_files:
+        print(f"!!! KHÔNG TÌM THẤY FILE .NPY NÀO TẠI {input_dir} !!!")
         return
 
     records = []
-    for f in tqdm(file_list, desc="Scanning slices"):
+    for f in tqdm(all_files, desc="Quét Metadata"):
         try:
-            # Load label (shape 3, 256, 256)
-            data = np.load(f, allow_pickle=True).item()
-            label = data["label"]
+            # Nạp file với allow_pickle=True
+            data = np.load(f, allow_pickle=True)
             
-            # has_lesion: channel 0, has_lvo: channel 1, has_cow: channel 2
+            # TRƯỜNG HỢP 1: data là một Dictionary (thường gặp khi dùng script đóng gói sẵn)
+            if isinstance(data, np.ndarray) and data.dtype == object:
+                data = data.item()
+            
+            if isinstance(data, dict):
+                # Giả sử key là 'label' hoặc 'mask'
+                label = data.get('label', data.get('mask', None))
+                if label is None:
+                    continue
+            else:
+                # TRƯỜNG HỢP 2: data là một Tensor (Cấu trúc cũ)
+                if data.shape[0] < 21:
+                    label = data[-3:] # Giả định 3 kênh cuối là label
+                else:
+                    label = data[18:] # Giả định label bắt đầu từ kênh 18
+            
             records.append({
-                "filepath": os.path.basename(f),
+                "path": f,
                 "has_lesion": int(np.any(label[0] > 0)),
-                "has_lvo": int(np.any(label[1] > 0)),
-                "has_cow": int(np.any(label[2] > 0))
+                "has_lvo":    int(np.any(label[1] > 0)),
+                "has_cow":    int(np.any(label[2] > 0))
             })
+            del data
+            
         except Exception as e:
-            print(f"Lỗi khi xử lý file {f}: {e}")
+            # In lỗi file đầu tiên để chẩn đoán
+            if len(records) == 0:
+                print(f"Lỗi chẩn đoán file {os.path.basename(f)}: {e}")
+                print(f"Type: {type(data) if 'data' in locals() else 'N/A'}")
             continue
+    
+    if not records:
+        print("!!! KHÔNG CÓ DỮ LIỆU HỢP LỆ ĐƯỢC QUÉT. KIỂM TRA LẠI CẤU TRÚC FILE .NPY !!!")
+        return
         
     df = pd.DataFrame(records)
     df.to_csv(output_csv, index=False)
-    print(f"Hoàn thành! Metadata được lưu tại: {output_csv}")
-    print("\nThống kê số lượng Slice:")
-    print(df.sum(numeric_only=True))
+    print(f"\n--- Hoàn thành! Metadata lưu tại: {output_csv} ---")
+    print(df[["has_lesion", "has_lvo", "has_cow"]].sum())
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Quét dataset và tạo metadata cho ISLES'24.")
-    parser.add_argument("--input", type=str, default="/kaggle/input/isles24-npy-dataset/ISLES24_NPY_Dataset", help="Đường dẫn thư mục npy")
-    parser.add_argument("--output", type=str, default="/kaggle/working/dataset_metadata.csv", help="Đường dẫn lưu file CSV")
-    
-    args = parser.parse_args()
-    scan_dataset(args.input, args.output)
+# Thực thi
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+if not os.path.exists(METADATA_PATH):
+    scan_dataset_notebook(DATASET_DIR, METADATA_PATH)
+else:
+    print(f"Metadata đã tồn tại tại: {METADATA_PATH}")

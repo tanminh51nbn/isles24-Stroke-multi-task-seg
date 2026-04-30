@@ -89,38 +89,41 @@ def apply_sampling(
     downsample_neg_ratio  = sampling_cfg.get("downsample_neg_ratio", 0.3)
 
     df = pd.read_csv(metadata_csv)
+    # Chuẩn hóa đường dẫn trong CSV về dạng basename để so sánh environment-agnostic
+    df["basename"] = df["path"].apply(os.path.basename)
+
     # Lọc chỉ lấy những file nằm trong tập train_files hiện tại
     train_basenames = {os.path.basename(f) for f in train_files}
-    df_train = df[df["path"].isin(train_basenames)].copy()
+    df_train = df[df["basename"].isin(train_basenames)].copy()
 
-    # Phân loại
-    lvo_files = df_train[df_train["has_lvo"] == 1]["path"].tolist()
-    neg_files = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["path"].tolist()
-    other_files = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["path"].tolist()
+    # Phân loại (Sử dụng basename để đồng bộ)
+    lvo_list = df_train[df_train["has_lvo"] == 1]["basename"].tolist()
+    neg_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["basename"].tolist()
+    other_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["basename"].tolist()
 
     # Thực hiện lấy mẫu
-    sampled_files = []
+    sampled_basenames = []
     
     # 1. Nhân bản LVO
     for _ in range(lvo_oversample_factor):
-        sampled_files.extend(lvo_files)
+        sampled_basenames.extend(lvo_list)
     
     # 2. Giữ nguyên các ca có Lesion nhưng không LVO
-    sampled_files.extend(other_files)
+    sampled_basenames.extend(other_list)
 
     # 3. Downsample các ca toàn màu đen
-    n_neg = int(len(neg_files) * downsample_neg_ratio)
-    if len(neg_files) > 0:
-        sampled_files.extend(random.sample(neg_files, n_neg))
+    n_neg = int(len(neg_list) * downsample_neg_ratio)
+    if len(neg_list) > 0:
+        sampled_basenames.extend(random.sample(neg_list, n_neg))
 
-    # Chuyển basename ngược lại thành full path
+    # Chuyển basename ngược lại thành full path của môi trường hiện tại
     path_map = {os.path.basename(f): f for f in train_files}
-    final_list = [path_map[b] for b in sampled_files]
+    final_list = [path_map[b] for b in sampled_basenames]
     
     random.shuffle(final_list)
     
-    print(f"[Sampling] LVO: {len(lvo_files)} -> {len(lvo_files)*lvo_oversample_factor}")
-    print(f"[Sampling] Background Downsampled: {len(neg_files)} -> {n_neg}")
+    print(f"[Sampling] LVO: {len(lvo_list)} -> {len(lvo_list)*lvo_oversample_factor}")
+    print(f"[Sampling] Background Downsampled: {len(neg_list)} -> {n_neg}")
     print(f"[Sampling] Tổng số file sau khi balance: {len(final_list)}")
 
     return final_list
