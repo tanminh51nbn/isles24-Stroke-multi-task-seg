@@ -265,16 +265,20 @@ class Trainer:
             # Lưu history
             self.history.append({**train_metrics, **val_metrics, "epoch": epoch + 1})
 
-            # Checkpoint
+            # Checkpoint (Chỉ lưu sau khi đạt start_epoch)
             if checkpoint is not None and self.rank == 0:
-                checkpoint.update(self.model, self.optimizer, epoch + 1, val_metrics)
+                start_ckpt = self.config["training"]["checkpoint"].get("start_epoch", 1)
+                if (epoch + 1) >= start_ckpt:
+                    checkpoint.update(self.model, self.optimizer, epoch + 1, val_metrics)
 
-            # Early stopping
+            # Early stopping (Chỉ tính patience sau khi đạt start_epoch)
             if early_stopping is not None:
-                if early_stopping(val_metrics["composite"]):
-                    if self.rank == 0:
-                        print(f"[Trainer] Early stopping tại epoch {epoch+1}", flush=True)
-                    break
+                start_es = self.config["training"]["early_stopping"].get("start_epoch", 1)
+                if (epoch + 1) >= start_es:
+                    if early_stopping(val_metrics["composite"]):
+                        if self.rank == 0:
+                            print(f"[Trainer] Early stopping tại epoch {epoch+1}", flush=True)
+                        break
             
             # Cập nhật LR sau mỗi epoch (Sau optimizer.step đã chạy trong train_one_epoch)
             self.scheduler.step()

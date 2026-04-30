@@ -62,6 +62,7 @@ training:
   # Checkpointing — 3 checkpoint cho 3 use-case lâm sàng
   checkpoint:
     dir: "checkpoints"
+    start_epoch: 15           # Chỉ bắt đầu lưu sau khi unfreeze và ổn định
     save_best_overall: true   # Composite Score cao nhất → mô hình sản xuất
     save_best_lesion: true    # Dice Lesion cao nhất → bác sĩ cần đo thể tích nhồi máu
     save_best_lvo: true       # Recall LVO cao nhất → cấp cứu phát hiện tắc mạch
@@ -69,12 +70,13 @@ training:
   # Early Stopping
   early_stopping:
     enabled: true
-    patience: 15             # Dừng nếu 15 epoch liên tiếp không cải thiện
-    min_delta: 0.001         # Ngưỡng cải thiện tối thiểu
+    start_epoch: 15           # Chỉ bắt đầu tính patience sau khi unfreeze
+    patience: 15              # Dừng nếu 15 epoch liên tiếp không cải thiện
+    min_delta: 0.001          # Ngưỡng cải thiện tối thiểu
 
   # Logging
   logging:
-    log_interval: 58         # Cứ 25% epoch (58 batch) in log 1 lần cho gọn
+    log_interval: 40         # Cứ 25% epoch (58 batch) in log 1 lần cho gọn
     visualize_every: 5       # Visualize prediction overlay mỗi 5 epoch
     wandb:
       enabled: false         # Bật nếu có WANDB_API_KEY trên Kaggle
