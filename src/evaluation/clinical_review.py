@@ -52,8 +52,16 @@ def run_clinical_review(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. Load Config & Model
-    with open("src/configs/model.yaml", "r") as f: model_cfg = yaml.safe_load(f)
-    with open("src/configs/train.yaml", "r") as f: train_cfg = yaml.safe_load(f)
+    # Logic nạp config linh hoạt (Hỗ trợ Kaggle/Local)
+    def load_cfg(name):
+        paths = [f"src/configs/{name}.yaml", f"configs/{name}.yaml", f"../configs/{name}.yaml"]
+        for p in paths:
+            if os.path.exists(p):
+                with open(p, "r") as f: return yaml.safe_load(f)
+        raise FileNotFoundError(f"Không tìm thấy file cấu hình {name}.yaml tại {paths}")
+
+    model_cfg = load_cfg("model")
+    train_cfg = load_cfg("train")
     
     model = build_model(model_cfg).to(device).eval()
     checkpoint = torch.load(args.model_path, map_location=device)

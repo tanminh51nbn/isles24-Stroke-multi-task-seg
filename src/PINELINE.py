@@ -182,8 +182,9 @@ def train_worker(rank: int, world_size: int, args):
         print("=" * 60)
 
     # Đợi tất cả GPU làm xong (đặc biệt là rank 0 vẽ hình)
-    dist.barrier()
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.barrier(device_ids=[rank])
+        dist.destroy_process_group()
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
