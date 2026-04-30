@@ -9,17 +9,9 @@ split:
   seed: 42
   # GroupShuffleSplit theo patient_id — chống Data Leakage
 
-# ── Sampling ─────────────────────────────────────────────────────
-sampling:
-  # Tỷ lệ downsampling cho lát cắt all-negative (background hoàn toàn)
-  # Giữ lại 30% để model biết "não bình thường trông như thế nào"
-  downsample_neg_ratio: 0.3
-  # Oversample lát cắt có LVO (rất hiếm) lên 5 lần
-  lvo_oversample_factor: 5
-
 # ── DataLoader ───────────────────────────────────────────────────
 dataloader:
-  batch_size: 16 # Trên mỗi GPU (2 GPU → effective batch = 24)
+  batch_size: 16 # Trên mỗi GPU (2 GPU → effective batch = 32)
   num_workers: 4
   pin_memory: true
   persistent_workers: true
@@ -30,8 +22,10 @@ dataloader:
 sampling:
   enabled: true
   metadata_csv: "/kaggle/working/dataset_metadata.csv"
-  lvo_oversample_factor: 5   # Nhân bản slice có LVO gấp 5 lần
-  downsample_neg_ratio: 0.3  # Chỉ giữ lại 30% slice all-negative (không bệnh)
+  # Oversample lát cắt có LVO (rất hiếm) lên 8 lần
+  lvo_oversample_factor: 8   
+  # Tỷ lệ giữ lại lát cắt all-negative (không bệnh) - 30%
+  downsample_neg_ratio: 0.3  
 
 # ── Augmentation ─────────────────────────────────────────────────
 augmentation:
