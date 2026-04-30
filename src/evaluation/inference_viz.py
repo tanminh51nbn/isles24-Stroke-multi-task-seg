@@ -51,7 +51,8 @@ def run_single_mode(args, model, train_cfg, device):
                 sample={"input": inp[0], "label": batch["label"][0], "path": path},
                 preds={k: v for k, v in preds.items()},
                 epoch=999, save_dir=args.save_dir, 
-                thresholds=train_cfg["composite_score"]["thresholds"]
+                thresholds=train_cfg["composite_score"]["thresholds"],
+                show=True
             )
     print(f"[Xong] Lưu tại: {args.save_dir}")
 

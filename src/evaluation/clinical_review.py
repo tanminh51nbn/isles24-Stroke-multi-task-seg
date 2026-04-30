@@ -57,7 +57,10 @@ def run_clinical_review(args):
     
     model = build_model(model_cfg).to(device).eval()
     checkpoint = torch.load(args.model_path, map_location=device)
-    model.load_state_dict(checkpoint["model"] if "model" in checkpoint else checkpoint)
+    state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
+    model.load_state_dict(state_dict)
+    
+    actual_save_dir = None if args.no_save else args.save_dir
     
     # 2. Tìm mẫu
     samples = get_clinical_samples(args.data_dir)
@@ -82,16 +85,16 @@ def run_clinical_review(args):
             sample={"input": torch.from_numpy(data["input"]), "label": torch.from_numpy(data["label"]), "path": file_path},
             preds=preds,
             epoch=999, # Mã đánh dấu hậu kiểm
-            save_dir=args.save_dir,
-            thresholds=thresholds
+            save_dir=actual_save_dir,
+            thresholds=thresholds,
+            show=True
         )
-        
-        # Hiển thị ảnh ngay lập tức nếu đang trong môi trường Notebook
-        plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--data_dir", type=str, required=True)
+    parser.add_argument("--save_dir", type=str, default="clinical_results")
+    parser.add_argument("--no_save", action="store_true", help="Chỉ hiển thị ảnh, không lưu file")
     args = parser.parse_args()
     run_clinical_review(args)

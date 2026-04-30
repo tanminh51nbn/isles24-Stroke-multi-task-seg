@@ -1,12 +1,12 @@
 """
-visualize.py — Trực quan hóa kết quả training và predictions (Bản nâng cấp lâm sàng)
+visualize.py — Trực quan hóa kết quả training và predictions (Bản nâng cấp lâm sàng v2)
 """
 
 import os
 import numpy as np
 import torch
 import matplotlib
-matplotlib.use("Agg")  # Non-interactive backend cho server/Kaggle
+# matplotlib.use("Agg")  # Sẽ tự động nhận diện backend tùy môi trường
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from typing import List, Optional
@@ -52,8 +52,6 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    else:
-        plt.show()
     plt.close()
 
 
@@ -63,8 +61,9 @@ def overlay_predictions(
     sample: dict,
     preds: dict,
     epoch: int,
-    save_dir: str,
+    save_dir: Optional[str] = None,
     thresholds: dict = None,
+    show: bool = False,
 ):
     """
     Chồng mask dự đoán lên ảnh CTA theo phong cách đối chiếu lâm sàng (GT vs Pred).
@@ -72,10 +71,10 @@ def overlay_predictions(
     if thresholds is None:
         thresholds = {"lesion": 0.5, "lvo": 0.25, "cow": 0.5}
 
-    os.makedirs(save_dir, exist_ok=True)
+    if save_dir: os.makedirs(save_dir, exist_ok=True)
     
     # Chuẩn bị dữ liệu
-    cta_img = sample["input"][6].cpu().numpy() # Lấy lát cắt CTA trung tâm
+    cta_img = sample["input"][6].cpu().numpy()
     gt_masks = [sample["label"][i].cpu().numpy() for i in range(3)]
     
     pr_masks = [
@@ -85,36 +84,37 @@ def overlay_predictions(
     ]
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 8))
-    fig.suptitle(f"Epoch {epoch} — Clinical Review (GT vs AI)", fontsize=14, fontweight="bold")
+    title = f"Epoch {epoch} — Clinical Review" if epoch < 999 else "Final Clinical Review"
+    fig.suptitle(title, fontsize=14, fontweight="bold")
     
-    colors = [(1, 0, 0), (0, 0.5, 1), (0, 1, 0)] # Đỏ (Lesion), Xanh dương (LVO), Xanh lá (CoW)
+    colors = [(1, 0, 0), (0, 0.5, 1), (0, 1, 0)] 
     task_names = ["Lesion", "LVO", "CoW"]
     
     for i, ax in enumerate(axes):
         ax.imshow(cta_img, cmap="gray")
         ax.set_title("BÁC SĨ (Ground Truth)" if i == 0 else "AI DỰ ĐOÁN")
-        
         current_masks = gt_masks if i == 0 else pr_masks
         
         for task_idx in range(3):
             mask = current_masks[task_idx]
             if mask.sum() > 0:
-                # Tạo lớp overlay RGBA
                 overlay = np.zeros((*mask.shape, 4))
                 overlay[..., :3] = colors[task_idx]
-                overlay[..., 3] = mask * 0.5 # Độ trong suốt 50%
+                overlay[..., 3] = mask * 0.5 
                 ax.imshow(overlay)
-        
         ax.axis("off")
 
-    # Thêm chú thích màu sắc (Legend)
     patches = [mpatches.Patch(color=colors[j], label=task_names[j]) for j in range(3)]
     fig.legend(handles=patches, loc='lower center', ncol=3, fontsize=12)
-
     plt.tight_layout()
     
-    # Lưu file
-    fname = os.path.basename(sample.get("path", "sample")).replace(".npy", "")
-    save_path = os.path.join(save_dir, f"epoch{epoch:03d}_{fname}.png")
-    plt.savefig(save_path, dpi=120, bbox_inches="tight")
+    if save_dir:
+        fname = os.path.basename(sample.get("path", "sample")).replace(".npy", "")
+        save_path = os.path.join(save_dir, f"epoch{epoch:03d}_{fname}.png")
+        plt.savefig(save_path, dpi=120, bbox_inches="tight")
+        
+    if show:
+        # Tạm thời chuyển sang tương tác để hiện ảnh
+        plt.show()
+        
     plt.close()
