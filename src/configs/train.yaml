@@ -9,14 +9,14 @@ loss:
     type: "tversky"
     alpha: 0.4
     beta: 0.6
-    weight: 0.60
+    weight: 0.35
 
   lvo:
     type: "focal_tversky"
     alpha: 0.2
     beta: 0.8
     gamma: 1.5
-    weight: 0.30
+    weight: 0.55
 
   cow:
     type: "tversky"
