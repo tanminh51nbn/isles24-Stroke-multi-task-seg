@@ -141,10 +141,18 @@ class Trainer:
                     flush=True
                 )
 
+        # ─── ĐỒNG BỘ HÓA DDP (ALL-REDUCE) ───
+        # Để báo cáo Train Loss chính xác trên toàn bộ hệ thống
+        avg_train_loss = total_loss / max(n_batches, 1)
+        if dist.is_initialized():
+            sync_data = torch.tensor([total_loss, float(n_batches)], device=self.device)
+            dist.all_reduce(sync_data, op=dist.ReduceOp.SUM)
+            avg_train_loss = sync_data[0].item() / max(sync_data[1].item(), 1)
+
         if self.rank == 0 and nan_batches > 0:
             print(f"  [WARN] Epoch {epoch+1}: {nan_batches} batches bị NaN/Inf.", flush=True)
 
-        return {"train_loss": total_loss / n_batches if n_batches > 0 else 1.0}
+        return {"train_loss": avg_train_loss}
 
     # ── Validation ────────────────────────────────────────────────────────────
 
@@ -207,6 +215,26 @@ class Trainer:
         avg_dice_lesion = sum_dice_lesion / max(n_batches, 1)
         avg_recall_lvo  = sum_recall_lvo  / max(n_lvo_batches, 1)
         avg_dice_cow    = sum_dice_cow    / max(n_batches, 1)
+
+        # ─── ĐỒNG BỘ HÓA DDP (ALL-REDUCE) ───
+        # Để đảm bảo tính minh bạch và chính xác trên toàn bộ tập Validation
+        if dist.is_initialized():
+            # Gom tất cả chỉ số vào 1 tensor để gửi đi 1 lần cho nhanh
+            sync_data = torch.tensor([
+                total_loss, sum_dice_lesion, sum_recall_lvo, sum_dice_cow,
+                float(n_batches), float(n_lvo_batches)
+            ], device=self.device)
+            
+            # Cộng dồn từ tất cả các GPU
+            dist.all_reduce(sync_data, op=dist.ReduceOp.SUM)
+            
+            # Tính toán lại trung bình trên quy mô toàn hệ thống
+            v = sync_data.cpu().numpy()
+            avg_loss        = v[0] / max(v[4], 1)
+            avg_dice_lesion = v[1] / max(v[4], 1)
+            avg_recall_lvo  = v[2] / max(v[5], 1)
+            avg_dice_cow    = v[3] / max(v[4], 1)
+
         avg_composite   = (
             self.metric_weights["dice_lesion_weight"] * avg_dice_lesion +
             self.metric_weights["recall_lvo_weight"]  * avg_recall_lvo  +
