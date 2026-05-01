@@ -194,8 +194,8 @@ class MultiTaskLoss(nn.Module):
         # 2. Tính toán Auxiliary Losses (MDS)
         # aux_masks: [mask_32, mask_64, mask_128, mask_256]
         aux_loss = 0.0
-        # Trọng số cho 4 tầng giám sát phụ
-        aux_weights = [0.05, 0.1, 0.15, 0.2] 
+        # Trọng số tăng dần, giảm áp lực ở tầng quá sâu để tránh nhiễu
+        aux_weights = [0.05, 0.075, 0.125, 0.25] 
         
         if "aux_masks" in preds and preds["aux_masks"] is not None:
             for i, aux_pred in enumerate(preds["aux_masks"]):
@@ -205,10 +205,20 @@ class MultiTaskLoss(nn.Module):
                 h, w = aux_pred.shape[2], aux_pred.shape[3]
                 aux_targets = F.interpolate(targets, size=(h, w), mode="nearest")
                 
-                # Tính loss có trọng số cho 3 nhiệm vụ ở tầng phụ này
-                l_aux = self.w_lesion * self.lesion_main_loss(aux_pred[:, 0:1], aux_targets[:, 0:1]) + \
-                        self.w_lvo * self.lvo_main_loss(aux_pred[:, 1:2], aux_targets[:, 1:2]) + \
-                        self.w_cow * self.cow_main_loss(aux_pred[:, 2:3], aux_targets[:, 2:3])
+                # --- Selective Supervision Logic ---
+                # Luôn tính Lesion và CoW ở mọi tầng
+                l_lesion_aux = self.lesion_main_loss(aux_pred[:, 0:1], aux_targets[:, 0:1])
+                l_cow_aux    = self.cow_main_loss(aux_pred[:, 2:3], aux_targets[:, 2:3])
+                
+                # Chỉ tính LVO ở tầng 128 (i=2) và 256 (i=3)
+                # Lý do: Ở 32 và 64, điểm LVO bị biến mất do nén ảnh, gây nhiễu gradient.
+                if i >= 2:
+                    l_lvo_aux = self.lvo_main_loss(aux_pred[:, 1:2], aux_targets[:, 1:2])
+                    l_aux = self.w_lesion * l_lesion_aux + self.w_lvo * l_lvo_aux + self.w_cow * l_cow_aux
+                else:
+                    # Ở tầng sâu, chỉ tập trung vào Lesion và CoW (re-scale trọng số)
+                    w_sum = self.w_lesion + self.w_cow
+                    l_aux = (self.w_lesion / w_sum) * l_lesion_aux + (self.w_cow / w_sum) * l_cow_aux
                 
                 aux_loss += aux_weights[i] * l_aux
 
