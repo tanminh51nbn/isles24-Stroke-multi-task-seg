@@ -25,7 +25,7 @@ from data.dataset import ISLES24Dataset
 from evaluation.visualize import overlay_predictions
 
 def load_model_from_ckpt(model, ckpt_path, device):
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
     state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
     model.load_state_dict(state_dict)
     return model

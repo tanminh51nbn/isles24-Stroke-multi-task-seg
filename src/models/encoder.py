@@ -136,7 +136,7 @@ class ResNet50Encoder(nn.Module):
 
     def _load_radimagenet(self, path: str, in_channels: int):
         """Load RadImageNet checkpoint, thực hiện inflate conv1 từ trọng số y tế."""
-        state_dict = torch.load(path, map_location="cpu")
+        state_dict = torch.load(path, map_location="cpu", weights_only=False)
         
         # Xử lý wrapper
         if "model" in state_dict:
@@ -235,7 +235,7 @@ class DenseNet121Encoder(nn.Module):
 
     def _load_radimagenet(self, path: str, in_channels: int):
         """Load RadImageNet cho DenseNet, thực hiện inflate conv0 từ trọng số y tế."""
-        state_dict = torch.load(path, map_location="cpu")
+        state_dict = torch.load(path, map_location="cpu", weights_only=False)
         
         if "model" in state_dict:
             state_dict = state_dict["model"]

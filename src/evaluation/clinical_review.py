@@ -64,7 +64,7 @@ def run_clinical_review(args):
     train_cfg = load_cfg("train")
     
     model = build_model(model_cfg).to(device).eval()
-    checkpoint = torch.load(args.model_path, map_location=device)
+    checkpoint = torch.load(args.model_path, map_location=device, weights_only=False)
     state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
     model.load_state_dict(state_dict)
     
