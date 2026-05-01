@@ -9,7 +9,7 @@ loss:
     type: "tversky"
     alpha: 0.4
     beta: 0.6
-    weight: 0.2
+    weight: 0.25
     boundary_weight: 0.15
 
   lvo:
@@ -17,14 +17,14 @@ loss:
     alpha: 0.15
     beta: 0.85
     gamma: 3
-    weight: 0.78
+    weight: 0.7
     boundary_weight: 0.5
 
   cow:
     type: "tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.02
+    weight: 0.05
     boundary_weight: 0.25
 
 # ── Composite Validation Score ──────────────────────────────────
@@ -36,52 +36,50 @@ composite_score:
   dice_cow_weight: 0.2
   thresholds:
     lesion: 0.5
-    lvo: 0.25               # Hạ ngưỡng nhạy cảm để tăng Recall tối đa
+    lvo: 0.25
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
-  lr: 8.0e-4                # Base LR cho Decoder và Heads
-  weight_decay: 1.0e-3      # L2 regularization
-  encoder_lr_scale: 0.1     # Encoder LR = 1e-4 × 0.1 = 1e-5
-  eps: 1.0e-7               # Cải thiện độ ổn định cho AMP (Mixed Precision)
-                            # Bảo vệ RadImageNet weights, tránh quên kiến thức y tế
+  lr: 8.0e-4
+  weight_decay: 1.0e-3
+  encoder_lr_scale: 0.1
+  eps: 1.0e-7
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 10         # Linear ramp-up từ 0 → base_lr trong 10 epoch đầu
-  hold_epochs: 5            # Giữ nguyên base_lr trong 5 epoch sau khi unfreeze để ổn định
-  min_lr: 1.0e-6            # Sàn cho CosineAnnealing
+  warmup_epochs: 10
+  hold_epochs: 5
+  min_lr: 1.0e-6
 
 # ── Training ────────────────────────────────────────────────────
 training:
   epochs: 50
-  amp: true                 # Automatic Mixed Precision (float16) — bắt buộc trên T4
-  grad_clip_norm: 1.0       # Clip gradient để tránh LVO loss explode (weight 10x)
-  freeze_encoder_epochs: 10  # Đóng băng cả 2 encoder trong 5 epoch đầu
-                            # Để Decoder + Heads ổn định trước khi fine-tune encoder
+  amp: true
+  grad_clip_norm: 1.0
+  freeze_encoder_epochs: 10
 
-  # Checkpointing — 3 checkpoint cho 3 use-case lâm sàng
+  # Checkpointing
   checkpoint:
     dir: "checkpoints"
     start_epoch: 15           # Chỉ bắt đầu lưu sau khi unfreeze và ổn định
-    save_best_overall: true   # Composite Score cao nhất → mô hình sản xuất
-    save_best_lesion: true    # Dice Lesion cao nhất → bác sĩ cần đo thể tích nhồi máu
-    save_best_lvo: true       # Recall LVO cao nhất → cấp cứu phát hiện tắc mạch
+    save_best_overall: true   # Composite Score cao nhất
+    save_best_lesion: true    # Dice Lesion cao nhất
+    save_best_lvo: true       # Recall LVO cao nhất
 
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 15           # Chỉ bắt đầu tính patience sau khi unfreeze
-    patience: 15              # Dừng nếu 15 epoch liên tiếp không cải thiện
-    min_delta: 0.001          # Ngưỡng cải thiện tối thiểu
+    start_epoch: 15
+    patience: 15
+    min_delta: 0.001
 
   # Logging
   logging:
-    log_interval: 43         # Cứ 25% epoch (58 batch) in log 1 lần cho gọn
-    visualize_every: 5       # Visualize prediction overlay mỗi 5 epoch
+    log_interval: 43
+    visualize_every: 5
     wandb:
-      enabled: false         # Bật nếu có WANDB_API_KEY trên Kaggle
+      enabled: false
       project: "isles24-stroke"
-      run_name: null         # Auto-generate
+      run_name: null
