@@ -185,7 +185,16 @@ class Trainer:
                 preds  = self.model(inp)
                 losses = self.loss_fn(preds, lbl)
 
-            pred_ok = all(torch.isfinite(v).all() for v in preds.values())
+            pred_ok = True
+            for v in preds.values():
+                if isinstance(v, torch.Tensor):
+                    if not torch.isfinite(v).all():
+                        pred_ok = False
+                        break
+                elif isinstance(v, list):
+                    if not all(torch.isfinite(t).all() for t in v if t is not None):
+                        pred_ok = False
+                        break
             if not pred_ok:
                 continue
 
