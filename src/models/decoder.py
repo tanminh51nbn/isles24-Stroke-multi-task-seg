@@ -179,9 +179,10 @@ class UNetDecoder(nn.Module):
         self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True)
         
         # s1(64)+d1(64)=128. in_ch=128. out_ch=dec_ch[3]=64 -> final_ch
-        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=False)
+        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True)
 
-        # Tầng cuối cùng trả về final_ch để nạp vào Heads
+        # Tầng cuối cùng: 128x128 -> 256x256
+        self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor]) -> Tuple[torch.Tensor, List[torch.Tensor]]:
@@ -194,12 +195,15 @@ class UNetDecoder(nn.Module):
         x = self.bottleneck(x)
 
         # Decoder Stages with Feedback
-        x, aux3 = self.dec4(x, s4, d4, prev_mask=None)       # 32x32
-        x, aux2 = self.dec3(x, s3, d3, prev_mask=aux3)       # 64x64
-        x, aux1 = self.dec2(x, s2, d2, prev_mask=aux2)       # 128x128
-        x, _    = self.dec1(x, s1, d1, prev_mask=aux1)       # 256x256
+        x, aux4 = self.dec4(x, s4, d4, prev_mask=None)       # 32x32
+        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4)       # 64x64
+        x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)       # 128x128
+        x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)       # 256x256 (Oops, it was 128x128)
 
+        # Lỗi cũ: dec1 cho ra 128x128. Ta cần up lên 256.
+        x = self.up_final(x)
         x = self.final_conv(x)
         
-        # Trả về: (đặc trưng cuối, [mask_32, mask_64, mask_128])
-        return x, [aux3, aux2, aux1]
+        # Trả về: (đặc trưng cuối 256x256, [mask_32, mask_64, mask_128, mask_256_aux])
+        # Chúng ta có 4 aux masks bây giờ
+        return x, [aux4, aux3, aux2, aux1]

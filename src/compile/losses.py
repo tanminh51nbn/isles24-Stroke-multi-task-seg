@@ -192,20 +192,20 @@ class MultiTaskLoss(nn.Module):
         main_loss = self.w_lesion * l_lesion + self.w_lvo * l_lvo + self.w_cow * l_cow
 
         # 2. Tính toán Auxiliary Losses (MDS)
-        # aux_masks: [mask_32, mask_64, mask_128]
+        # aux_masks: [mask_32, mask_64, mask_128, mask_256]
         aux_loss = 0.0
-        aux_weights = [0.1, 0.2, 0.3] # Trọng số tăng dần khi lên các tầng nông
+        # Trọng số cho 4 tầng giám sát phụ
+        aux_weights = [0.05, 0.1, 0.15, 0.2] 
         
         if "aux_masks" in preds and preds["aux_masks"] is not None:
             for i, aux_pred in enumerate(preds["aux_masks"]):
-                if aux_pred is None: continue
+                if aux_pred is None or i >= len(aux_weights): continue
                 
                 # Resize nhãn GT xuống kích thước của aux_pred
                 h, w = aux_pred.shape[2], aux_pred.shape[3]
                 aux_targets = F.interpolate(targets, size=(h, w), mode="nearest")
                 
                 # Tính loss có trọng số cho 3 nhiệm vụ ở tầng phụ này
-                # Ưu tiên Lesion/LVO > CoW theo đúng cấu hình của bạn
                 l_aux = self.w_lesion * self.lesion_main_loss(aux_pred[:, 0:1], aux_targets[:, 0:1]) + \
                         self.w_lvo * self.lvo_main_loss(aux_pred[:, 1:2], aux_targets[:, 1:2]) + \
                         self.w_cow * self.cow_main_loss(aux_pred[:, 2:3], aux_targets[:, 2:3])
