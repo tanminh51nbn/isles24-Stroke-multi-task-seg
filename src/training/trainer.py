@@ -138,7 +138,7 @@ class Trainer:
                 print(
                     f"   Epoch {epoch+1} | Batch {batch_idx+1}/{len(self.train_loader)} "
                     f"| Loss: {losses['total']:.4f} "
-                    f"(L:{losses['lesion']:.3f}, LVO:{losses['lvo']:.3f}, C:{losses['cow']:.3f}, B:{losses['boundary']:.3f})",
+                    f"(M:{losses['main']:.3f}, A:{losses['aux']:.3f}, LVO:{losses['lvo']:.3f}, B:{losses['boundary']:.3f})",
                     flush=True
                 )
 

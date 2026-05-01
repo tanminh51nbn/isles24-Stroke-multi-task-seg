@@ -1,28 +1,18 @@
 """
-decoder.py — UNet Decoder nhận skip connections từ 2 Encoder
-
-Cấu trúc mỗi DecoderBlock:
-    Upsample(2x) → Concat(skip_cta, skip_perfusion) → Conv3x3 → BN → ReLU → Conv3x3 → BN → ReLU
-
-Concatenated skip channels tại mỗi level:
-    Level 5 (bottleneck): 2048 + 1024 = 3072 ch
-    Level 4:              1024 + 512  = 1536 ch
-    Level 3:              512  + 256  = 768  ch
-    Level 2:              256  + 128  = 384  ch
-    Level 1:              64   + 64   = 128  ch
+decoder.py — UNet Decoder tích hợp Iterative Feedback MDS.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 # ─── Attention Modules ───────────────────────────────────────────────────────
 
 class AttentionGate(nn.Module):
     """
-    Standard Attention Gate (AG) từ mô hình Attention UNet (Oktay et al.).
+    Attention Gate (AG) chuẩn.
     Dùng tín hiệu từ tầng sâu (gating) để lọc không gian tầng nông (skip).
     """
     def __init__(self, F_g: int, F_l: int, F_int: int):
@@ -52,12 +42,10 @@ class AttentionGate(nn.Module):
 
 class LightweightDualAttention(nn.Module):
     """
-    CBAM-style Dual Attention (Channel + Spatial) với KẾT NỐI RESIDUAL.
-    Thiết kế "Bảo hiểm" để không làm mất tín hiệu gốc của LVO.
+    CBAM-style Dual Attention với KẾT NỐI RESIDUAL (Bảo hiểm tín hiệu).
     """
     def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
-        # 1. Channel Attention
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
         
@@ -67,35 +55,32 @@ class LightweightDualAttention(nn.Module):
             nn.Linear(channels // reduction, channels, bias=False)
         )
         
-        # 2. Spatial Attention
         self.spatial_conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        # Giữ lại thông tin gốc (Residual connection)
         identity = x
-
-        # Bước 1: Lọc Channel
         b, c, _, _ = x.size()
+        
+        # Channel Attention
         avg_out = self.fc(self.avg_pool(x).view(b, c))
         max_out = self.fc(self.max_pool(x).view(b, c))
         channel_weight = self.sigmoid(avg_out + max_out).view(b, c, 1, 1)
         x = x * channel_weight
 
-        # Bước 2: Lọc Spatial
+        # Spatial Attention
         avg_mask = torch.mean(x, dim=1, keepdim=True)
         max_mask, _ = torch.max(x, dim=1, keepdim=True)
         spatial_mask = torch.cat([avg_mask, max_mask], dim=1)
         spatial_weight = self.sigmoid(self.spatial_conv(spatial_mask))
         
-        # BẢO HIỂM RESIDUAL: Cộng lại đặc trưng gốc
-        # Giúp AI chỉ "tô đậm" vùng quan trọng mà không xóa bỏ thông tin nền
         return identity + (x * spatial_weight)
 
 
-class ConvBnGelu(nn.Module):
-    """3×3 Conv + BN + GELU — khối cơ bản."""
+# ─── Khối Decoder Cơ Bản ─────────────────────────────────────────────────────
 
+class ConvBnGelu(nn.Module):
+    """3×3 Conv + BN + GELU."""
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
         self.block = nn.Sequential(
@@ -108,60 +93,68 @@ class ConvBnGelu(nn.Module):
         return self.block(x)
 
 
+class AuxHead(nn.Module):
+    """Tạo mask 3 kênh từ đặc trưng trung gian."""
+    def __init__(self, in_ch: int, out_ch: int = 3):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=1)
+
+    def forward(self, x):
+        return self.conv(x)
+
+
 class DecoderBlock(nn.Module):
     """
-    Một cấp decoder:
-        1. Upsample 2x
-        2. Tích hợp Attention (AG hoặc Dual CBAM)
-        3. Kết hợp Skip features từ CTA & Perfusion
+    DecoderBlock hỗ trợ Iterative Feedback.
     """
-
-    def __init__(self, in_ch: int, skip_ch: int, out_ch: int, attention_type: Optional[str] = None):
+    def __init__(self, in_ch: int, skip_ch: int, out_ch: int, attention_type: Optional[str] = None, use_aux: bool = True):
         super().__init__()
         self.attention_type = attention_type
+        self.use_aux = use_aux
         
-        # Cấu hình Attention lên nhánh Skip
+        # Feedback + In_ch + Skip_ch
+        self.conv1 = ConvBnGelu(in_ch + skip_ch + 3, out_ch)
+        self.conv2 = ConvBnGelu(out_ch, out_ch)
+        
         if attention_type == "ag":
             self.ag = AttentionGate(F_g=in_ch, F_l=skip_ch, F_int=skip_ch // 2)
         elif attention_type == "dual":
             self.dual_attn = LightweightDualAttention(channels=skip_ch)
-        
-        # Sau khi concat (Upsampled + Skip)
-        self.conv1 = ConvBnGelu(in_ch + skip_ch, out_ch)
-        self.conv2 = ConvBnGelu(out_ch, out_ch)
+            
+        if use_aux:
+            self.aux_head = AuxHead(out_ch)
 
-    def forward(self, x: torch.Tensor, skip_cta: torch.Tensor, skip_perf: torch.Tensor) -> torch.Tensor:
-        # 1. Upsample signal từ tầng sâu
+    def forward(self, x: torch.Tensor, skip_cta: torch.Tensor, skip_perf: torch.Tensor, prev_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # 1. Upsample
         x_up = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
         
-        # 2. Kết hợp Skip CTA & Perfusion
-        skip = torch.cat([skip_cta, skip_perf], dim=1)
+        if prev_mask is None:
+            prev_mask = torch.zeros((x_up.shape[0], 3, x_up.shape[2], x_up.shape[3]), device=x.device)
+        else:
+            prev_mask = F.interpolate(prev_mask, size=(x_up.shape[2], x_up.shape[3]), mode="bilinear", align_corners=False)
         
-        # 3. Lọc thông tin qua Attention
+        # 2. Skip + Attention
+        skip = torch.cat([skip_cta, skip_perf], dim=1)
         if self.attention_type == "ag":
             skip = self.ag(g=x_up, x=skip)
         elif self.attention_type == "dual":
             skip = self.dual_attn(skip)
             
-        # 4. Concat và xử lý đặc trưng kết hợp
-        out = torch.cat([x_up, skip], dim=1)
+        # 3. Concat & Conv
+        out = torch.cat([x_up, skip, prev_mask], dim=1)
         out = self.conv1(out)
         out = self.conv2(out)
-        return out
+        
+        aux_out = self.aux_head(out) if self.use_aux else None
+        return out, aux_out
 
+
+# ─── UNet Decoder ───────────────────────────────────────────────────────────
 
 class UNetDecoder(nn.Module):
     """
-    UNet Decoder nhận skip features từ Dual-Encoder.
-    
-    Cấu hình kênh thực tế:
-        Bottleneck (BN): s5(2048) + d5(1024) = 3072 ch
-        Level 4 (dec4): skip(s4:1024 + d4:1024 = 2048) + prev(1024)
-        Level 3 (dec3): skip(s3:512  + d3:512  = 1024) + prev(512)
-        Level 2 (dec2): skip(s2:256  + d2:256  = 512)  + prev(256)
-        Level 1 (dec1): skip(s1:64   + d1:64   = 128)  + prev(128)
+    UNet Decoder với cơ chế Iterative Feedback MDS.
     """
-
     def __init__(self, config: dict):
         super().__init__()
         
@@ -169,44 +162,44 @@ class UNetDecoder(nn.Module):
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
-        # Bottleneck: Nén thông tin từ mức sâu nhất
+        # Bottleneck: Nén s5(2048) + d5(1024) = 3072 ch về 1024
         self.bottleneck = nn.Sequential(
             ConvBnGelu(3072, 1024),
             ConvBnGelu(1024, 1024),
         )
 
-        # 4 Cấp giải mã với Skip Connections
-        self.dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type)
-        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type)
-        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type)
-        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type)
+        # 4 Cấp giải mã (32x32, 64x64, 128x128, 256x256)
+        # s4(1024)+d4(1024)=2048. in_ch=1024. out_ch=dec_ch[0]=512
+        self.dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type, use_aux=True)
+        
+        # s3(512)+d3(512)=1024. in_ch=512. out_ch=dec_ch[1]=256
+        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type, use_aux=True)
+        
+        # s2(256)+d2(256)=512. in_ch=256. out_ch=dec_ch[2]=128
+        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True)
+        
+        # s1(64)+d1(64)=128. in_ch=128. out_ch=dec_ch[3]=64 -> final_ch
+        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=False)
 
-        # Upsample cuối cùng và tinh chỉnh đặc trưng
-        self.final_upsample = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
-            ConvBnGelu(dec_ch[3], final_ch * 2),
-            ConvBnGelu(final_ch * 2, final_ch),
-        )
+        # Tầng cuối cùng trả về final_ch để nạp vào Heads
+        self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
-    def forward(
-        self,
-        cta_skips: List[torch.Tensor],
-        perf_skips: List[torch.Tensor],
-    ) -> torch.Tensor:
-        # Lấy đặc trưng từ Encoders (ResNet & DenseNet)
+    def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor]) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        # Encoders outputs
         s1, s2, s3, s4, s5 = cta_skips
         d1, d2, d3, d4, d5 = perf_skips
 
-        # Bước 1: Bottleneck
-        x = torch.cat([s5, d5], dim=1) # (B, 3072, H/32, W/32)
-        x = self.bottleneck(x)         # (B, 1024, H/32, W/32)
+        # Bottleneck
+        x = torch.cat([s5, d5], dim=1)
+        x = self.bottleneck(x)
 
-        # Bước 2: Giải mã qua các tầng có Attention
-        x = self.dec4(x, s4, d4)       # (B, 512, H/16, W/16)
-        x = self.dec3(x, s3, d3)       # (B, 256, H/8, W/8)
-        x = self.dec2(x, s2, d2)       # (B, 128, H/4, W/4)
-        x = self.dec1(x, s1, d1)       # (B, 64, H/2, W/2)
+        # Decoder Stages with Feedback
+        x, aux3 = self.dec4(x, s4, d4, prev_mask=None)       # 32x32
+        x, aux2 = self.dec3(x, s3, d3, prev_mask=aux3)       # 64x64
+        x, aux1 = self.dec2(x, s2, d2, prev_mask=aux2)       # 128x128
+        x, _    = self.dec1(x, s1, d1, prev_mask=aux1)       # 256x256
 
-        # Bước 3: Upsample về kích thước gốc
-        x = self.final_upsample(x)     # (B, final_ch, H, W)
-        return x
+        x = self.final_conv(x)
+        
+        # Trả về: (đặc trưng cuối, [mask_32, mask_64, mask_128])
+        return x, [aux3, aux2, aux1]

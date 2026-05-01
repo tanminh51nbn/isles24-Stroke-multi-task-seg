@@ -176,27 +176,50 @@ class MultiTaskLoss(nn.Module):
         self.boundary_loss = BoundaryLoss(kernel_size=3)
 
     def forward(self, preds: dict, targets: torch.Tensor) -> dict:
-        # --- Lesion ---
+        # 1. Tính toán Main Loss (256x256) như cũ
         l_lesion_main = self.lesion_main_loss(preds["lesion"], targets[:, 0:1])
         l_lesion_bd   = self.boundary_loss(preds["lesion"], targets[:, 0:1])
         l_lesion      = (1.0 - self.w_lesion_boundary) * l_lesion_main + self.w_lesion_boundary * l_lesion_bd
 
-        # --- LVO ---
         l_lvo_main = self.lvo_main_loss(preds["lvo"], targets[:, 1:2])
         l_lvo_bd   = self.boundary_loss(preds["lvo"], targets[:, 1:2])
         l_lvo      = (1.0 - self.w_lvo_boundary) * l_lvo_main + self.w_lvo_boundary * l_lvo_bd
 
-        # --- CoW ---
         l_cow_main = self.cow_main_loss(preds["cow"], targets[:, 2:3])
         l_cow_bd   = self.boundary_loss(preds["cow"], targets[:, 2:3])
         l_cow      = (1.0 - self.w_cow_boundary) * l_cow_main + self.w_cow_boundary * l_cow_bd
 
-        # Tổng hợp loss theo trọng số chính
-        total = self.w_lesion * l_lesion + self.w_lvo * l_lvo + self.w_cow * l_cow
+        main_loss = self.w_lesion * l_lesion + self.w_lvo * l_lvo + self.w_cow * l_cow
+
+        # 2. Tính toán Auxiliary Losses (MDS)
+        # aux_masks: [mask_32, mask_64, mask_128]
+        aux_loss = 0.0
+        aux_weights = [0.1, 0.2, 0.3] # Trọng số tăng dần khi lên các tầng nông
+        
+        if "aux_masks" in preds and preds["aux_masks"] is not None:
+            for i, aux_pred in enumerate(preds["aux_masks"]):
+                if aux_pred is None: continue
+                
+                # Resize nhãn GT xuống kích thước của aux_pred
+                h, w = aux_pred.shape[2], aux_pred.shape[3]
+                aux_targets = F.interpolate(targets, size=(h, w), mode="nearest")
+                
+                # Tính loss có trọng số cho 3 nhiệm vụ ở tầng phụ này
+                # Ưu tiên Lesion/LVO > CoW theo đúng cấu hình của bạn
+                l_aux = self.w_lesion * self.lesion_main_loss(aux_pred[:, 0:1], aux_targets[:, 0:1]) + \
+                        self.w_lvo * self.lvo_main_loss(aux_pred[:, 1:2], aux_targets[:, 1:2]) + \
+                        self.w_cow * self.cow_main_loss(aux_pred[:, 2:3], aux_targets[:, 2:3])
+                
+                aux_loss += aux_weights[i] * l_aux
+
+        # 3. Tổng hợp
+        total = main_loss + aux_loss
         total = torch.nan_to_num(total, nan=1.0, posinf=1.0, neginf=1.0)
 
         return {
             "total":  total,
+            "main":   main_loss,
+            "aux":    aux_loss,
             "lesion": l_lesion,
             "lvo":    l_lvo,
             "cow":    l_cow,

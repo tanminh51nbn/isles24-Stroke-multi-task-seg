@@ -70,25 +70,31 @@ class DualEncoderUNet(nn.Module):
     def forward(self, x: torch.Tensor) -> dict:
         """
         Args:
-            x: Tensor (B, 18, H, W) — 18-channel 2.5D CT input
-
+            x: Tensor (B, 18, H, W)
         Returns:
-            dict {'lesion': ..., 'lvo': ..., 'cow': ...}
-            Mỗi value là Tensor (B, 1, H, W) raw logits
+            dict: {
+                'lesion': Tensor, 'lvo': Tensor, 'cow': Tensor,
+                'aux_masks': [mask_32, mask_64, mask_128] (mỗi cái shape (B, 3, H_n, W_n))
+            }
         """
         # Tách kênh
-        cta_input  = x[:, self.cta_idx, :, :]   # (B, 6,  H, W)
-        perf_input = x[:, self.perf_idx, :, :]  # (B, 12, H, W)
+        cta_input  = x[:, self.cta_idx, :, :]
+        perf_input = x[:, self.perf_idx, :, :]
 
-        # Encode song song qua 2 backbone
-        cta_skips  = self.cta_encoder(cta_input)   # [s1..s5]
-        perf_skips = self.perf_encoder(perf_input)  # [d1..d5]
+        # Encode song song
+        cta_skips  = self.cta_encoder(cta_input)
+        perf_skips = self.perf_encoder(perf_input)
 
-        # Decode
-        features = self.decoder(cta_skips, perf_skips)  # (B, 16, H, W)
+        # Decode với Iterative Feedback
+        features, aux_masks = self.decoder(cta_skips, perf_skips)
 
-        # Multi-task output
-        return self.heads(features)
+        # Multi-task output (Main heads)
+        out = self.heads(features)
+        
+        # Đính kèm các masks phụ để phục vụ tính Loss
+        out["aux_masks"] = aux_masks
+        
+        return out
 
     # ── Freeze / Unfreeze ────────────────────────────────────────────────────
 
