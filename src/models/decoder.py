@@ -98,6 +98,18 @@ class AuxHead(nn.Module):
     def __init__(self, in_ch: int, out_ch: int = 3):
         super().__init__()
         self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=1)
+        
+        # [QUAN TRỌNG] Bias Initialization tương tự như Main Head
+        # Tránh Aux Loss bùng nổ (Lên tới hàng trăm) ở Epoch 1
+        # Ch 0: Lesion (pi=0.05) -> bias = -2.944
+        # Ch 1: LVO    (pi=0.01) -> bias = -4.595
+        # Ch 2: CoW    (pi=0.01) -> bias = -4.595
+        with torch.no_grad():
+            self.conv.bias[0] = -2.944
+            if out_ch > 1:
+                self.conv.bias[1] = -4.595
+            if out_ch > 2:
+                self.conv.bias[2] = -4.595
 
     def forward(self, x):
         return self.conv(x)
