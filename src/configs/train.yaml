@@ -49,13 +49,13 @@ optimizer:
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 10
-  hold_epochs: 5
+  warmup_epochs: 15
+  hold_epochs: 10
   min_lr: 1.0e-6
 
 # ── Training ────────────────────────────────────────────────────
 training:
-  epochs: 50
+  epochs: 100
   amp: true
   grad_clip_norm: 1.0
   freeze_encoder_epochs: 10
@@ -63,7 +63,7 @@ training:
   # Checkpointing
   checkpoint:
     dir: "checkpoints"
-    start_epoch: 15           # Chỉ bắt đầu lưu sau khi unfreeze và ổn định
+    start_epoch: 25           # Chỉ bắt đầu lưu sau khi unfreeze và ổn định
     save_best_overall: true   # Composite Score cao nhất
     save_best_lesion: true    # Dice Lesion cao nhất
     save_best_lvo: true       # Recall LVO cao nhất
@@ -71,8 +71,8 @@ training:
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 15
-    patience: 15
+    start_epoch: 25
+    patience: 30
     min_delta: 0.001
 
   # Logging
