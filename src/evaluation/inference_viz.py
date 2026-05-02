@@ -85,13 +85,37 @@ def run_compare_mode(args, model, train_cfg, device):
                 if name == "lvo":
                     # Hiển thị LVO dạng Heatmap rực rỡ (colormap hot)
                     heat = torch.sigmoid(preds["lvo"]).cpu().numpy()[0, 0]
-                    # Dùng alpha cao hơn một chút và colormap hot để thấy rõ quầng sáng
                     axes[i+1].imshow(heat, cmap='hot', alpha=0.6, vmin=0, vmax=1)
-                else:
-                    # Lesion và CoW vẫn dùng Mask nhị phân truyền thống
-                    thresh = train_cfg["composite_score"]["thresholds"].get(name, 0.5)
-                    mask = (torch.sigmoid(preds[name]) > thresh).cpu().numpy()[0, 0]
-                    axes[i+1].imshow(mask, cmap='jet', alpha=0.4)
+                elif name == "lesion":
+                    # Lesion hiển thị Mask nhị phân
+                    thresh = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
+                    mask = (torch.sigmoid(preds["lesion"]) > thresh).cpu().numpy()[0, 0]
+                    
+                    if mask.sum() > 0:
+                        ov = np.zeros((*mask.shape, 4))
+                        ov[..., 0] = 1.0; ov[..., 3] = mask * 0.5
+                        axes[i+1].imshow(ov)
+                elif name == "overall":
+                    # Overall hiển thị kết hợp cả 3 task (Lesion: Đỏ, LVO: Hot Heatmap, CoW: Xanh lá)
+                    thresh_l = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
+                    thresh_c = train_cfg["composite_score"]["thresholds"].get("cow", 0.5)
+                    
+                    m_lesion = (torch.sigmoid(preds["lesion"]) > thresh_l).cpu().numpy()[0, 0]
+                    m_cow    = (torch.sigmoid(preds["cow"]) > thresh_c).cpu().numpy()[0, 0]
+                    h_lvo    = torch.sigmoid(preds["lvo"]).cpu().numpy()[0, 0]
+                    
+                    if m_lesion.sum() > 0:
+                        ov_l = np.zeros((*m_lesion.shape, 4))
+                        ov_l[..., 0] = 1.0; ov_l[..., 3] = m_lesion * 0.5
+                        axes[i+1].imshow(ov_l)
+                        
+                    if m_cow.sum() > 0:
+                        ov_c = np.zeros((*m_cow.shape, 4))
+                        ov_c[..., 1] = 1.0; ov_c[..., 3] = m_cow * 0.4
+                        axes[i+1].imshow(ov_c)
+                        
+                    if h_lvo.max() > 0:
+                        axes[i+1].imshow(h_lvo, cmap='hot', alpha=0.6, vmin=0, vmax=1)
                     
                 axes[i+1].set_title(f"Model: {name.upper()}")
         else:

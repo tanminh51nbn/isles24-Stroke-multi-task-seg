@@ -269,21 +269,28 @@ class MultiTaskLoss(nn.Module):
             for i, aux_pred in enumerate(preds["aux_masks"]):
                 if aux_pred is None or i >= len(aux_weights): continue
                 
-                # Resize nhãn GT xuống kích thước của aux_pred
                 h, w = aux_pred.shape[2], aux_pred.shape[3]
-                # [QUAN TRỌNG] Dùng adaptive_max_pool2d thay vì interpolate('nearest')
-                # Để đảm bảo ĐỈNH (peak = 1.0) của LVO Heatmap không bị mất khi thu nhỏ ảnh.
-                aux_targets = F.adaptive_max_pool2d(targets, output_size=(h, w))
-                
+
+                # [QUAN TRỌNG] Tách biệt logic resize cho từng loại nhãn:
+                #
+                # LVO (Heatmap):   Dùng adaptive_max_pool2d để BẢO TOÀN ĐỈNH (peak=1.0).
+                #   → Nếu dùng 'nearest'/'bilinear', điểm 1.0 đơn lẻ có thể bị mất hoàn toàn.
+                #
+                # Lesion & CoW (Binary Mask): Dùng interpolate(mode='nearest') để GIỮ NGUYÊN ĐỘ MẢNH.
+                #   → Nếu dùng max_pool, nhãn CoW (mạch 1-2 pixel) bị PHÌNH to gấp nhiều lần,
+                #     tạo mâu thuẫn tín hiệu giữa Aux Loss (CoW to) và Main Loss (CoW mảnh).
+                target_lvo     = F.adaptive_max_pool2d(targets[:, 1:2], output_size=(h, w))
+                target_lesion  = F.interpolate(targets[:, 0:1].float(), size=(h, w), mode='nearest')
+                target_cow     = F.interpolate(targets[:, 2:3].float(), size=(h, w), mode='nearest')
+
                 # --- Selective Supervision Logic ---
-                # Luôn tính Lesion và CoW ở mọi tầng
-                l_lesion_aux = self.lesion_main_loss(aux_pred[:, 0:1], aux_targets[:, 0:1])
-                l_cow_aux    = self.cow_main_loss(aux_pred[:, 2:3], aux_targets[:, 2:3])
+                l_lesion_aux = self.lesion_main_loss(aux_pred[:, 0:1], target_lesion)
+                l_cow_aux    = self.cow_main_loss(aux_pred[:, 2:3], target_cow)
                 
                 # Chỉ tính LVO ở tầng 128 (i=2) và 256 (i=3)
                 # Lý do: Ở 32 và 64, điểm LVO bị biến mất do nén ảnh, gây nhiễu gradient.
                 if i >= 2:
-                    l_lvo_aux = self.lvo_main_loss(aux_pred[:, 1:2], aux_targets[:, 1:2])
+                    l_lvo_aux = self.lvo_main_loss(aux_pred[:, 1:2], target_lvo)
                     l_aux = self.w_lesion * l_lesion_aux + self.w_lvo * l_lvo_aux + self.w_cow * l_cow_aux
                 else:
                     # Ở tầng sâu, chỉ tập trung vào Lesion và CoW (re-scale trọng số)

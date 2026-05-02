@@ -63,13 +63,21 @@ class MultiTaskHeads(nn.Module):
         self.lvo_head    = SegmentationHead(in_ch, out_ch=1, dropout=dropout)
         self.cow_head    = SegmentationHead(in_ch, out_ch=1, dropout=dropout)
 
-        # [QUAN TRỌNG] Bias Initialization cho Heatmap (Theo chuẩn paper CenterNet)
-        # Ép LVO Head khởi tạo dự đoán nền là pi = 0.01 thay vì 0.5.
+        # [QUAN TRỌNG] Bias Initialization (Chống sụp đổ màn hình)
+        # Ép các Head khởi tạo dự đoán nghiêng về nền (Background = 0) thay vì 50/50.
+        # Nếu không có cái này, ở Epoch 1 mô hình sẽ có xu hướng đoán 1 tràn lan (Màn hình xanh CoW).
         # Công thức: bias = -log((1 - pi) / pi)
-        # pi = 0.01 => bias = -4.595
-        # Điều này sẽ dập tắt "Quả bom Loss = 1500" xuống chỉ còn ~5.0 ngay từ Epoch 1.
-        # Nhờ vậy, CoW sẽ không bị sức ép của LVO đè bẹp nữa.
+        
+        # 1. LVO (Rất hiếm, Heatmap): pi = 0.01 => bias = -4.595
+        # Dập tắt "Quả bom LVO Loss = 1500" ngay từ Batch 1.
         nn.init.constant_(self.lvo_head.conv_out.bias, -4.595)
+        
+        # 2. CoW (Hiếm, mạch mảnh): pi = 0.01 => bias = -4.595
+        # Ngăn chặn hoàn toàn hiện tượng "Màn hình xanh lá" (đoán toàn bộ ảnh là mạch máu)
+        nn.init.constant_(self.cow_head.conv_out.bias, -4.595)
+        
+        # 3. Lesion (Ít, vùng lõi): pi = 0.05 => bias = -2.944
+        nn.init.constant_(self.lesion_head.conv_out.bias, -2.944)
 
     def forward(self, x: torch.Tensor) -> dict:
         """
