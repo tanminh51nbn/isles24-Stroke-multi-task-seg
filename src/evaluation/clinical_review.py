@@ -32,11 +32,13 @@ def get_clinical_samples(data_dir, num_checks=500):
     
     print(f"[Review] Đang quét {num_checks} mẫu để tìm ca tiêu biểu...")
     for f in all_files[:num_checks]:
-        data = np.load(f, allow_pickle=True).item()
-        lbl = data["label"] # (3, H, W)
+        # Chúng ta dùng Dataset để nạp dữ liệu để kích hoạt Gaussian Heatmap tự động
+        temp_ds = ISLES24Dataset([f], transform=None)
+        sample = temp_ds[0]
+        lbl = sample["label"] # (3, H, W) - Đã là heatmap cho LVO
         
-        # Ưu tiên ca có LVO đủ rõ để bác sĩ thấy
-        if found["lvo"] is None and lbl[1].sum() > 20: 
+        # Ưu tiên ca có LVO đủ rõ để bác sĩ thấy (Heatmap sum > 80)
+        if found["lvo"] is None and lbl[1].sum() > 80: 
             found["lvo"] = f
         if found["lesion"] is None and lbl[0].sum() > 300: # Lấy ca Lesion to hơn
             found["lesion"] = f
@@ -82,16 +84,15 @@ def run_clinical_review(args):
             continue
             
         print(f"\n[Reviewing] Task mục tiêu: {task_name.upper()} | File: {os.path.basename(file_path)}")
-        data = np.load(file_path, allow_pickle=True).item()
-        inp = torch.from_numpy(data["input"]).unsqueeze(0).to(device)
-        gt = data["label"] # (3, H, W)
-        cta = data["input"][6] # CTA trung tâm
+        dataset_for_one = ISLES24Dataset([file_path], transform=None)
+        sample = dataset_for_one[0]
+        inp = sample["input"].unsqueeze(0).to(device)
         
         with torch.no_grad():
             preds = model(inp)
             
         overlay_predictions(
-            sample={"input": torch.from_numpy(data["input"]), "label": torch.from_numpy(data["label"]), "path": file_path},
+            sample=sample,
             preds=preds,
             epoch=999, # Mã đánh dấu hậu kiểm
             save_dir=actual_save_dir,

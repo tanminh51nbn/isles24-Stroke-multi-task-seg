@@ -80,11 +80,19 @@ def run_compare_mode(args, model, train_cfg, device):
             model = load_model_from_ckpt(model, ckpt_path, device)
             with torch.no_grad():
                 preds = model(inp)
-                # Lấy kết quả Lesion làm chuẩn so sánh, dùng ngưỡng từ config
-                thresh = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
-                mask = (torch.sigmoid(preds["lesion"]) > thresh).cpu().numpy()[0, 0]
                 axes[i+1].imshow(sample["input"][6], cmap='bone')
-                axes[i+1].imshow(mask, cmap='jet', alpha=0.4)
+                
+                if name == "lvo":
+                    # Hiển thị LVO dạng Heatmap rực rỡ (colormap hot)
+                    heat = torch.sigmoid(preds["lvo"]).cpu().numpy()[0, 0]
+                    # Dùng alpha cao hơn một chút và colormap hot để thấy rõ quầng sáng
+                    axes[i+1].imshow(heat, cmap='hot', alpha=0.6, vmin=0, vmax=1)
+                else:
+                    # Lesion và CoW vẫn dùng Mask nhị phân truyền thống
+                    thresh = train_cfg["composite_score"]["thresholds"].get(name, 0.5)
+                    mask = (torch.sigmoid(preds[name]) > thresh).cpu().numpy()[0, 0]
+                    axes[i+1].imshow(mask, cmap='jet', alpha=0.4)
+                    
                 axes[i+1].set_title(f"Model: {name.upper()}")
         else:
             axes[i+1].text(0.5, 0.5, f"Missing {name}.pt", ha='center')

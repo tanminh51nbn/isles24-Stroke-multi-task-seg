@@ -1,5 +1,11 @@
 """
-visualize.py — Trực quan hóa kết quả training và predictions (Bản nâng cấp lâm sàng v2)
+visualize.py — Trực quan hóa kết quả training và predictions (Bản nâng cấp lâm sàng v3)
+
+Thay đổi v3:
+    - LVO được hiển thị dạng Heatmap (colormap 'hot') thay vì overlay màu đơn.
+      Điều này phản ánh đúng bản chất Gaussian Heatmap của nhãn LVO mới.
+    - GT LVO: Heatmap gốc từ dataset (giá trị [0,1] liên tục).
+    - Pred LVO: Sigmoid của logit LVO head (giá trị [0,1] liên tục).
 """
 
 import os
@@ -55,7 +61,7 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     plt.close()
 
 
-# ─── Prediction Overlay (Clinical Style) ──────────────────────────────────────
+# ─── Prediction Overlay (Clinical Style v3) ───────────────────────────────────
 
 def overlay_predictions(
     sample: dict,
@@ -66,55 +72,99 @@ def overlay_predictions(
     show: bool = False,
 ):
     """
-    Chồng mask dự đoán lên ảnh CTA theo phong cách đối chiếu lâm sàng (GT vs Pred).
+    Hiển thị kết quả phân vùng theo phong cách đối chiếu lâm sàng (GT vs Pred).
+
+    Cách hiển thị:
+        - Lesion: Overlay màu đỏ (mask nhị phân).
+        - LVO:    Heatmap colormap 'hot' (giá trị liên tục [0,1]).
+                  Hiển thị riêng hàng dưới để thấy rõ quầng sáng Gaussian.
+        - CoW:    Overlay màu xanh lá (mask nhị phân).
     """
     if thresholds is None:
-        thresholds = {"lesion": 0.5, "lvo": 0.25, "cow": 0.5}
+        thresholds = {"lesion": 0.5, "lvo": 0.15, "cow": 0.5}
 
     if save_dir: os.makedirs(save_dir, exist_ok=True)
-    
-    # Chuẩn bị dữ liệu
-    cta_img = sample["input"][6].cpu().numpy()
-    gt_masks = [sample["label"][i].cpu().numpy() for i in range(3)]
-    
-    pr_masks = [
-        (torch.sigmoid(preds["lesion"].squeeze()) > thresholds.get("lesion", 0.5)).float().cpu().numpy(),
-        (torch.sigmoid(preds["lvo"].squeeze())    > thresholds.get("lvo", 0.25)).float().cpu().numpy(),
-        (torch.sigmoid(preds["cow"].squeeze())    > thresholds.get("cow", 0.5)).float().cpu().numpy(),
-    ]
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    # ── Chuẩn bị dữ liệu ──────────────────────────────────────────────────────
+    cta_img = sample["input"][6].cpu().numpy()
+
+    # GT: LVO là Heatmap liên tục [0,1], Lesion/CoW là mask nhị phân
+    gt_lesion = sample["label"][0].cpu().numpy()
+    gt_lvo    = sample["label"][1].cpu().numpy()          # Heatmap [0,1]
+    gt_cow    = sample["label"][2].cpu().numpy()
+
+    # Pred: LVO là sigmoid của logit (liên tục), Lesion/CoW dùng threshold
+    lvo_thresh = thresholds.get("lvo", 0.15)
+    pr_lesion  = (torch.sigmoid(preds["lesion"].squeeze()) > thresholds.get("lesion", 0.5)).float().cpu().numpy()
+    pr_lvo     = torch.sigmoid(preds["lvo"].squeeze()).float().cpu().numpy()   # Heatmap [0,1]
+    pr_lvo_bin = (pr_lvo > lvo_thresh).astype(float)                          # Binary để overlay
+    pr_cow     = (torch.sigmoid(preds["cow"].squeeze()) > thresholds.get("cow", 0.5)).float().cpu().numpy()
+
+    # ── Layout 2x2: [GT | Pred] × [Tổng quan | LVO Heatmap] ──────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(16, 14))
     title = f"Epoch {epoch} — Clinical Review" if epoch < 999 else "Final Clinical Review"
     fig.suptitle(title, fontsize=14, fontweight="bold")
-    
-    colors = [(1, 0, 0), (0, 0.5, 1), (0, 1, 0)] 
-    task_names = ["Lesion", "LVO", "CoW"]
-    
-    for i, ax in enumerate(axes):
-        ax.imshow(cta_img, cmap="gray")
-        ax.set_title("BÁC SĨ (Ground Truth)" if i == 0 else "AI DỰ ĐOÁN")
-        current_masks = gt_masks if i == 0 else pr_masks
-        
-        for task_idx in range(3):
-            mask = current_masks[task_idx]
-            if mask.sum() > 0:
-                overlay = np.zeros((*mask.shape, 4))
-                overlay[..., :3] = colors[task_idx]
-                overlay[..., 3] = mask * 0.5 
-                ax.imshow(overlay)
+
+    # ── Hàng trên: Overlay tổng quan (Lesion đỏ + LVO xanh dương + CoW xanh lá) ──
+    for col, (lesion, cow, lvo_bin, panel_title) in enumerate([
+        (gt_lesion, gt_cow, (gt_lvo > lvo_thresh).astype(float), "BÁC SĨ (Ground Truth)"),
+        (pr_lesion, pr_cow, pr_lvo_bin,                           "AI DỰ ĐOÁN"),
+    ]):
+        ax = axes[0, col]
+        ax.imshow(cta_img, cmap="bone")
+        ax.set_title(panel_title, fontsize=12, fontweight="bold")
+
+        # Lesion = đỏ
+        if lesion.sum() > 0:
+            overlay = np.zeros((*lesion.shape, 4))
+            overlay[..., 0] = 1.0
+            overlay[..., 3] = lesion * 0.5
+            ax.imshow(overlay)
+
+        # LVO detected = xanh dương
+        if lvo_bin.sum() > 0:
+            overlay = np.zeros((*lvo_bin.shape, 4))
+            overlay[..., 2] = 1.0
+            overlay[..., 3] = lvo_bin * 0.65
+            ax.imshow(overlay)
+
+        # CoW = xanh lá
+        if cow.sum() > 0:
+            overlay = np.zeros((*cow.shape, 4))
+            overlay[..., 1] = 1.0
+            overlay[..., 3] = cow * 0.4
+            ax.imshow(overlay)
+
         ax.axis("off")
 
-    patches = [mpatches.Patch(color=colors[j], label=task_names[j]) for j in range(3)]
-    fig.legend(handles=patches, loc='lower center', ncol=3, fontsize=12)
+    # ── Hàng dưới: LVO Heatmap riêng biệt — nhìn rõ quầng sáng Gaussian ──────
+    for col, (lvo_heat, heat_title) in enumerate([
+        (gt_lvo, "LVO Heatmap — BÁC SĨ"),
+        (pr_lvo, "LVO Heatmap — AI DỰ ĐOÁN"),
+    ]):
+        ax = axes[1, col]
+        ax.imshow(cta_img, cmap="bone")
+        if lvo_heat.max() > 0:
+            # colormap 'hot': đen → đỏ → cam → vàng → trắng (đỉnh 1.0)
+            ax.imshow(lvo_heat, cmap="hot", alpha=0.65, vmin=0, vmax=1)
+        ax.set_title(heat_title, fontsize=11)
+        ax.axis("off")
+
+    # ── Legend ────────────────────────────────────────────────────────────────
+    patches = [
+        mpatches.Patch(color=(1, 0, 0), label="Lesion"),
+        mpatches.Patch(color=(0, 0, 1), label="LVO (detected)"),
+        mpatches.Patch(color=(0, 1, 0), label="CoW"),
+    ]
+    fig.legend(handles=patches, loc="lower center", ncol=3, fontsize=11)
     plt.tight_layout()
-    
+
     if save_dir:
         fname = os.path.basename(sample.get("path", "sample")).replace(".npy", "")
         save_path = os.path.join(save_dir, f"epoch{epoch:03d}_{fname}.png")
         plt.savefig(save_path, dpi=120, bbox_inches="tight")
-        
+
     if show:
-        # Tạm thời chuyển sang tương tác để hiện ảnh
         plt.show()
-        
+
     plt.close()

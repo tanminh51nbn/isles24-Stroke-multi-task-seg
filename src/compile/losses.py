@@ -106,6 +106,59 @@ class FocalTverskyLoss(nn.Module):
         return focal_tversky.mean().clamp(max=10.0)
 
 
+# ─── Modified Focal Loss (CenterNet-style Heatmap Loss) ─────────────────────
+
+class ModifiedFocalLoss(nn.Module):
+    """
+    Modified Focal Loss dành riêng cho Heatmap Regression (LVO).
+    Dựa trên paper CenterNet (Objects as Points, 2019).
+
+    Công thức:
+        Tại tâm (y = 1.0):  L = -(1 - pred)^alpha * log(pred)
+        Tại vùng nền (y < 1): L = -(1 - y)^beta * pred^alpha * log(1 - pred)
+
+    - Giảm phạt vùng "suýt đúng" (gần tâm, gt ~ 0.8): (1-0.8)^4 = 0.0016
+    - Phạt nặng khi bỏ sót tâm thật sự (gt=1, pred=0): (1-0)^2 * log(0+eps)
+    - Loss luôn nằm trong [0, 1] sau khi clamp để AMP an toàn.
+
+    Args:
+        alpha: Hệ số Focal cho vùng tâm (mặc định 2).
+        beta:  Hệ số giảm phạt cho vùng quầng sáng xung quanh (mặc định 4).
+    """
+
+    def __init__(self, alpha: float = 2.0, beta: float = 4.0, eps: float = 1e-6):
+        super().__init__()
+        self.alpha = alpha
+        self.beta  = beta
+        self.eps   = eps
+
+    def forward(self, logits: torch.Tensor, heatmap_gt: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            logits:     Raw logits từ LVO head, shape (B, 1, H, W)
+            heatmap_gt: Gaussian Heatmap GT, shape (B, 1, H, W), values [0, 1]
+        """
+        pred = torch.sigmoid(logits)
+        pred = pred.clamp(min=self.eps, max=1.0 - self.eps)
+
+        # Phân vùng tâm (gt = 1.0) và vùng không phải tâm (gt < 1.0)
+        pos_mask = (heatmap_gt == 1.0).float()
+        neg_mask = 1.0 - pos_mask
+
+        # Loss tại tâm: phạt nặng khi pred thấp
+        pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred)
+
+        # Loss tại nền: giảm phạt tỉ lệ với (1 - gt)^beta — càng gần tâm, phạt càng nhẹ
+        neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * \
+                   torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
+
+        # Số pixel tâm thực sự (tránh chia 0 khi không có LVO trong batch)
+        num_pos = pos_mask.sum().clamp(min=1.0)
+
+        loss = (pos_loss + neg_loss).sum() / num_pos
+        return loss.clamp(max=5.0)  # Giới hạn trên để AMP không overflow
+
+
 # ─── Multi-Task Loss ──────────────────────────────────────────────────────────
 
 # ─── Boundary Loss (Soft Boundary Dice) ───────────────────────────────────────
@@ -160,11 +213,14 @@ class MultiTaskLoss(nn.Module):
         self.w_lesion = lesion_cfg["weight"]
         self.w_lesion_boundary = lesion_cfg.get("boundary_weight", 0.0)
 
-        # 2. LVO Task
+        # 2. LVO Task — Dùng Modified Focal Loss cho Heatmap Regression
         lvo_cfg = loss_cfg["lvo"]
-        self.lvo_main_loss = FocalTverskyLoss(alpha=lvo_cfg["alpha"], beta=lvo_cfg["beta"], gamma=lvo_cfg["gamma"])
+        self.lvo_main_loss = ModifiedFocalLoss(
+            alpha=lvo_cfg.get("mfl_alpha", 2.0),
+            beta=lvo_cfg.get("mfl_beta", 4.0),
+        )
         self.w_lvo = lvo_cfg["weight"]
-        self.w_lvo_boundary = lvo_cfg.get("boundary_weight", 0.0)
+        self.w_lvo_boundary = 0.0  # Boundary Loss không phù hợp với Heatmap
 
         # 3. CoW Task
         cow_cfg = loss_cfg["cow"]
@@ -181,9 +237,10 @@ class MultiTaskLoss(nn.Module):
         l_lesion_bd   = self.boundary_loss(preds["lesion"], targets[:, 0:1])
         l_lesion      = (1.0 - self.w_lesion_boundary) * l_lesion_main + self.w_lesion_boundary * l_lesion_bd
 
+        # LVO dùng ModifiedFocalLoss với Heatmap GT — không dùng Boundary Loss
         l_lvo_main = self.lvo_main_loss(preds["lvo"], targets[:, 1:2])
-        l_lvo_bd   = self.boundary_loss(preds["lvo"], targets[:, 1:2])
-        l_lvo      = (1.0 - self.w_lvo_boundary) * l_lvo_main + self.w_lvo_boundary * l_lvo_bd
+        l_lvo_bd   = torch.tensor(0.0, device=targets.device)  # Không áp dụng
+        l_lvo      = l_lvo_main
 
         l_cow_main = self.cow_main_loss(preds["cow"], targets[:, 2:3])
         l_cow_bd   = self.boundary_loss(preds["cow"], targets[:, 2:3])

@@ -13,12 +13,10 @@ loss:
     boundary_weight: 0.15
 
   lvo:
-    type: "focal_tversky"
-    alpha: 0.15
-    beta: 0.85
-    gamma: 2
-    weight: 0.5
-    boundary_weight: 0.5
+    type: "modified_focal"  # Heatmap Regression — CenterNet-style
+    mfl_alpha: 2.0          # Phạt mạnh khi bỏ sót tâm LVO
+    mfl_beta: 4.0           # Giảm phạt cho vùng quầng sáng xung quanh
+    weight: 0.5             # MFL tự scale tốt hơn FocalTversky nên giảm nhẹ weight
 
   cow:
     type: "tversky"
@@ -49,13 +47,13 @@ optimizer:
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 15
-  hold_epochs: 10
+  warmup_epochs: 10 #can 15
+  hold_epochs: 5 #can 10
   min_lr: 1.0e-6
 
 # ── Training ────────────────────────────────────────────────────
 training:
-  epochs: 100
+  epochs: 50 #can 100
   amp: true
   grad_clip_norm: 1.0
   freeze_encoder_epochs: 10
@@ -63,16 +61,16 @@ training:
   # Checkpointing
   checkpoint:
     dir: "checkpoints"
-    start_epoch: 25           # Chỉ bắt đầu lưu sau khi unfreeze và ổn định
-    save_best_overall: true   # Composite Score cao nhất
-    save_best_lesion: true    # Dice Lesion cao nhất
-    save_best_lvo: true       # Recall LVO cao nhất
+    start_epoch: 15 #can 25
+    save_best_overall: true
+    save_best_lesion: true
+    save_best_lvo: true
 
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 25
-    patience: 30
+    start_epoch: 15 #can 25
+    patience: 15 #can 30
     min_delta: 0.001
 
   # Logging
