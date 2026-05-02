@@ -71,7 +71,7 @@ def run_compare_mode(args, model, train_cfg, device):
     fig, axes = plt.subplots(1, 4, figsize=(20, 5))
     
     # Cột 1: Ảnh gốc
-    axes[0].imshow(sample["input"][2], cmap='gray') # CTA middle slice
+    axes[0].imshow(sample["input"][6], cmap='bone') # CTA trung tâm (Vibrant)
     axes[0].set_title(f"Original\n{os.path.basename(random_file)}")
     
     for i, name in enumerate(names):
@@ -83,7 +83,7 @@ def run_compare_mode(args, model, train_cfg, device):
                 # Lấy kết quả Lesion làm chuẩn so sánh, dùng ngưỡng từ config
                 thresh = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
                 mask = (torch.sigmoid(preds["lesion"]) > thresh).cpu().numpy()[0, 0]
-                axes[i+1].imshow(sample["input"][2], cmap='gray')
+                axes[i+1].imshow(sample["input"][6], cmap='bone')
                 axes[i+1].imshow(mask, cmap='jet', alpha=0.4)
                 axes[i+1].set_title(f"Model: {name.upper()}")
         else:

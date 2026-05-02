@@ -23,7 +23,7 @@ from models.dual_unet import build_model
 from data.dataset import ISLES24Dataset
 from evaluation.visualize import overlay_predictions
 
-def get_clinical_samples(data_dir, num_checks=50):
+def get_clinical_samples(data_dir, num_checks=500):
     """Tìm 3 file npy thỏa mãn điều kiện có LVO, Lesion, CoW"""
     all_files = glob(os.path.join(data_dir, "*.npy"))
     np.random.shuffle(all_files)
@@ -35,11 +35,12 @@ def get_clinical_samples(data_dir, num_checks=50):
         data = np.load(f, allow_pickle=True).item()
         lbl = data["label"] # (3, H, W)
         
-        if found["lvo"] is None and lbl[1].sum() > 5: # Có LVO
+        # Ưu tiên ca có LVO đủ rõ để bác sĩ thấy
+        if found["lvo"] is None and lbl[1].sum() > 20: 
             found["lvo"] = f
-        if found["lesion"] is None and lbl[0].sum() > 100: # Có Lesion đủ lớn
+        if found["lesion"] is None and lbl[0].sum() > 300: # Lấy ca Lesion to hơn
             found["lesion"] = f
-        if found["cow"] is None and lbl[2].sum() > 100: # Có CoW
+        if found["cow"] is None and lbl[2].sum() > 200: 
             found["cow"] = f
             
         if all(v is not None for v in found.values()):
