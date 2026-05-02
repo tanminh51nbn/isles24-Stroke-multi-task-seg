@@ -51,33 +51,28 @@ def recall_score(
     smooth: float = 1e-6,
 ) -> torch.Tensor:
     """
-    Tính Recall (Sensitivity = TP / (TP + FN)) từ raw logits.
-    Dùng cho LVO: "Có bỏ sót điểm tắc mạch nào không?"
-
-    Args:
-        logits:    (B, 1, H, W) raw logits
-        targets:   (B, 1, H, W) binary targets
-        threshold: Ngưỡng binarize
-
-    Returns:
-        Scalar Recall score (mean over batch)
+    [ĐÃ SỬA: INSTANCE-WISE RECALL]
+    Tính Tỉ lệ phát hiện (Detection Rate) cho LVO Heatmap thay vì đếm từng Pixel.
+    Luật: Cứ đốm sáng của AI "chạm" vào vùng LVO của Bác sĩ thì tính là 1 điểm (Thành công).
+    Bắn trượt ra ngoài hoặc không có đốm sáng thì tính là 0 điểm (Thất bại).
     """
     preds = (torch.sigmoid(logits) > threshold).float()
     preds   = preds.view(preds.size(0), -1)
     targets = targets.view(targets.size(0), -1)
 
-    TP = (preds * targets).sum(dim=1)
-    FN = ((1 - preds) * targets).sum(dim=1)
-
-    has_lvo = targets.sum(dim=1) > 0  # Chỉ tính trên slice thực sự có LVO
+    # 1. Kiểm tra xem slice này có bệnh (LVO) không?
+    has_lvo = targets.sum(dim=1) > 0
 
     if has_lvo.sum() == 0:
-        # Batch không có LVO ground truth → trả về -1 (sentinel)
-        # Validate loop sẽ bỏ qua batch này, không tính vào trung bình
+        # Không có LVO -> Bỏ qua
         return torch.tensor(-1.0)
 
-    recall = (TP + smooth) / (TP + FN + smooth)
-    return recall[has_lvo].mean()
+    # 2. Kiểm tra AI bắn trúng hay trượt
+    # (preds * targets) chỉ > 0 khi đốm sáng AI nằm CHỒNG lên vùng bệnh của bác sĩ
+    is_hit = ((preds * targets).sum(dim=1) > 0).float()
+
+    # 3. Tính trung bình tỉ lệ phát hiện thành công
+    return is_hit[has_lvo].mean()
 
 
 def composite_score(

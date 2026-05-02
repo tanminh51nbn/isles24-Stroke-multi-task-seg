@@ -40,9 +40,9 @@ composite_score:
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
-  lr: 8.0e-4
+  lr: 3.0e-4
   weight_decay: 1.0e-3
-  encoder_lr_scale: 0.1
+  encoder_lr_scale: 0.05
   eps: 1.0e-7
 
 # ── LR Scheduler ────────────────────────────────────────────────

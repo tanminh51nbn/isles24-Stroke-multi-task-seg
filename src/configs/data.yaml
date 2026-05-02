@@ -22,17 +22,17 @@ dataloader:
 sampling:
   enabled: true
   metadata_csv: "/kaggle/working/dataset_metadata.csv"
-  # Oversample lát cắt có LVO (rất hiếm) lên 8 lần
-  lvo_oversample_factor: 8   
-  # Tỷ lệ giữ lại lát cắt all-negative (không bệnh) - 30%
+  # Oversample lát cắt có LVO (rất hiếm) lên 4 lần (giảm từ 8 để chống học vẹt)
+  lvo_oversample_factor: 4   
+  # Tỷ lệ giữ lại lát cắt all-negative (không bệnh)
   downsample_neg_ratio: 0.5  # Tăng từ 0.3 để giữ lại nhiều slice CoW hơn
 
 # ── Augmentation ─────────────────────────────────────────────────
 augmentation:
   enabled: true
 
-  horizontal_flip:
-    prob: 0.0
+  vertical_flip:
+    prob: 0.5
 
   affine:
     prob: 0.5
