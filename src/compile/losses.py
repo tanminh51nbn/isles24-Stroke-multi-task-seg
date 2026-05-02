@@ -138,6 +138,10 @@ class ModifiedFocalLoss(nn.Module):
             logits:     Raw logits từ LVO head, shape (B, 1, H, W)
             heatmap_gt: Gaussian Heatmap GT, shape (B, 1, H, W), values [0, 1]
         """
+        # [QUAN TRỌNG] Chuyển sang FP32 để tránh tràn số (overflow) và NaN khi cộng tổng (sum) trong AMP
+        logits = logits.float()
+        heatmap_gt = heatmap_gt.float()
+
         pred = torch.sigmoid(logits)
         pred = pred.clamp(min=self.eps, max=1.0 - self.eps)
 
@@ -152,11 +156,18 @@ class ModifiedFocalLoss(nn.Module):
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * \
                    torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
 
-        # Số pixel tâm thực sự (tránh chia 0 khi không có LVO trong batch)
-        num_pos = pos_mask.sum().clamp(min=1.0)
+        # Tính tổng theo từng ảnh trong batch (dim H, W)
+        pos_loss = pos_loss.sum(dim=(1, 2, 3))
+        neg_loss = neg_loss.sum(dim=(1, 2, 3))
+        
+        # Số pixel tâm thực sự (tránh chia 0 khi không có LVO trong ảnh)
+        num_pos = pos_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
 
-        loss = (pos_loss + neg_loss).sum() / num_pos
-        return loss.clamp(max=5.0)  # Giới hạn trên để AMP không overflow
+        # Trọng số trung bình của batch
+        # KHÔNG ĐƯỢC CLAMP TỔNG LOSS (sẽ làm gradient = 0)
+        loss = ((pos_loss + neg_loss) / num_pos).mean()
+        
+        return loss
 
 
 # ─── Multi-Task Loss ──────────────────────────────────────────────────────────
@@ -260,7 +271,9 @@ class MultiTaskLoss(nn.Module):
                 
                 # Resize nhãn GT xuống kích thước của aux_pred
                 h, w = aux_pred.shape[2], aux_pred.shape[3]
-                aux_targets = F.interpolate(targets, size=(h, w), mode="nearest")
+                # [QUAN TRỌNG] Dùng adaptive_max_pool2d thay vì interpolate('nearest')
+                # Để đảm bảo ĐỈNH (peak = 1.0) của LVO Heatmap không bị mất khi thu nhỏ ảnh.
+                aux_targets = F.adaptive_max_pool2d(targets, output_size=(h, w))
                 
                 # --- Selective Supervision Logic ---
                 # Luôn tính Lesion và CoW ở mọi tầng
