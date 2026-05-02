@@ -16,13 +16,13 @@ loss:
     type: "modified_focal"  # Heatmap Regression — CenterNet-style
     mfl_alpha: 2.0          # Phạt mạnh khi bỏ sót tâm LVO
     mfl_beta: 4.0           # Giảm phạt cho vùng quầng sáng xung quanh
-    weight: 0.5             # MFL tự scale tốt hơn FocalTversky nên giảm nhẹ weight
+    weight: 0.4             # Cân bằng với Lesion (0.4) và CoW (0.2)
 
   cow:
     type: "tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.1
+    weight: 0.2
     boundary_weight: 0.25
 
 # ── Composite Validation Score ──────────────────────────────────

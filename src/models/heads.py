@@ -63,6 +63,14 @@ class MultiTaskHeads(nn.Module):
         self.lvo_head    = SegmentationHead(in_ch, out_ch=1, dropout=dropout)
         self.cow_head    = SegmentationHead(in_ch, out_ch=1, dropout=dropout)
 
+        # [QUAN TRỌNG] Bias Initialization cho Heatmap (Theo chuẩn paper CenterNet)
+        # Ép LVO Head khởi tạo dự đoán nền là pi = 0.01 thay vì 0.5.
+        # Công thức: bias = -log((1 - pi) / pi)
+        # pi = 0.01 => bias = -4.595
+        # Điều này sẽ dập tắt "Quả bom Loss = 1500" xuống chỉ còn ~5.0 ngay từ Epoch 1.
+        # Nhờ vậy, CoW sẽ không bị sức ép của LVO đè bẹp nữa.
+        nn.init.constant_(self.lvo_head.conv_out.bias, -4.595)
+
     def forward(self, x: torch.Tensor) -> dict:
         """
         Args:
