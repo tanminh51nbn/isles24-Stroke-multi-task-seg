@@ -9,22 +9,22 @@ loss:
     type: "tversky"
     alpha: 0.4
     beta: 0.6
-    weight: 0.25
+    weight: 0.4
     boundary_weight: 0.15
 
   lvo:
     type: "focal_tversky"
     alpha: 0.15
     beta: 0.85
-    gamma: 3
-    weight: 0.7
+    gamma: 2
+    weight: 0.5
     boundary_weight: 0.5
 
   cow:
     type: "tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.05
+    weight: 0.1
     boundary_weight: 0.25
 
 # ── Composite Validation Score ──────────────────────────────────
@@ -36,7 +36,7 @@ composite_score:
   dice_cow_weight: 0.2
   thresholds:
     lesion: 0.5
-    lvo: 0.25
+    lvo: 0.15
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
