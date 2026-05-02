@@ -1,176 +1,64 @@
 """
-dataset.py — ISLES24Dataset: PyTorch Dataset with JSON-cached pos/neg
-              slice classification and WeightedRandomSampler support.
+dataset.py — PyTorch Dataset cho ISLES'24 NPY files
 
-Input:  [18, 544, 544] float16 on disk → float32 in memory
-Label:  [3, 544, 544]  uint8 on disk   → float32 in memory
+Mỗi file .npy là một dict:
+    'input': float32 (18, 256, 256) — 18-channel 2.5D CT
+    'label': uint8   (3,  256, 256) — 3 binary masks (Lesion, LVO, CoW)
 """
-import json
-import logging
-from pathlib import Path
-from typing import Callable, Dict, List, Optional
 
+import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-
-logger = logging.getLogger(__name__)
+from typing import List, Optional, Callable
 
 
 class ISLES24Dataset(Dataset):
     """
-    PyTorch Dataset for ISLES'24 2.5D NPY slices.
+    Dataset nạp các file .npy đã được tiền xử lý.
 
-    Features:
-      - Loads data on-the-fly from NVMe (136GB >> 30GB RAM)
-      - JSON cache for positive/negative slice classification
-      - Sample weights for WeightedRandomSampler
-      - MONAI dictionary-based transforms
+    Args:
+        file_list: Danh sách đường dẫn tuyệt đối đến từng file .npy
+        transform:  Optional transform áp dụng lên cặp (input, label)
     """
 
-    def __init__(
-        self,
-        patient_ids: List[str],
-        patient_dirs: Dict[str, Path],
-        transform: Optional[Callable] = None,
-        cache_path: Optional[str] = None,
-        pos_weight: float = 3.0,
-    ):
-        """
-        Args:
-            patient_ids:  List of patient IDs assigned to this split
-            patient_dirs: Dict mapping patient_id → absolute directory Path
-            transform:    MONAI Compose pipeline (None for validation)
-            cache_path:   Path to JSON cache for pos/neg slice info
-            pos_weight:   Weight for positive slices in WeightedRandomSampler
-        """
-        super().__init__()
+    def __init__(self, file_list: List[str], transform: Optional[Callable] = None):
+        self.file_list = file_list
         self.transform = transform
-        self.pos_weight = pos_weight
-
-        # ── Build flat sample list: [(x_path, y_path), ...] ──
-        self.samples: List[tuple] = []
-        for pid in sorted(patient_ids):
-            pdir = patient_dirs[pid]
-            input_dir = pdir / "inputs"
-            label_dir = pdir / "labels"
-
-            for x_file in sorted(input_dir.glob("x_z*.npy")):
-                # x_z000.npy → y_z000.npy
-                z_suffix = x_file.stem[1:]           # "_z000"
-                y_file = label_dir / f"y{z_suffix}.npy"
-
-                if y_file.exists():
-                    self.samples.append((str(x_file), str(y_file)))
-                else:
-                    logger.warning(f"Missing label for {x_file.name} in {pid}")
-
-        logger.info(
-            f"ISLES24Dataset: {len(self.samples)} slices "
-            f"from {len(patient_ids)} patients"
-        )
-
-        # ── Build positive/negative slice cache ──
-        self._is_positive: List[bool] = self._build_slice_cache(cache_path)
-
-        n_pos = sum(self._is_positive)
-        n_total = len(self._is_positive)
-        logger.info(
-            f"Slice balance: {n_pos} positive / {n_total - n_pos} negative "
-            f"({100 * n_pos / max(n_total, 1):.1f}% positive)"
-        )
-
-    # ─────────────────────────────────────────────────────────────
-    #  Cache logic
-    # ─────────────────────────────────────────────────────────────
-
-    def _build_slice_cache(self, cache_path: Optional[str]) -> List[bool]:
-        """
-        Determine which slices contain lesion (channel 0 > 0).
-        Cache results to JSON for instant reload on subsequent epochs/runs.
-
-        Cache format:
-            {"positive": [y_path, ...], "negative": [y_path, ...]}
-        """
-        # ── Try loading existing cache ──
-        if cache_path and Path(cache_path).exists():
-            logger.info(f"Loading slice cache from {cache_path}")
-            with open(cache_path, "r") as f:
-                cache = json.load(f)
-            pos_set = set(cache.get("positive", []))
-            return [sample[1] in pos_set for sample in self.samples]
-
-        # ── Full scan ──
-        logger.info("Scanning labels for positive/negative classification...")
-        is_positive: List[bool] = []
-        positive_paths: List[str] = []
-        negative_paths: List[str] = []
-
-        for i, (_, y_path) in enumerate(self.samples):
-            y = np.load(y_path)                 # [3, 544, 544] uint8
-            has_lesion = bool(y[0].any())        # Channel 0 = lesion
-            is_positive.append(has_lesion)
-
-            if has_lesion:
-                positive_paths.append(y_path)
-            else:
-                negative_paths.append(y_path)
-
-            if (i + 1) % 2000 == 0:
-                logger.info(f"  Scanned {i + 1}/{len(self.samples)} slices...")
-
-        # ── Persist cache ──
-        if cache_path:
-            Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(cache_path, "w") as f:
-                json.dump(
-                    {"positive": positive_paths, "negative": negative_paths},
-                    f,
-                )
-            logger.info(f"Saved slice cache → {cache_path}")
-
-        return is_positive
-
-    # ─────────────────────────────────────────────────────────────
-    #  PyTorch Dataset interface
-    # ─────────────────────────────────────────────────────────────
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.file_list)
 
-    def __getitem__(self, idx: int):
-        x_path, y_path = self.samples[idx]
+    def __getitem__(self, idx: int) -> dict:
+        path = self.file_list[idx]
+        data = np.load(path, allow_pickle=True).item()
 
-        # Load from disk and cast types
-        x = np.load(x_path).astype(np.float32)     # float16 → float32 [18, 544, 544]
-        y = np.load(y_path).astype(np.float32)      # uint8   → float32 [3, 544, 544]
+        # Input: float32, shape (18, 256, 256), range [0, 1]
+        inp = torch.from_numpy(data["input"].astype(np.float32))
 
-        # Apply MONAI transforms (dict-based)
+        # Label: float32, shape (3, 256, 256), values {0, 1}
+        lbl = torch.from_numpy(data["label"].astype(np.float32))
+
+        # ── Sanitize NaN/inf ────────────────────────────────────────────────
+        # Một số kênh Perfusion (Tmax, CBF, CBV, MTT) có thể chứa NaN/inf
+        # do thiếu dữ liệu scan hoặc lỗi trong bước tiền xử lý (chia cho 0).
+        # Thay NaN → 0.0, +inf → 0.0, -inf → 0.0 để giữ tensor hợp lệ.
+        # nan_to_num an toàn: không thay đổi giá trị bình thường, chỉ xử lý giá trị lỗi.
+        inp = torch.nan_to_num(inp, nan=0.0, posinf=0.0, neginf=0.0)
+        lbl = torch.nan_to_num(lbl, nan=0.0, posinf=0.0, neginf=0.0)
+        # ────────────────────────────────────────────────────────────────────
+
+        sample = {"input": inp, "label": lbl, "path": path}
+
         if self.transform is not None:
-            data = self.transform({"image": x, "label": y})
-            x, y = data["image"], data["label"]
+            sample = self.transform(sample)
 
-        # Ensure torch.Tensor output
-        if not isinstance(x, torch.Tensor):
-            x = torch.from_numpy(np.ascontiguousarray(x))
-        if not isinstance(y, torch.Tensor):
-            y = torch.from_numpy(np.ascontiguousarray(y))
+        return sample
 
-        return x, y
 
-    # ─────────────────────────────────────────────────────────────
-    #  Sampling support
-    # ─────────────────────────────────────────────────────────────
 
-    def get_sample_weights(self) -> np.ndarray:
-        """
-        Return weight array for torch.utils.data.WeightedRandomSampler.
-
-        Positive slice (has lesion) → pos_weight (default 3.0)
-        Negative slice (all black)  → 1.0
-        """
-        weights = np.ones(len(self.samples), dtype=np.float64)
-        for i, is_pos in enumerate(self._is_positive):
-            if is_pos:
-                weights[i] = self.pos_weight
-        return weights
+def build_dataset(
+    file_list: List[str],
+    transform: Optional[Callable] = None,
+) -> ISLES24Dataset:
+    return ISLES24Dataset(file_list, transform)

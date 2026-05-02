@@ -1,28 +1,28 @@
-# Bỏ qua các file nháp và hướng dẫn nội bộ
-notebooks/
-Context.md
+# Bỏ qua toàn bộ trong notebooks/ trừ file train_exp0.py
+notebooks/*
+!notebooks/train_exp0.py
+script-check/
+Notebook.py
+# Bỏ qua các file nháp và tài liệu thiết kế (theo yêu cầu "bỏ hết")
 
-# Bỏ qua thư viện và biến môi trường ảo Python
+# Bỏ qua thư viện và biến môi trường
 venv/
 .env
 __pycache__/
 *.py[cod]
-*$py.class
 
-# Bỏ qua các file IDE sinh ra
-.vscode/
-.idea/
-
-# Bỏ qua các Checkpoint PyTorch cồng kềnh
+# Bỏ qua trọng số và kết quả huấn luyện
 checkpoints/
+visualizations/
 *.pth
 *.pt
 
-# Bỏ qua logs (W&B, TensorBoard,...)
+# Logs và OS files
 wandb/
 runs/
 *.log
-
-# OS generated files
 .DS_Store
 Thumbs.db
+
+# Bỏ qua các file cá nhân
+.agents/

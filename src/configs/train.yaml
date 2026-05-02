@@ -1,0 +1,85 @@
+# ═══════════════════════════════════════════════════════════════
+#  ISLES'24 — Training Configuration
+#  Loss, Optimizer, Scheduler, Training params
+# ═══════════════════════════════════════════════════════════════
+
+# ── Loss Function (Task-Specific) ──────────────────────────────
+loss:
+  lesion:
+    type: "tversky"
+    alpha: 0.4
+    beta: 0.6
+    weight: 0.4
+    boundary_weight: 0.15
+
+  lvo:
+    type: "focal_tversky"
+    alpha: 0.15
+    beta: 0.85
+    gamma: 2
+    weight: 0.5
+    boundary_weight: 0.5
+
+  cow:
+    type: "tversky"
+    alpha: 0.5
+    beta: 0.5
+    weight: 0.1
+    boundary_weight: 0.25
+
+# ── Composite Validation Score ──────────────────────────────────
+# Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
+# Dùng Recall cho LVO (chỉ cần detect được, không cần viền chính xác)
+composite_score:
+  dice_lesion_weight: 0.4
+  recall_lvo_weight: 0.4
+  dice_cow_weight: 0.2
+  thresholds:
+    lesion: 0.5
+    lvo: 0.15
+    cow: 0.5
+
+# ── Optimizer ───────────────────────────────────────────────────
+optimizer:
+  type: "adamw"
+  lr: 8.0e-4
+  weight_decay: 1.0e-3
+  encoder_lr_scale: 0.1
+  eps: 1.0e-7
+
+# ── LR Scheduler ────────────────────────────────────────────────
+scheduler:
+  warmup_epochs: 15
+  hold_epochs: 10
+  min_lr: 1.0e-6
+
+# ── Training ────────────────────────────────────────────────────
+training:
+  epochs: 100
+  amp: true
+  grad_clip_norm: 1.0
+  freeze_encoder_epochs: 10
+
+  # Checkpointing
+  checkpoint:
+    dir: "checkpoints"
+    start_epoch: 25           # Chỉ bắt đầu lưu sau khi unfreeze và ổn định
+    save_best_overall: true   # Composite Score cao nhất
+    save_best_lesion: true    # Dice Lesion cao nhất
+    save_best_lvo: true       # Recall LVO cao nhất
+
+  # Early Stopping
+  early_stopping:
+    enabled: true
+    start_epoch: 25
+    patience: 30
+    min_delta: 0.001
+
+  # Logging
+  logging:
+    log_interval: 43
+    visualize_every: 5
+    wandb:
+      enabled: false
+      project: "isles24-stroke"
+      run_name: null

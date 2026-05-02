@@ -1,0 +1,56 @@
+# ═══════════════════════════════════════════════════════════════
+#  ISLES'24 — Data Pipeline Configuration
+#  Không chứa đường dẫn dataset (truyền runtime từ notebook)
+# ═══════════════════════════════════════════════════════════════
+
+# ── Patient-level Split ──────────────────────────────────────────
+split:
+  val_ratio: 0.2
+  seed: 42
+  # GroupShuffleSplit theo patient_id — chống Data Leakage
+
+# ── DataLoader ───────────────────────────────────────────────────
+dataloader:
+  batch_size: 32 # Trên mỗi GPU (2 GPU → effective batch = 64)
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  drop_last: true # Tránh batch size 1 ở cuối epoch
+
+# ── Sampling Strategy ────────────────────────────────────────────
+sampling:
+  enabled: true
+  metadata_csv: "/kaggle/working/dataset_metadata.csv"
+  # Oversample lát cắt có LVO (rất hiếm) lên 8 lần
+  lvo_oversample_factor: 8   
+  # Tỷ lệ giữ lại lát cắt all-negative (không bệnh) - 30%
+  downsample_neg_ratio: 0.3  
+
+# ── Augmentation ─────────────────────────────────────────────────
+augmentation:
+  enabled: true
+
+  horizontal_flip:
+    prob: 0.0
+
+  affine:
+    prob: 0.5
+    rotate_deg: 15
+    scale_range: 0.1
+    translate_px: 10
+
+  elastic_transform:
+    prob: 0.2
+    alpha: 1.0
+    sigma: 50
+    alpha_affine: 50
+
+  gaussian_noise:
+    prob: 0.3
+    mean: 0.0
+    std: 0.05
+
+  intensity_scale:
+    prob: 0.3
+    factor: 0.1

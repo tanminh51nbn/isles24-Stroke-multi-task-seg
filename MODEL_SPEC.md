@@ -1,75 +1,72 @@
-# Model Specification — ISLES24 2.5D Multi-Task Segmentation
+# ISLES'24: Technical Whitepaper - Dual-Encoder Multi-Task 2.5D UNet (v4)
 
-Tài liệu này lưu trữ toàn bộ các quyết định về Kiến trúc, Kỹ thuật tối ưu, Hàm Loss, và Workflow Training được áp dụng trong project.
+## 1. Model Architecture Deep-Dive
 
-## 1. Kiến trúc Tổng thể (Overall Architecture)
-- **Framework Core**: PyTorch + MONAI + segmentation-models-pytorch (SMP)
-- **Dạng bài toán**: 2.5D Multi-Task Image Segmentation.
-- **Paradigm**: Hard Parameter Sharing (1 Bộ Encoder xài chung, 3 Bộ Decoder đẻ ra 3 Output khác nhau).
+### 1.1 Dual-Encoder (Backbones)
+To optimally extract both anatomical and functional features, the architecture utilizes two specialized encoders processing distinct sets of input channels from the 18-channel 2.5D stack.
 
-## 2. Đầu vào và Đầu ra
-### 2.1. Đầu vào (Input)
-- **Kích thước Tensor**: `[Batch, 18, 544, 544]`
-- **18 Channels bao gồm**: 6 modalities (NCCT, CTA, Tmax, CBF, CBV, MTT) × 3 lát cắt liên tiếp (Z-1, Z, Z+1). Bộ não AI nhìn được độ sâu không gian trên-dưới chứ không chỉ một mặt phẳng.
+#### CTA Branch (Structural)
+- **Base:** ResNet-50.
+- **Input:** 6 channels (CTA_w1, CTA_w2 from slices Z-1, Z, Z+1).
+- **Purpose:** Extracts sharp, high-resolution anatomical boundaries and identifies hyperdense vessels/clots.
+- **Inflation:** `conv1` weight ($W \in \mathbb{R}^{64 \times 3 \times 7 \times 7}$) is transformed to $\mathbb{R}^{64 \times 6 \times 7 \times 7}$ using variance-preserving replication.
+- **Pre-trained Weights:** RadImageNet (optimized for CT/MRI).
 
-### 2.2. Đầu ra (Output)
-- 3 Tensor độc lập đại diện cho 3 nhãn khác nhau. Mỗi tensor có shape: `[Batch, 1, 544, 544]`.
-- Đầu ra là Raw Logits (chưa qua activation function, hàm Sigmoid sẽ được áp vào lúc tính Loss hoặc tính Dice metrics nhằm đảm bảo tính ổn định số học).
+#### Perfusion Branch (Functional)
+- **Base:** DenseNet-121.
+- **Input:** 12 channels (Tmax, CBF, CBV, MTT from slices Z-1, Z, Z+1).
+- **Purpose:** Extracts semantic, regional changes in blood flow. Dense connections are highly effective at preserving soft gradient information (penumbra).
+- **Inflation:** `conv0` weight is transformed from 3 to 12 channels using variance-preserving replication.
+- **Pre-trained Weights:** RadImageNet.
 
----
+### 1.2 Multi-Level Fusion & Shared Decoder
+- **Fusion:** Feature maps from both encoders are concatenated at every skip-connection level (resolutions 1/2, 1/4, 1/8, 1/16, 1/32).
+- **Bottleneck:** Deepest features (2048 from ResNet + 1024 from DenseNet = 3072 channels) are concatenated and compressed to 1024 channels.
+- **Decoder:** 5-stage UNet decoder upsamples and refines the combined structural-functional representations, culminating in a 16-channel feature map.
 
-## 3. Kiến trúc Chi tiết
-### 3.1. Shared Encoder (Bộ trích xuất đặc trưng xài chung)
-- **Backbone:** EfficientNet-B2
-- **Điều chỉnh cốt lõi:** Lớp Convolution đầu tiên (`conv_stem`) được sửa đổi để tiếp nhận `in_channels=18` (của Pytorch mặc định chỉ kẹp được ảnh 3 kênh). Trọng số kênh mới được khởi tạo bằng Kaiming Normalization, phần còn lại từ từ tốn dùng Pretrained Weight gốc (ImageNet).
+### 1.3 Multi-Task Segmentation Heads
+- **Architecture:** `Conv3x3 -> BN -> ReLU -> SpatialDropout2d(0.3) -> Conv1x1`.
+- **Heads:** Three independent heads output raw logits for Lesion, LVO, and CoW.
+- **Spatial Dropout:** Applied to entire feature maps (channels) rather than individual pixels to prevent co-adaptation in highly correlated medical imaging data.
 
-### 3.2. Multi-Decoder (3 Nhánh giải mã)
-- **Nhánh 1**: Giải mã vùng Nhồi máu (Lesion) 
-- **Nhánh 2**: Giải mã vị trí Tắc nghẽn mạch máu lớn (LVO)
-- **Nhánh 3**: Giải mã vòng nối Willis (CoW)
-- Cả 3 nhánh đều dùng kiến trúc UNet Decoder tiêu chuẩn (Upsampling + Skip Connections từ lớp sâu thẳm của Encoder). Sự chia nhánh ngay từ dưới phễu cổ chai giúp mô hình có không gian giải mã riêng. Những hình hài dị biệt như phân bố ống nối vạch (Vòng Willis), đốm lốm đốm nhỏ tí hon (LVO), hay dị dạng loang lỗ ngẫu mảng (Nhồi Máu) sẽ không dẫm chân Gradient nhau.
+## 2. Data Engineering & Augmentation
 
----
+### 2.1 Patient-Level Split & Sampling
+- **GroupShuffleSplit:** Ensures slices from the same patient (`sub-stroke[ID]`) are strictly kept in the same fold to prevent Data Leakage.
+- **Sampling Strategy:** 
+  - Downsamping negative (background-only) slices to 30%.
+  - Oversampling rare LVO-positive slices by a factor of 5.
 
-## 4. Hàm Loss và Optimizer
-### 4.1. Loss Function (Dice + Focal Loss)
-- Cấu trúc chung cho từng nhánh: `Loss_branch = (1.0 * DiceLoss) + (1.0 * FocalLoss_gamma_2)`
-- Mặc dù Dice Loss tốt ở đoạn tối ưu các cục bự nhưng có xu hướng nổ/khủng khiếp khi gặp vùng Background màu đen lớn khổng lồ mà cục LVO nhỏ li ti. Hàm Focal Loss tham gia làm phao gánh Gradient nổ, và bắt model hạ hình phạt các pixel dễ (đen) đi lại tập trung toàn trọng số vào việc phân bổ pixel điểm sáng đốm tụ nhỏ xíu.
+### 2.2 Augmentation Pipeline
+- **Spatial (Synchronized on Input & Label):** Random Horizontal Flip (50%), Random Affine (Rotation $\pm 15^\circ$, Scale $\pm 10\%$, Translate $\pm 10px$). Interpolation uses Bilinear for inputs and Nearest-Neighbor for labels to preserve binary integrity.
+- **Intensity (Input Only):** Gaussian Noise ($\mu=0, \sigma=0.05$) and Intensity Scaling ($\pm 10\%$).
 
-### 4.2. Khâu cân trọng số đa nhiệm (Task Weighting)
-- `Loss_Total = 1.0 * Loss_Lesion + 2.0 * Loss_LVO + 1.0 * Loss_CoW`
-- Vì LVO là thành phần rất quan trọng nhưng lại mất cân bằng Dataset nghiêm trọng. Hàm Mất mát cho LVO được x2 sức phạt để bắt Model chú ý. (Chiến cơ khuyên là có thể đẩy lên `3.0` lúc làm Fine-tuning).
+## 3. Training & Optimization Logic
 
-### 4.3. Optimizer & Tối ưu hóa Learning Rate
-- **Thuật toán:** AdamW với Weight Decay `1e-4` để tránh Overfitting.
-- **Differential Learning Rate (Bảo tồn Tri thức):**
-  - Nhánh Decoders mới khởi tạo trắng tinh: Learning rate trần `3e-4`.
-  - Bộ Encoder đã có sẵn võ của ImageNet: Learning rate bóp xuống bằng scale 0.1 (`3e-5`) để mô hình không xóa sổ những gì nó từng học tốt ở tiền kì.
-- **Scheduler:** `CosineAnnealingLR` hạ dần xuống vực sâu để bám fit, kèm theo `LinearLR` (Linear Warmup) nhẹ nhàng 5 ép ban đầu tránh sốc nhiệt.
-- **Gradient Clipping:** Max norm = 1.0 (Ngăn cơn sóng thần Gradient đẩy rác vào Layer).
+### 3.1 Task-Specific Loss Formulation
+The total loss is a weighted sum: $\mathcal{L}_{total} = \mathcal{W}_{Lesion}\mathcal{L}_{Lesion} + \mathcal{W}_{LVO}\mathcal{L}_{LVO} + \mathcal{W}_{CoW}\mathcal{L}_{CoW}$
+- **$\mathcal{L}_{Lesion}$ (Tversky):** $\alpha=0.4, \beta=0.6, \mathcal{W}=1.0$. Penalizes False Negatives more to ensure stroke core coverage.
+- **$\mathcal{L}_{LVO}$ (Focal Tversky):** $\alpha=0.2, \beta=0.8, \gamma=3.0, \mathcal{W}=10.0$. Heavily penalizes missed occlusions and focuses the gradient on hard-to-detect tiny LVOs. Given the highest clinical priority (10x multiplier).
+- **$\mathcal{L}_{CoW}$ (Tversky):** $\alpha=0.5, \beta=0.5, \mathcal{W}=0.5$. Balanced segmentation of major vessels.
 
----
+### 3.2 Optimization Protocol
+- **Mixed Precision:** FP16 (AMP) with `GradScaler` for memory efficiency on Kaggle T4 GPUs.
+- **Gradient Clipping:** Max norm = 1.0 to prevent gradient explosions driven by the highly weighted LVO loss.
+- **Differential Learning Rate:**
+  - Base LR: $1.0 \times 10^{-4}$ (Decoder + Heads).
+  - Encoder LR: $1.0 \times 10^{-5}$ (Base LR $\times 0.1$). Protects the RadImageNet pre-trained weights from catastrophic forgetting.
+- **Scheduler:** 8-epoch Linear Warmup followed by Cosine Annealing.
+- **Freeze Strategy:** Encoders are frozen for the first 5 epochs to allow the randomly initialized decoder to stabilize.
 
-## 5. Chiến lược Phân bổ Phần cứng (DDP - Kaggle 2x T4 GPU)
-- **Sẵn sàng phần cứng:** Tối ưu trần để bung lụa cho cấu trúc máy Kaggle. Code được gói bảo bọc vào 1 hàm để Accelerator tạo đa luồng không đẩy tràn Rác VRAM RAM.
-- **Automatic Mixed Precision (AMP):** Mô hình tự ép Float32 qua Float16 trong thời gian Model forward, triệt hạ gánh nặng tải dung lượng dữ liệu lớn mà không mất tính chất Loss.
-- **DDP (Distributed Data Parallel):** Module `Accelerate` từ chối trò "tổ kiến chúa DataParallel" (Một Gpu bóc dữ liệu cho con gửi cho thằng Gpu hai, GPU 1 chạy phòi râu gộp kết quả trong khi Gpu hai ngồi chờ lâu). `Accelerate DDP` lập liền 2 luồng độc lập, gán 2 bộ Data vào, ép hai GPU xông pha múc 1 lượt tự tính ngược (Backward) tự update. Cuối cùng nhảy hàm All-Reduce của vòng tròn NCCL gom Gradient về đồng đều (Tốc độ tối đa hóa ~1.9x).
+## 4. Evaluation & Clinical Checkpointing
 
----
+### 4.1 Metrics
+- **Volumetric Dice:** Evaluates Lesion and CoW spatial overlap.
+- **Recall (Sensitivity):** Primary metric for LVO. Clinically, detecting the presence of an occlusion is far more critical than pixel-perfect boundaries.
+- **Composite Score:** $0.4 \times \text{Dice}_{Lesion} + 0.4 \times \text{Recall}_{LVO} + 0.2 \times \text{Dice}_{CoW}$.
 
-## 6. Chiến lược Metrics Chuẩn Y tế (Validation & GĐ Test)
-### 6.1. Validation Phase (Đánh giá nóng trong lúc Train, trên GPU)
-- Được cấu hình để tính toán cực nhanh, vì nó cần phải nhảy ra ngay giữa các Batch Epoch để làm căn cứ lưu File, Dừng sớm...
-- **Composite Score (Chiến thuật Lâm sàng)**: Đoạt điểm Release thay vì cân nhắc đồng điệu:
-  `Composite_Score = 0.4 * Dice_Lesion + 0.4 * Recall_LVO + 0.2 * Dice_CoW`.
-- *Trick:* Nhánh LVO không đo Dice (vẽ viền đốm sáng cục mạch quá tào lao) mà xài Recall. Có nghĩa là mô hình nhắm trúng cái neo LVO thì điểm + ngay!
-
-### 6.2. Test Phase (Đánh giá Nguội sau Training, siêu chuyên sâu bằng CPU)
-Được cấu hình bằng hàm `evaluator.py`, sau khi Training xong, mang model ra, load data bệnh nhân, Scan và Stack hàng loạt dự đoán cắt lát lên lại thành khối Khối 3D Volummetric.
-- **HD95 (Hausdorff 95th Percentile)**: Dùng lib y tế `MONAI`. Lấy đường kính 95% sai số lớn nhất giữa đường viền mô hình tự vẽ so sánh chênh lệch mm so với nét Bác sỹ, điểm khoảng cách ngàn milimet càng thấp vẽ chênh lệch càng đỉnh.
-- **Object-level F1 (LVO)**: Xác nhận sự tinh tế để ứng dụng vào khám lân sàng. Máy thay bộ Pixel thành Point quét lấy Tâm máu đông. Nếu Vùng cảnh báo máy đưa ra liếm đè vào Vùng Tròn (Radius R=3 pixels) xung quanh tâm này sẽ đếm là "1 Lần Phát Hiện Thành Công". Lọc cảnh báo giả rác tốt.
-
-### 6.3 Checkpointing (3 Đầu ra)
-1. `best_overall_model.pth` (Dựa trên Composite Score tổng hợp).
-2. `best_lesion_model.pth` (Dựa trên Dice Lesion tinh chuẩn).
-3. `best_lvo_model.pth` (Dựa trên Recall của LVO, phát hiện báo động siêu nhanh).
+### 4.2 Tri-Faceted Checkpointing
+The pipeline automatically saves three clinical variants of the model:
+1. `best_overall.pt`: Highest Composite Score (Primary deployment model).
+2. `best_lesion.pt`: Highest Lesion Dice (Optimized for infarct volume estimation).
+3. `best_lvo.pt`: Highest LVO Recall (Optimized for emergency triage and clot detection).

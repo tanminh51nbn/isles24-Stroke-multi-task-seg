@@ -1,13 +1,15 @@
-"""
-src.models — ISLES'24 Multi-Task Segmentation Models
-
-Public API:
-    MultiTaskUNet  → Multi-task 2.5D U-Net (shared encoder, 3 decoders)
-    build_model    → Factory: config dict → initialized model
-"""
-from .network import MultiTaskUNet, build_model
+from .dual_unet import DualEncoderUNet, build_model
+from .encoder import ResNet50Encoder, DenseNet121Encoder, build_encoders
+from .decoder import UNetDecoder
+from .heads import MultiTaskHeads, SegmentationHead
 
 __all__ = [
-    "MultiTaskUNet",
+    "DualEncoderUNet",
     "build_model",
+    "ResNet50Encoder",
+    "DenseNet121Encoder",
+    "build_encoders",
+    "UNetDecoder",
+    "MultiTaskHeads",
+    "SegmentationHead",
 ]

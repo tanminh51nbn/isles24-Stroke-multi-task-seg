@@ -1,184 +1,135 @@
 """
-fold_split.py — Scan 2 Kaggle dataset parts, compute lesion volumes,
-                perform Stratified K-Fold at patient level.
+fold_split.py — Chia train/val theo patient-level (GroupShuffleSplit)
 
-Usage:
-    splits, patient_dirs = build_kfold_splits(
-        data_dirs=["/kaggle/input/part1", "/kaggle/input/part2"],
-        cfg=yaml_cfg["kfold"],
-        cache_dir="/kaggle/working",
-    )
+Nguyên tắc bắt buộc:
+    TOÀN BỘ lát cắt của một bệnh nhân phải nằm trong CÙNG một tập.
+    Nếu vi phạm → Data Leakage → mô hình "học bài" → điểm validation ảo.
+
+Cách hoạt động:
+    1. Trích patient_id từ tên file (sub-stroke0001_slice030.npy → 0001)
+    2. Chia 149 bệnh nhân theo tỷ lệ (80/20)
+    3. Map bệnh nhân → danh sách file tương ứng
 """
-import json
-import logging
-from pathlib import Path
-from typing import Dict, List, Tuple
 
-import numpy as np
-from sklearn.model_selection import StratifiedKFold
-
-logger = logging.getLogger(__name__)
+import os
+import random
+from typing import List, Tuple
 
 
-# ═════════════════════════════════════════════════════════════════
-#  Internal helpers
-# ═════════════════════════════════════════════════════════════════
-
-def _discover_patients(data_dirs: List[str]) -> Dict[str, Path]:
+def _extract_patient_id(filename: str) -> str:
     """
-    Scan multiple dataset directories, merge into a single patient registry.
-
-    Returns:
-        Dict mapping patient_id (e.g. "sub-stroke0001") → absolute directory Path
+    Trích patient ID từ tên file.
+    'sub-stroke0001_slice030.npy' → 'sub-stroke0001'
     """
-    patients: Dict[str, Path] = {}
-    for d in data_dirs:
-        root = Path(d)
-        if not root.exists():
-            logger.warning(f"Data directory does not exist: {root}")
-            continue
-        for patient_dir in sorted(root.iterdir()):
-            if patient_dir.is_dir() and patient_dir.name.startswith("sub-stroke"):
-                pid = patient_dir.name
-                if pid in patients:
-                    logger.warning(
-                        f"Duplicate patient {pid} found in {root}, "
-                        f"keeping first occurrence from {patients[pid].parent}"
-                    )
-                    continue
-                patients[pid] = patient_dir
-
-    logger.info(
-        f"Discovered {len(patients)} patients from {len(data_dirs)} directories."
-    )
-    return patients
+    basename = os.path.basename(filename)
+    return basename.split("_")[0]
 
 
-def _compute_lesion_volumes(
-    patient_dirs: Dict[str, Path],
-    cache_path: Path,
-) -> Dict[str, int]:
+def build_patient_split(
+    file_list: List[str],
+    val_ratio: float = 0.2,
+    seed: int = 42,
+) -> Tuple[List[str], List[str]]:
     """
-    Compute total lesion pixel count (channel 0) for each patient.
-    Results are cached to a JSON file for instant reload on subsequent runs.
-
-    First run: scans ~149 patients × ~80 slices ≈ 10 GB I/O (~2-3 min on NVMe).
-    Subsequent runs: loads JSON in < 0.1s.
-    """
-    # ── Try cache first ──
-    if cache_path.exists():
-        logger.info(f"Loading cached lesion volumes from {cache_path}")
-        with open(cache_path, "r") as f:
-            return json.load(f)
-
-    # ── Full scan ──
-    logger.info(
-        "Computing lesion volumes for stratification "
-        "(first run only, scanning all label files)..."
-    )
-    volumes: Dict[str, int] = {}
-
-    for i, (pid, pdir) in enumerate(sorted(patient_dirs.items())):
-        label_dir = pdir / "labels"
-        total_pixels = 0
-        for lbl_file in sorted(label_dir.glob("y_z*.npy")):
-            y = np.load(lbl_file)           # [3, 544, 544] uint8
-            total_pixels += int(y[0].sum())  # Channel 0 = lesion
-        volumes[pid] = total_pixels
-
-        if (i + 1) % 25 == 0:
-            logger.info(f"  Scanned {i + 1}/{len(patient_dirs)} patients...")
-
-    # ── Persist cache ──
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w") as f:
-        json.dump(volumes, f, indent=2)
-    logger.info(f"Cached lesion volumes → {cache_path}")
-
-    return volumes
-
-
-# ═════════════════════════════════════════════════════════════════
-#  Public API
-# ═════════════════════════════════════════════════════════════════
-
-def build_kfold_splits(
-    data_dirs: List[str],
-    cfg: dict,
-    cache_dir: str = ".",
-) -> Tuple[List[Tuple[List[str], List[str]]], Dict[str, Path]]:
-    """
-    Build Stratified K-Fold splits at patient level.
-
-    Stratification is based on quantile-binned lesion volume, ensuring
-    each fold has a representative distribution of lesion severity.
+    Chia file_list thành train/val theo patient-level GroupShuffleSplit.
 
     Args:
-        data_dirs: Paths to Kaggle dataset parts
-                   (e.g. ["/kaggle/input/part1", "/kaggle/input/part2"])
-        cfg:       kfold section from data.yaml
-        cache_dir: Directory to store lesion_volumes.json cache
+        file_list: Danh sách đường dẫn tất cả file .npy
+        val_ratio: Tỷ lệ bệnh nhân dùng cho validation (default 0.2 = 20%)
+        seed:      Random seed để tái lập kết quả
 
     Returns:
-        splits:       List of (train_patient_ids, val_patient_ids) per fold
-        patient_dirs: Dict mapping patient_id → absolute directory Path
+        (train_files, val_files): 2 danh sách file, không overlap bệnh nhân
     """
-    # 1. Discover all patients across both parts
-    patient_dirs = _discover_patients(data_dirs)
-    patient_ids = sorted(patient_dirs.keys())
-    n_patients = len(patient_ids)
+    # Nhóm file theo bệnh nhân
+    patient_to_files: dict = {}
+    for f in file_list:
+        pid = _extract_patient_id(f)
+        patient_to_files.setdefault(pid, []).append(f)
 
-    if n_patients == 0:
-        raise ValueError(
-            f"No patients found in data_dirs: {data_dirs}. "
-            "Ensure directories contain sub-strokeXXXX folders."
-        )
+    # Shuffle danh sách bệnh nhân
+    patients = sorted(patient_to_files.keys())
+    rng = random.Random(seed)
+    rng.shuffle(patients)
 
-    # 2. Compute lesion volumes (with JSON caching)
-    cache_path = Path(cache_dir) / "lesion_volumes.json"
-    volumes = _compute_lesion_volumes(patient_dirs, cache_path)
+    # Chia bệnh nhân
+    n_val = max(1, int(len(patients) * val_ratio))
+    val_patients  = set(patients[:n_val])
+    train_patients = set(patients[n_val:])
 
-    # 3. Quantile binning for stratification
-    n_bins = cfg.get("n_bins", 5)
-    vol_array = np.array([volumes.get(pid, 0) for pid in patient_ids])
+    # Map bệnh nhân → file
+    train_files = [f for pid in train_patients for f in patient_to_files[pid]]
+    val_files   = [f for pid in val_patients   for f in patient_to_files[pid]]
 
-    # Separate zero-volume patients (no lesion at all) into bin 0
-    nonzero_vols = vol_array[vol_array > 0]
-    if len(nonzero_vols) > 0:
-        bin_edges = np.quantile(
-            nonzero_vols,
-            np.linspace(0, 1, n_bins + 1)[1:]  # Exclude 0th percentile
-        )
-        bins = np.digitize(vol_array, bin_edges, right=True)
-    else:
-        bins = np.zeros(n_patients, dtype=int)
+    print(f"[fold_split] Bệnh nhân Train: {len(train_patients)} | Val: {len(val_patients)}")
+    print(f"[fold_split] Slice Train: {len(train_files)} | Val: {len(val_files)}")
 
-    # Zero-volume patients → explicit bin 0
-    bins[vol_array == 0] = 0
+    return train_files, val_files
 
-    logger.info(
-        f"Stratification bins: {dict(zip(*np.unique(bins, return_counts=True)))}"
-    )
 
-    # 4. Stratified K-Fold
-    n_splits = cfg.get("n_splits", 5)
-    random_state = cfg.get("random_state", 42)
+import pandas as pd
 
-    skf = StratifiedKFold(
-        n_splits=n_splits,
-        shuffle=True,
-        random_state=random_state,
-    )
+def apply_sampling(
+    train_files: List[str],
+    config: dict,
+) -> List[str]:
+    """
+    Cân bằng tập train dựa trên cấu hình trong data.yaml.
+    """
+    sampling_cfg = config["sampling"]
+    if not sampling_cfg.get("enabled", False):
+        return train_files
 
-    splits = []
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(patient_ids, bins)):
-        train_ids = [patient_ids[i] for i in train_idx]
-        val_ids = [patient_ids[i] for i in val_idx]
-        logger.info(
-            f"Fold {fold_idx}: "
-            f"train={len(train_ids)} patients, "
-            f"val={len(val_ids)} patients"
-        )
-        splits.append((train_ids, val_ids))
+    metadata_csv = sampling_cfg["metadata_csv"]
+    if not os.path.exists(metadata_csv):
+        print(f"[Warning] Không tìm thấy {metadata_csv}. Bỏ qua sampling.")
+        return train_files
 
-    return splits, patient_dirs
+    lvo_oversample_factor = sampling_cfg.get("lvo_oversample_factor", 5)
+    downsample_neg_ratio  = sampling_cfg.get("downsample_neg_ratio", 0.3)
+
+    df = pd.read_csv(metadata_csv)
+    # Chuẩn hóa đường dẫn trong CSV về dạng basename để so sánh environment-agnostic
+    df["basename"] = df["path"].apply(os.path.basename)
+
+    # Lọc chỉ lấy những file nằm trong tập train_files hiện tại
+    train_basenames = {os.path.basename(f) for f in train_files}
+    df_train = df[df["basename"].isin(train_basenames)].copy()
+
+    # Phân loại (Sử dụng basename để đồng bộ)
+    lvo_list = df_train[df_train["has_lvo"] == 1]["basename"].tolist()
+    neg_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["basename"].tolist()
+    other_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["basename"].tolist()
+
+    # Sử dụng seed cố định để đảm bảo tính nhất quán khi chạy đa GPU (DDP)
+    sampling_seed = config["split"].get("seed", 42)
+    rng = random.Random(sampling_seed)
+
+    # Thực hiện lấy mẫu
+    sampled_basenames = []
+    
+    # 1. Nhân bản LVO
+    for _ in range(lvo_oversample_factor):
+        sampled_basenames.extend(lvo_list)
+    
+    # 2. Giữ nguyên các ca có Lesion nhưng không LVO
+    sampled_basenames.extend(other_list)
+
+    # 3. Downsample các ca toàn màu đen
+    n_neg = int(len(neg_list) * downsample_neg_ratio)
+    if len(neg_list) > 0:
+        # Sử dụng rng của instance để cố định kết quả
+        sampled_basenames.extend(rng.sample(neg_list, n_neg))
+
+    # Chuyển basename ngược lại thành full path của môi trường hiện tại
+    path_map = {os.path.basename(f): f for f in train_files}
+    final_list = [path_map[b] for b in sampled_basenames]
+    
+    # Shuffle với seed cố định
+    rng.shuffle(final_list)
+    
+    print(f"[Sampling] LVO: {len(lvo_list)} -> {len(lvo_list)*lvo_oversample_factor}")
+    print(f"[Sampling] Background Downsampled: {len(neg_list)} -> {n_neg}")
+    print(f"[Sampling] Tổng số file sau khi balance: {len(final_list)}")
+
+    return final_list
