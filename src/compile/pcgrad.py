@@ -127,17 +127,19 @@ class PCGrad:
             p.grad = pcgrad_slice.reshape(p.shape).to(dtype=p.dtype)
             offset += numel
 
-    def sync_grads(self):
+    def sync_grads(self, model: torch.nn.Module):
         """
-        Bước 3: Đồng bộ hóa gradient PCGrad trên tất cả các GPU.
-        Vì PCGrad tính gradient trong block no_sync() của DDP nên ta cần manual all-reduce.
+        Bước 3: Đồng bộ hóa toàn bộ gradient qua các GPU.
+        Vì ta bypass DDP hooks để tránh crash, ta cần manual all-reduce cho TẤT CẢ tham số.
         """
         import torch.distributed as dist
         if dist.is_available() and dist.is_initialized():
             world_size = dist.get_world_size()
             if world_size > 1:
-                for p in self.backbone_params:
+                # Đồng bộ hóa tất cả các tham số có requires_grad=True
+                for p in model.parameters():
                     if p.grad is not None:
                         dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
                         p.grad /= world_size
+
 

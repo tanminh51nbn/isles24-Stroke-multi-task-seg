@@ -109,7 +109,10 @@ class Trainer:
 
             # Forward với AMP
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
-                preds  = self.model(inp)
+                # [FIX] Bypass DDP wrapper bằng cách gọi .module trực tiếp
+                # Điều này ngăn DDP hooks can thiệp vào quá trình backward phức tạp của PCGrad
+                raw_model = self.model.module if hasattr(self.model, "module") else self.model
+                preds  = raw_model(inp)
                 losses = self.loss_fn(preds, lbl)
 
             # ── Stage 2: Kiểm tra NaN trong Loss (AMP overflow) ──────────────
@@ -124,20 +127,19 @@ class Trainer:
 
             # [PCGrad] Bước 1: Tính gradient PCGrad (khi graph còn nguyên)
             if self.pcgrad is not None and "task_losses" in losses:
-                # Tránh DDP tự động all-reduce khi backward nhiều lần -> Crash
-                if hasattr(self.model, "no_sync"):
-                    with self.model.no_sync():
-                        self.pcgrad.prepare(losses["task_losses"], self.scaler, self.model)
-                else:
-                    self.pcgrad.prepare(losses["task_losses"], self.scaler, self.model)
+                self.pcgrad.prepare(losses["task_losses"], self.scaler, self.model)
 
-            # Backward total_loss bình thường (giải phóng graph, heads nhận gradient và sync DDP)
+            # Backward total_loss bình thường (giải phóng graph, tính nốt gradient heads)
             self.scaler.scale(losses["total"]).backward()
 
-            # [PCGrad] Bước 2 & 3: Override backbone gradient và Manual Sync
+            # [PCGrad] Bước 2 & 3: Override backbone gradient và Manual Sync toàn bộ mô hình
             if self.pcgrad is not None and "task_losses" in losses:
                 self.pcgrad.set_grads()
-                self.pcgrad.sync_grads()
+                self.pcgrad.sync_grads(self.model)
+            elif torch.distributed.is_initialized():
+                # Nếu không dùng PCGrad nhưng đang chạy DDP, ta vẫn phải manual sync 
+                # vì đã bypass DDP hooks ở bước forward
+                self._manual_sync_grads()
 
             # Gradient clipping
             self.scaler.unscale_(self.optimizer)
@@ -355,3 +357,18 @@ class Trainer:
             self.scheduler.step()
 
         return self.history
+
+    def _manual_sync_grads(self):
+        """
+        Đồng bộ hóa gradient thủ công khi bypass DDP wrapper.
+        """
+        import torch.distributed as dist
+        if not dist.is_initialized():
+            return
+            
+        world_size = dist.get_world_size()
+        if world_size > 1:
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+                    p.grad /= world_size
