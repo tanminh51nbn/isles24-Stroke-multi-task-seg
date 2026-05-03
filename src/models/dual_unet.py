@@ -137,17 +137,6 @@ class DualEncoderUNet(nn.Module):
             },
         ]
 
-    def get_backbone_params(self):
-        """
-        [PCGrad] Trả về các parameters của backbone (encoder + decoder).
-        KHÔNG bao gồm heads — heads đã độc lập, không bị gradient conflict.
-        """
-        return (
-            list(self.cta_encoder.parameters()) +
-            list(self.perf_encoder.parameters()) +
-            list(self.decoder.parameters())
-        )
-
 
 # ─── Factory ─────────────────────────────────────────────────────────────────
 

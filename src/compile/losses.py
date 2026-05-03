@@ -304,18 +304,11 @@ class MultiTaskLoss(nn.Module):
         total = torch.nan_to_num(total, nan=1.0, posinf=1.0, neginf=1.0)
 
         return {
-            "total":       total,
-            "main":        main_loss,
-            "aux":         aux_loss if isinstance(aux_loss, torch.Tensor) else torch.tensor(aux_loss, device=targets.device),
-            "lesion":      l_lesion,
-            "lvo":         l_lvo,
-            "cow":         l_cow,
-            "boundary":    (l_lesion_bd + l_cow_bd) / 2.0,  # Bỏ l_lvo_bd=0 để tránh pha loãng log
-            # [PCGrad] 3 loss riêng lẻ TRƯỚC khi cộng — để PCGrad backward độc lập
-            # Mỗi phần tử đại diện cho tín hiệu gradient thuần túy của 1 task
-            "task_losses": [
-                self.w_lesion * l_lesion,   # Lesion task signal
-                self.w_lvo    * l_lvo,      # LVO task signal
-                self.w_cow    * l_cow,      # CoW task signal
-            ],
+            "total":  total,
+            "main":   main_loss,
+            "aux":    aux_loss,
+            "lesion": l_lesion,
+            "lvo":    l_lvo,
+            "cow":    l_cow,
+            "boundary": (l_lesion_bd + l_lvo_bd + l_cow_bd) / 3.0
         }

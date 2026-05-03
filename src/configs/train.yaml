@@ -3,12 +3,6 @@
 #  Loss, Optimizer, Scheduler, Training params
 # ═══════════════════════════════════════════════════════════════
 
-# ── PCGrad ───────────────────────────────────────────────
-# Gradient Surgery — Yu et al., NeurIPS 2020
-# Tất cả 3 task đều học, gradient chỉ được "xọng nhẹ" khi xung đột.
-pcgrad:
-  enabled: true         # false = tắt PCGrad, chạy backward bình thường
-
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:

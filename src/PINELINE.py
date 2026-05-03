@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from models  import build_model
 from data    import build_dataloaders
-from compile import MultiTaskLoss, build_optimizer, build_scheduler, PCGrad
+from compile import MultiTaskLoss, build_optimizer, build_scheduler
 from training import Trainer, EarlyStopping, ModelCheckpoint
 from evaluation import plot_training_curves
 
@@ -115,24 +115,9 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
     )
 
     # ── Model ─────────────────────────────────────────────────────
-    # [OPTIMIZATION] Bật CUDNN Benchmark cho kích thước input cố định
-    torch.backends.cudnn.benchmark = True
-    
     model = build_model(config)
     model = model.to(device)
-
-    # [OPTIMIZATION] Torch Compile (PyTorch 2.0+) 
-    # Giúp gộp các kernels và tăng tốc đáng kể bước backward của PCGrad
-    try:
-        if hasattr(torch, "compile"):
-            print("[PINELINE] Đang biên dịch mô hình với torch.compile...")
-            model = torch.compile(model)
-    except Exception as e:
-        print(f"[PINELINE] Không thể compile: {e}")
-
-    # Tắt find_unused_parameters vì 100% params đều được sử dụng trong forward pass.
-    # Bật nó sẽ làm DDP reducer crash khi PCGrad backward từng task riêng lẻ.
-    model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     # ── Loss / Optimizer / Scheduler ──────────────────────────────
     loss_fn   = MultiTaskLoss(config).to(device)
@@ -150,14 +135,6 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         config=config,
     ) if rank == 0 else None
 
-    # ── PCGrad (Gradient Surgery) ─────────────────────────────────
-    pcgrad_cfg = config.get("pcgrad", {"enabled": False})
-    pcgrad = None
-    if pcgrad_cfg.get("enabled", False):
-        # Chỉ lấy backbone params (encoder + decoder), KHÔNG lấy head params
-        raw_model = model.module if hasattr(model, "module") else model
-        pcgrad = PCGrad(backbone_params=raw_model.get_backbone_params())
-    
     # ── Training ──────────────────────────────────────────────────
     config["output_dir"] = fold_output_dir
     trainer = Trainer(
@@ -170,7 +147,6 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         config=config,
         device=device,
         rank=rank,
-        pcgrad=pcgrad,
     )
 
     history = trainer.fit(
@@ -178,8 +154,7 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         checkpoint=checkpoint,
     )
 
-    # ── Post-training (chỉ rank 0 xử lý, nhưng TẤT CẢ rank phải chờ) ──────────
-    best = None
+    # ── Post-training (chỉ rank 0) ────────────────────────────────
     if rank == 0:
         curve_path = os.path.join(fold_output_dir, "training_curves.png")
         plot_training_curves(history, save_path=curve_path)
@@ -201,14 +176,12 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         print(f"  Composite:   {best['composite']:.4f}")
         print(f"{'='*60}")
 
-    # [FIX] Cả 2 rank phải đồng bộ và destroy TRƯỚC KHI return
-    # Nếu rank 0 return sớm, rank 1 mất kết nối TCPStore → loạt cảnh báo
+        # Trả về best composite để PINELINE tổng hợp
+        return best
+
     if dist.is_initialized():
-        dist.barrier()             # Chờ tất cả rank xử lý xong
-        dist.destroy_process_group()  # Tất cả rank cùng dọn dẹp
-
-    return best  # rank 0: trả về best dict | rank 1: trả về None
-
+        dist.barrier(device_ids=[rank])
+        dist.destroy_process_group()
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

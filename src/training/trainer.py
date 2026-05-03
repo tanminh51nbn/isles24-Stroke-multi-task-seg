@@ -43,7 +43,6 @@ class Trainer:
         config: dict,
         device: torch.device,
         rank: int = 0,
-        pcgrad=None,          # [PCGrad] PCGrad instance hoặc None
     ):
         """
         Args:
@@ -66,8 +65,7 @@ class Trainer:
         self.config       = config
         self.device       = device
         self.rank         = rank
-        self.output_dir   = config.get("output_dir", "outputs")
-        self.pcgrad       = pcgrad  # [PCGrad] None nếu disabled
+        self.output_dir   = config.get("output_dir", "outputs") # Thêm dòng này
 
         train_cfg = config["training"]
         self.epochs            = int(train_cfg["epochs"])
@@ -109,10 +107,7 @@ class Trainer:
 
             # Forward với AMP
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
-                # [FIX] Bypass DDP wrapper bằng cách gọi .module trực tiếp
-                # Điều này ngăn DDP hooks can thiệp vào quá trình backward phức tạp của PCGrad
-                raw_model = self.model.module if hasattr(self.model, "module") else self.model
-                preds  = raw_model(inp)
+                preds  = self.model(inp)
                 losses = self.loss_fn(preds, lbl)
 
             # ── Stage 2: Kiểm tra NaN trong Loss (AMP overflow) ──────────────
@@ -125,21 +120,8 @@ class Trainer:
                 continue
             # ─────────────────────────────────────────────────────────────────
 
-            # [PCGrad] Bước 1: Tính gradient PCGrad (khi graph còn nguyên)
-            if self.pcgrad is not None and "task_losses" in losses:
-                self.pcgrad.prepare(losses["task_losses"], self.scaler, self.model)
-
-            # Backward total_loss bình thường (giải phóng graph, tính nốt gradient heads)
+            # Backward với GradScaler
             self.scaler.scale(losses["total"]).backward()
-
-            # [PCGrad] Bước 2 & 3: Override backbone gradient và Manual Sync toàn bộ mô hình
-            if self.pcgrad is not None and "task_losses" in losses:
-                self.pcgrad.set_grads()
-                self.pcgrad.sync_grads(self.model)
-            elif torch.distributed.is_initialized():
-                # Nếu không dùng PCGrad nhưng đang chạy DDP, ta vẫn phải manual sync 
-                # vì đã bypass DDP hooks ở bước forward
-                self._manual_sync_grads()
 
             # Gradient clipping
             self.scaler.unscale_(self.optimizer)
@@ -307,9 +289,6 @@ class Trainer:
             # Unfreeze khi đến epoch chỉ định
             if epoch == self.freeze_enc_epochs:
                 raw_model.unfreeze_encoders()
-                # [PCGrad] Refresh danh sách params sau unfreeze (encoder params được active)
-                if self.pcgrad is not None:
-                    self.pcgrad.refresh_params()
 
             # Set epoch cho DistributedSampler
             if hasattr(self.train_loader.sampler, "set_epoch"):
@@ -357,18 +336,3 @@ class Trainer:
             self.scheduler.step()
 
         return self.history
-
-    def _manual_sync_grads(self):
-        """
-        Đồng bộ hóa gradient thủ công khi bypass DDP wrapper.
-        """
-        import torch.distributed as dist
-        if not dist.is_initialized():
-            return
-            
-        world_size = dist.get_world_size()
-        if world_size > 1:
-            for p in self.model.parameters():
-                if p.grad is not None:
-                    dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
-                    p.grad /= world_size
