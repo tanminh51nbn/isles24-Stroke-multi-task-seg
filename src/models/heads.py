@@ -2,7 +2,13 @@
 heads.py — Multi-Task Segmentation Heads
 
 3 heads độc lập (Lesion, LVO, CoW), mỗi head là:
-    Conv3x3 → BN → ReLU → SpatialDropout2d → Conv1x1 → Raw Logit
+    [SE Block] → Conv3x3 → BN → ReLU → SpatialDropout2d → Conv1x1 → Raw Logit
+
+[FIX 2] Thêm ChannelAttention (SE Block) trước mỗi Head.
+Mỗi Head tự học reweight các kênh feature map:
+    - Lesion Head: Học giảm kênh mạch máu, tăng kênh Tmax/thiếu máu
+    - CoW Head:    Học tăng kênh CTA cản quang (mạch máu sáng)
+    - LVO Head:    Học tập trung vào kênh điểm tắc nghến
 
 Output là raw logits (KHÔNG sigmoid).
 BCEWithLogitsLoss và FocalTversky tự tích hợp sigmoid để đảm bảo
@@ -11,6 +17,35 @@ numerical stability (tránh log(0)).
 
 import torch
 import torch.nn as nn
+
+
+class ChannelAttention(nn.Module):
+    """
+    [FIX 2] Squeeze-and-Excitation Block (SE Block) — per Task Channel Filter.
+    
+    Mội SegmentationHead được trang bị một SE Block riêng.
+    Nó học một bộ trọng số [w1,...,w16] độc lập cho từng task,
+    cho phép Lesion Head tự "tắt tai" trước các kênh mạch máu (CoW features)
+    và tập trung vào các kênh thiếu tưới máu (Tmax, CBF thấp).
+    
+    Paper tham khảo: Hu et al., "Squeeze-and-Excitation Networks", CVPR 2018.
+    """
+    def __init__(self, in_ch: int, reduction: int = 4):
+        super().__init__()
+        mid_ch = max(1, in_ch // reduction)
+        self.fc = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),        # (B, C, 1, 1)
+            nn.Flatten(),                   # (B, C)
+            nn.Linear(in_ch, mid_ch),
+            nn.ReLU(inplace=True),
+            nn.Linear(mid_ch, in_ch),
+            nn.Sigmoid(),                   # Trọng số kênh nằm trong [0, 1]
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # w: (B, C) → reshape → (B, C, 1, 1)
+        w = self.fc(x).view(x.shape[0], x.shape[1], 1, 1)
+        return x * w  # Scale channel-wise
 
 
 class ResidualBlock(nn.Module):
@@ -36,16 +71,18 @@ class ResidualBlock(nn.Module):
 class SegmentationHead(nn.Module):
     """
     Đầu phân vùng chuyên gia cho một task.
-    Cấu trúc: ResidualBlock -> Dropout -> Conv1x1
+    Cấu trúc: [ChannelAttention] -> ResidualBlock -> Dropout -> Conv1x1
     """
 
     def __init__(self, in_ch: int, out_ch: int = 1, dropout: float = 0.3):
         super().__init__()
+        self.channel_attn = ChannelAttention(in_ch)   # [FIX 2] SE Block riêng cho từng task
         self.res_block = ResidualBlock(in_ch)
         self.dropout   = nn.Dropout2d(p=dropout)
         self.conv_out  = nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.channel_attn(x)   # Bộ lọc kênh task-specific
         x = self.res_block(x)
         x = self.dropout(x)
         return self.conv_out(x)

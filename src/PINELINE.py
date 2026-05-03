@@ -55,16 +55,16 @@ def load_configs(config_dir: str) -> dict:
 
 # ─── DDP Worker ───────────────────────────────────────────────────────────────
 
-def train_worker(rank: int, world_size: int, args):
+def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
     """
-    Hàm worker chạy trên mỗi GPU.
+    Hàm worker chạy trên mỗi GPU — hỗ trợ K-Fold.
 
     Args:
         rank:       GPU index (0 hoặc 1)
         world_size: Tổng số GPU (2)
         args:       Parsed CLI arguments
+        fold_idx:   Fold hiện tại (0-4)
     """
-    # Khởi tạo DDP process group
     dist.init_process_group(
         backend="nccl",
         init_method="env://",
@@ -75,28 +75,36 @@ def train_worker(rank: int, world_size: int, args):
     device = torch.device(f"cuda:{rank}")
     torch.cuda.set_device(device)
 
-    # ── Chỉ GPU 0 in log — tắt stdout của các GPU còn lại ────────────────────
     import sys as _sys
     import io as _io
     if rank != 0:
-        _sys.stdout = _io.StringIO()  # Redirect sang buffer rỗng, không in gì cả
-
-    print("=" * 60)
-    print(" ISLES'24 Dual-Encoder Multi-Task UNet")
-    print(f" World size: {world_size} GPU(s)")
-    print("=" * 60)
+        _sys.stdout = _io.StringIO()
 
     # Load config
     config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
     config = load_configs(config_dir)
 
-    # Ghi đè đường dẫn weights nếu có truyền từ CLI
+    # Ghi đè đường dẫn từ CLI
     if args.cta_weights:
         config["cta_encoder"]["weights"] = args.cta_weights
     if args.perf_weights:
         config["perfusion_encoder"]["weights"] = args.perf_weights
     if args.metadata_path:
         config["sampling"]["metadata_csv"] = args.metadata_path
+
+    # [FIX 3] Ghi đè fold hiện tại vào config
+    config["split"]["current_fold"] = fold_idx
+
+    # Output riêng cho từng fold
+    fold_output_dir = os.path.join(args.output_dir, f"fold_{fold_idx}")
+    os.makedirs(fold_output_dir, exist_ok=True)
+
+    if rank == 0:
+        n_folds = config["split"].get("n_folds", 1)
+        mode    = config["split"].get("mode", "single")
+        print("=" * 60)
+        print(f" ISLES'24 — Fold {fold_idx + 1}/{n_folds} (mode={mode})")
+        print("=" * 60)
 
     # ── DataLoader ────────────────────────────────────────────────
     train_loader, val_loader = build_dataloaders(
@@ -109,8 +117,6 @@ def train_worker(rank: int, world_size: int, args):
     # ── Model ─────────────────────────────────────────────────────
     model = build_model(config)
     model = model.to(device)
-    # find_unused_parameters=True: Bắt buộc khi encoder bị freeze
-    # DDP cần biết một số parameter không nhận gradient (frozen) là intentional
     model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     # ── Loss / Optimizer / Scheduler ──────────────────────────────
@@ -119,21 +125,18 @@ def train_worker(rank: int, world_size: int, args):
     scheduler = build_scheduler(optimizer, config)
 
     # ── Callbacks ─────────────────────────────────────────────────
-    output_dir = args.output_dir
-    os.makedirs(output_dir, exist_ok=True)
-
     early_stopping = EarlyStopping(
         patience=config["training"]["early_stopping"]["patience"],
         min_delta=config["training"]["early_stopping"]["min_delta"],
     ) if config["training"]["early_stopping"]["enabled"] else None
 
     checkpoint = ModelCheckpoint(
-        save_dir=os.path.join(output_dir, config["training"]["checkpoint"]["dir"]),
+        save_dir=os.path.join(fold_output_dir, config["training"]["checkpoint"]["dir"]),
         config=config,
     ) if rank == 0 else None
 
     # ── Training ──────────────────────────────────────────────────
-    config["output_dir"] = output_dir
+    config["output_dir"] = fold_output_dir
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -153,35 +156,29 @@ def train_worker(rank: int, world_size: int, args):
 
     # ── Post-training (chỉ rank 0) ────────────────────────────────
     if rank == 0:
-        # Vẽ training curves
-        curve_path = os.path.join(output_dir, "training_curves.png")
+        curve_path = os.path.join(fold_output_dir, "training_curves.png")
         plot_training_curves(history, save_path=curve_path)
 
-        # Lưu lịch sử ra file CSV để tải về phân tích sau
         import pandas as pd
         history_df = pd.DataFrame(history)
-        history_df.to_csv(os.path.join(output_dir, "training_history.csv"), index=False)
-        print(f"[PINELINE] History saved to: {os.path.join(output_dir, 'training_history.csv')}")
+        history_df.to_csv(os.path.join(fold_output_dir, "training_history.csv"), index=False)
 
-        # In báo cáo kết quả cuối
-        # In báo cáo kết quả cuối (Chỉ tính từ epoch bắt đầu ổn định - start_epoch)
         start_eval = config["training"]["checkpoint"].get("start_epoch", 1)
-        relevant_history = [h for h in history if h["epoch"] >= start_eval]
-        
-        if not relevant_history:
-            relevant_history = history  # Fallback nếu không đủ epoch
-            
+        relevant_history = [h for h in history if h["epoch"] >= start_eval] or history
         best = max(relevant_history, key=lambda h: h["composite"])
-        print("\n" + "=" * 60)
-        print(f" TRAINING COMPLETE — BEST RESULTS (From Epoch {start_eval}+)")
-        print(f"  Epoch:          {best['epoch']}")
-        print(f"  Dice Lesion:    {best['dice_lesion']:.4f}")
-        print(f"  Recall LVO:     {best['recall_lvo']:.4f}")
-        print(f"  Dice CoW:       {best['dice_cow']:.4f}")
-        print(f"  Composite:      {best['composite']:.4f}")
-        print("=" * 60)
 
-    # Đợi tất cả GPU làm xong (đặc biệt là rank 0 vẽ hình)
+        print(f"\n{'='*60}")
+        print(f" FOLD {fold_idx} COMPLETE — BEST (From Epoch {start_eval}+)")
+        print(f"  Epoch:       {best['epoch']}")
+        print(f"  Dice Lesion: {best['dice_lesion']:.4f}")
+        print(f"  Recall LVO:  {best['recall_lvo']:.4f}")
+        print(f"  Dice CoW:    {best['dice_cow']:.4f}")
+        print(f"  Composite:   {best['composite']:.4f}")
+        print(f"{'='*60}")
+
+        # Trả về best composite để PINELINE tổng hợp
+        return best
+
     if dist.is_initialized():
         dist.barrier(device_ids=[rank])
         dist.destroy_process_group()
@@ -191,58 +188,75 @@ def train_worker(rank: int, world_size: int, args):
 
 def main():
     parser = argparse.ArgumentParser(description="ISLES'24 Training Pipeline")
-    parser.add_argument(
-        "--dataset_dir",
-        type=str,
-        default="/kaggle/input/isles24-stroke-dataset/ISLES24_NPY_Dataset",
-        help="Đường dẫn đến thư mục chứa file .npy",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="/kaggle/working/outputs",
-        help="Thư mục lưu checkpoint và visualization",
-    )
-    parser.add_argument(
-        "--cta_weights",
-        type=str,
-        default=None,
-        help="Đường dẫn tùy chỉnh tới trọng số ResNet50",
-    )
-    parser.add_argument(
-        "--perf_weights",
-        type=str,
-        default=None,
-        help="Đường dẫn tùy chỉnh tới trọng số DenseNet121",
-    )
-    parser.add_argument(
-        "--metadata_path",
-        type=str,
-        default="/kaggle/working/dataset_metadata.csv",
-        help="Đường dẫn tới file metadata CSV (phục vụ sampling)",
-    )
+    parser.add_argument("--dataset_dir", type=str,
+        default="/kaggle/input/isles24-stroke-dataset/ISLES24_NPY_Dataset")
+    parser.add_argument("--output_dir", type=str, default="/kaggle/working/outputs")
+    parser.add_argument("--cta_weights",   type=str, default=None)
+    parser.add_argument("--perf_weights",  type=str, default=None)
+    parser.add_argument("--metadata_path", type=str,
+        default="/kaggle/working/dataset_metadata.csv")
     args = parser.parse_args()
-
 
     world_size = torch.cuda.device_count()
     if world_size < 1:
         raise RuntimeError("Không tìm thấy GPU!")
-
     print(f"[PINELINE] Phát hiện {world_size} GPU")
 
-    if world_size > 1:
-        # Multi-GPU: spawn DDP workers
-        os.environ.setdefault("MASTER_ADDR", "localhost")
-        os.environ.setdefault("MASTER_PORT", "12355")
-        mp.spawn(
-            train_worker,
-            args=(world_size, args),
-            nprocs=world_size,
-            join=True,
-        )
-    else:
-        # Single GPU (fallback)
-        train_worker(rank=0, world_size=1, args=args)
+    # Đọc config để biết mode và n_folds
+    config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
+    config = load_configs(config_dir)
+    split_mode = config["split"].get("mode", "single")
+    n_folds    = config["split"].get("n_folds", 1) if split_mode == "kfold" else 1
+
+    os.environ.setdefault("MASTER_ADDR", "localhost")
+    os.environ.setdefault("MASTER_PORT", "12355")
+
+    fold_results = []
+
+    for fold_idx in range(n_folds):
+        print(f"\n[PINELINE] ===== Bắt đầu Fold {fold_idx + 1}/{n_folds} =====")
+
+        if world_size > 1:
+            mp.spawn(
+                train_worker,
+                args=(world_size, args, fold_idx),
+                nprocs=world_size,
+                join=True,
+            )
+        else:
+            result = train_worker(rank=0, world_size=1, args=args, fold_idx=fold_idx)
+            if result:
+                fold_results.append({"fold": fold_idx, **result})
+
+    # In bảng tổng hợp kết quả tất cả fold
+    if fold_results:
+        import pandas as pd
+        summary_df = pd.DataFrame(fold_results)
+        summary_path = os.path.join(args.output_dir, "kfold_summary.csv")
+        summary_df.to_csv(summary_path, index=False)
+
+        print(f"\n{'='*60}")
+        print(f" K-FOLD SUMMARY ({n_folds} Folds)")
+        print(f"{'='*60}")
+        for r in fold_results:
+            print(f"  Fold {r['fold']}: Dice_L={r['dice_lesion']:.4f}  "
+                  f"Recall_LVO={r['recall_lvo']:.4f}  "
+                  f"Dice_C={r['dice_cow']:.4f}  "
+                  f"Composite={r['composite']:.4f}")
+        print(f"{'─'*60}")
+        print(f"  Mean:   Dice_L={summary_df['dice_lesion'].mean():.4f}  "
+              f"Recall_LVO={summary_df['recall_lvo'].mean():.4f}  "
+              f"Dice_C={summary_df['dice_cow'].mean():.4f}  "
+              f"Composite={summary_df['composite'].mean():.4f}")
+        print(f"  Std:    Dice_L={summary_df['dice_lesion'].std():.4f}  "
+              f"Recall_LVO={summary_df['recall_lvo'].std():.4f}  "
+              f"Dice_C={summary_df['dice_cow'].std():.4f}  "
+              f"Composite={summary_df['composite'].std():.4f}")
+        print(f"{'='*60}")
+        print(f"[PINELINE] K-Fold summary saved to: {summary_path}")
+        print(f"[PINELINE] Ensemble models nằm tại:")
+        for i in range(n_folds):
+            print(f"  fold_{i}/checkpoints/best_overall.pt")
 
 
 if __name__ == "__main__":

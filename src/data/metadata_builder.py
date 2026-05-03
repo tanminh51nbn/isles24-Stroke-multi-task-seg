@@ -67,7 +67,7 @@ def scan_dataset(input_dir, output_csv):
 # Thực thi (Chỉ khi chạy trực tiếp script này)
 if __name__ == "__main__":
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    if not os.path.exists(METADATA_PATH):
-        scan_dataset(DATASET_DIR, METADATA_PATH)
-    else:
-        print(f"Metadata đã tồn tại tại: {METADATA_PATH}")
+    # [FIX] Luôn quét lại — không skip dù file cũ đã tồn tại.
+    # Sau khi đổi sang MIP, cấu trúc và tên file thay đổi hoàn toàn,
+    # file CSV cũ không còn đúng với dataset hiện tại.
+    scan_dataset(DATASET_DIR, METADATA_PATH)

@@ -87,49 +87,146 @@ def apply_sampling(
 
     lvo_oversample_factor = sampling_cfg.get("lvo_oversample_factor", 5)
     downsample_neg_ratio  = sampling_cfg.get("downsample_neg_ratio", 0.3)
+    
+    # [FIX 1] Thêm các config mới cho counter-example sampling
+    cow_neg_keepall = sampling_cfg.get("cow_neg_keepall", True)
+    plain_neg_ratio = sampling_cfg.get("plain_neg_ratio", downsample_neg_ratio)
 
     df = pd.read_csv(metadata_csv)
-    # Chuẩn hóa đường dẫn trong CSV về dạng basename để so sánh environment-agnostic
     df["basename"] = df["path"].apply(os.path.basename)
 
-    # Lọc chỉ lấy những file nằm trong tập train_files hiện tại
     train_basenames = {os.path.basename(f) for f in train_files}
     df_train = df[df["basename"].isin(train_basenames)].copy()
 
-    # Phân loại (Sử dụng basename để đồng bộ)
-    lvo_list = df_train[df_train["has_lvo"] == 1]["basename"].tolist()
-    neg_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["basename"].tolist()
+    # Phân loại
+    lvo_list   = df_train[df_train["has_lvo"] == 1]["basename"].tolist()
     other_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["basename"].tolist()
 
-    # Sử dụng seed cố định để đảm bảo tính nhất quán khi chạy đa GPU (DDP)
+    # [FIX 1] Tách neg_list thành 2 nhóm theo has_cow
+    # Nhóm vàng: CoW(+), Lesion(-) → Đây là counter-examples dạy AI "mạch máu lành ≠ tổn thương"
+    # Được giữ 100% không cắt xén, bất kể downsample_neg_ratio là bao nhiêu.
+    if "has_cow" in df_train.columns:
+        neg_with_cow = df_train[
+            (df_train["has_lvo"] == 0) &
+            (df_train["has_lesion"] == 0) &
+            (df_train["has_cow"] == 1)
+        ]["basename"].tolist()
+        neg_plain = df_train[
+            (df_train["has_lvo"] == 0) &
+            (df_train["has_lesion"] == 0) &
+            (df_train["has_cow"] == 0)
+        ]["basename"].tolist()
+    else:
+        # Fallback nếu metadata không có cột has_cow
+        neg_with_cow = []
+        neg_plain = df_train[
+            (df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)
+        ]["basename"].tolist()
+
     sampling_seed = config["split"].get("seed", 42)
     rng = random.Random(sampling_seed)
 
-    # Thực hiện lấy mẫu
     sampled_basenames = []
-    
+
     # 1. Nhân bản LVO
     for _ in range(lvo_oversample_factor):
         sampled_basenames.extend(lvo_list)
-    
+
     # 2. Giữ nguyên các ca có Lesion nhưng không LVO
     sampled_basenames.extend(other_list)
 
-    # 3. Downsample các ca toàn màu đen
-    n_neg = int(len(neg_list) * downsample_neg_ratio)
-    if len(neg_list) > 0:
-        # Sử dụng rng của instance để cố định kết quả
-        sampled_basenames.extend(rng.sample(neg_list, n_neg))
+    # 3. [FIX 1] Giữ 100% slice CoW(+) Lesion(-) — counter-examples
+    if cow_neg_keepall and neg_with_cow:
+        sampled_basenames.extend(neg_with_cow)
+        print(f"[Sampling] CoW+ Lesion- (counter-examples): {len(neg_with_cow)} (GIỮ 100%)")
 
-    # Chuyển basename ngược lại thành full path của môi trường hiện tại
+    # 4. Downsample slice não trống hoàn toàn (không CoW, không Lesion, không LVO)
+    n_plain = int(len(neg_plain) * plain_neg_ratio)
+    if len(neg_plain) > 0:
+        sampled_basenames.extend(rng.sample(neg_plain, min(n_plain, len(neg_plain))))
+
     path_map = {os.path.basename(f): f for f in train_files}
-    final_list = [path_map[b] for b in sampled_basenames]
-    
-    # Shuffle với seed cố định
+    final_list = [path_map[b] for b in sampled_basenames if b in path_map]
+
     rng.shuffle(final_list)
-    
+
     print(f"[Sampling] LVO: {len(lvo_list)} -> {len(lvo_list)*lvo_oversample_factor}")
-    print(f"[Sampling] Background Downsampled: {len(neg_list)} -> {n_neg}")
+    print(f"[Sampling] Lesion-only: {len(other_list)}")
+    print(f"[Sampling] Background (plain) Downsampled: {len(neg_plain)} -> {n_plain}")
     print(f"[Sampling] Tổng số file sau khi balance: {len(final_list)}")
 
     return final_list
+
+
+def build_stratified_kfold_splits(
+    file_list: List[str],
+    metadata_csv: str,
+    n_folds: int = 5,
+    seed: int = 42,
+) -> List[Tuple[List[str], List[str]]]:
+    """
+    [FIX 3] Stratified K-Fold theo LVO status bệnh nhân.
+
+    Đảm bảo mỗi fold có tỷ lệ bệnh nhân LVO đồng đều, tránh việc
+    một fold vô tình không có LVO patient nào trong val set.
+
+    Args:
+        file_list:    Tất cả file .npy của tập train+val
+        metadata_csv: Đường dẫn tới metadata CSV
+        n_folds:      Số fold (mặc định 5)
+        seed:         Random seed
+
+    Returns:
+        List n_folds cặp (train_files, val_files), không overlap bệnh nhân
+    """
+    import pandas as pd
+
+    df = pd.read_csv(metadata_csv)
+    df["basename"] = df["path"].apply(os.path.basename)
+
+    # Nhóm file theo bệnh nhân
+    patient_to_files: dict = {}
+    for f in file_list:
+        pid = _extract_patient_id(f)
+        patient_to_files.setdefault(pid, []).append(f)
+
+    # Xác định LVO status của từng bệnh nhân
+    # (bệnh nhân có LVO nếu BấT KỂ slice nào có has_lvo == 1)
+    patient_lvo_status = {}
+    for pid in patient_to_files:
+        basenames = {os.path.basename(f) for f in patient_to_files[pid]}
+        patient_df = df[df["basename"].isin(basenames)]
+        has_lvo = (patient_df["has_lvo"] == 1).any() if "has_lvo" in patient_df.columns else False
+        patient_lvo_status[pid] = 1 if has_lvo else 0
+
+    # Tách 2 nhóm bệnh nhân
+    rng = random.Random(seed)
+    lvo_patients     = sorted([p for p, v in patient_lvo_status.items() if v == 1])
+    non_lvo_patients = sorted([p for p, v in patient_lvo_status.items() if v == 0])
+    rng.shuffle(lvo_patients)
+    rng.shuffle(non_lvo_patients)
+
+    # Tạo K-Fold đồng đều cho từng nhóm
+    def chunk(lst, k):
+        """Chia lst thành k phần gần bằng nhau."""
+        n = len(lst)
+        return [lst[i * n // k:(i + 1) * n // k] for i in range(k)]
+
+    lvo_folds     = chunk(lvo_patients, n_folds)
+    non_lvo_folds = chunk(non_lvo_patients, n_folds)
+
+    splits = []
+    for fold_idx in range(n_folds):
+        val_patients  = set(lvo_folds[fold_idx] + non_lvo_folds[fold_idx])
+        train_patients = set(patient_to_files.keys()) - val_patients
+
+        train_files = [f for pid in train_patients for f in patient_to_files[pid]]
+        val_files   = [f for pid in val_patients   for f in patient_to_files[pid]]
+
+        n_lvo_val = sum(patient_lvo_status[p] for p in val_patients)
+        print(f"[KFold] Fold {fold_idx}: Train={len(train_patients)} patients, "
+              f"Val={len(val_patients)} patients ({n_lvo_val} LVO)")
+
+        splits.append((train_files, val_files))
+
+    return splits

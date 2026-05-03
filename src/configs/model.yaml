@@ -39,7 +39,7 @@ decoder:
 
 # ── Heads (Residual Task Blocks) ────────────────────────────────
 heads:
-  dropout: 0.15
+  dropout: 0.25
   activation: "GELU"
   lesion:
     out_channels: 1

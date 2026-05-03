@@ -12,6 +12,7 @@ import torch
 import argparse
 import yaml
 import random
+import numpy as np
 import matplotlib.pyplot as plt
 
 # Tự động thêm thư mục 'src' vào hệ thống để import module
