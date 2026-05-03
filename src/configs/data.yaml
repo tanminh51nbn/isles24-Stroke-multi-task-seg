@@ -15,7 +15,7 @@ split:
 
 # ── DataLoader ───────────────────────────────────────────────────
 dataloader:
-  batch_size: 16 # Giảm xuống 16 để tránh OOM khi Unfreeze Encoder ở Epoch 11
+  batch_size: 32
   num_workers: 4
   pin_memory: true
   persistent_workers: true
