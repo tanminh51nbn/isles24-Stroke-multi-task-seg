@@ -117,7 +117,9 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
     # ── Model ─────────────────────────────────────────────────────
     model = build_model(config)
     model = model.to(device)
-    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+    # Tắt find_unused_parameters vì 100% params đều được sử dụng trong forward pass.
+    # Bật nó sẽ làm DDP reducer crash khi PCGrad backward từng task riêng lẻ.
+    model = DDP(model, device_ids=[rank], find_unused_parameters=False)
 
     # ── Loss / Optimizer / Scheduler ──────────────────────────────
     loss_fn   = MultiTaskLoss(config).to(device)
