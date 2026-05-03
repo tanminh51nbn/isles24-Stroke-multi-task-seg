@@ -163,7 +163,8 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         checkpoint=checkpoint,
     )
 
-    # ── Post-training (chỉ rank 0) ────────────────────────────────
+    # ── Post-training (chỉ rank 0 xử lý, nhưng TẤT CẢ rank phải chờ) ──────────
+    best = None
     if rank == 0:
         curve_path = os.path.join(fold_output_dir, "training_curves.png")
         plot_training_curves(history, save_path=curve_path)
@@ -185,12 +186,14 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         print(f"  Composite:   {best['composite']:.4f}")
         print(f"{'='*60}")
 
-        # Trả về best composite để PINELINE tổng hợp
-        return best
-
+    # [FIX] Cả 2 rank phải đồng bộ và destroy TRƯỚC KHI return
+    # Nếu rank 0 return sớm, rank 1 mất kết nối TCPStore → loạt cảnh báo
     if dist.is_initialized():
-        dist.barrier(device_ids=[rank])
-        dist.destroy_process_group()
+        dist.barrier()             # Chờ tất cả rank xử lý xong
+        dist.destroy_process_group()  # Tất cả rank cùng dọn dẹp
+
+    return best  # rank 0: trả về best dict | rank 1: trả về None
+
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
