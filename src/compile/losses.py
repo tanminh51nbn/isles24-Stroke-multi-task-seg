@@ -18,6 +18,7 @@ Tất cả input là RAW LOGITS (chưa sigmoid).
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 
 # ─── Tversky Loss ─────────────────────────────────────────────────────────────
@@ -264,10 +265,11 @@ class MultiTaskLoss(nn.Module):
         l_cow      = (1.0 - self.w_cow_boundary) * l_cow_main + self.w_cow_boundary * l_cow_bd
 
         # Áp dụng Uncertainty Weighting (Kendall et al.)
-        # Kẹp s trong khoảng [-10, 10] để tránh văng NaN khi exp
-        s_lesion = torch.clamp(self.log_vars["lesion"], -10.0, 10.0)
-        s_lvo    = torch.clamp(self.log_vars["lvo"], -10.0, 10.0)
-        s_cow    = torch.clamp(self.log_vars["cow"], -10.0, 10.0)
+        # Giới hạn Sigma tối thiểu ở mức 0.6 (log(0.6**2) ≈ -1.021) để tránh hố đen tham số
+        s_min = math.log(0.36)
+        s_lesion = torch.clamp(self.log_vars["lesion"], min=s_min, max=10.0)
+        s_lvo    = torch.clamp(self.log_vars["lvo"], min=s_min, max=10.0)
+        s_cow    = torch.clamp(self.log_vars["cow"], min=s_min, max=10.0)
 
         # L_total = sum( exp(-s) * L + s )
         main_lesion_weighted = torch.exp(-s_lesion) * l_lesion + s_lesion
