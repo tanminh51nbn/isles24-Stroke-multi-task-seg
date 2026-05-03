@@ -122,10 +122,6 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict) -> di
 
     d_lesion = dice_score(preds["lesion"],  targets[:, 0:1],   threshold=thresholds["lesion"]).item()
     r_lvo    = recall_score(preds["lvo"],   target_lvo_bin,    threshold=thresholds["lvo"]).item()
-    
-    # Nếu không có LVO trong batch, giả định recall là 0.5 (trung lập) 
-    if r_lvo < 0: r_lvo = 0.5 
-    
     d_cow    = dice_score(preds["cow"],     targets[:, 2:3],   threshold=thresholds["cow"]).item()
     comp     = composite_score(d_lesion, r_lvo, d_cow, weights)
 
