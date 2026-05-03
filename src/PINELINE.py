@@ -215,6 +215,8 @@ def main():
         default="/kaggle/working/dataset_metadata.csv")
     parser.add_argument("--resume_from", type=str, default=None, 
         help="Đường dẫn file .pt để tiếp tục huấn luyện")
+    parser.add_argument("--fold", type=int, default=None, 
+        help="Chỉ chạy duy nhất 1 fold (0-4). Nếu để None sẽ chạy toàn bộ.")
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()
@@ -233,8 +235,14 @@ def main():
 
     fold_results = []
 
-    for fold_idx in range(n_folds):
-        print(f"\n[PINELINE] ===== Bắt đầu Fold {fold_idx + 1}/{n_folds} =====")
+    # Xác định danh sách fold cần chạy
+    if args.fold is not None:
+        folds_to_run = [args.fold]
+    else:
+        folds_to_run = list(range(n_folds))
+
+    for fold_idx in folds_to_run:
+        print(f"\n[PINELINE] ===== Bắt đầu Fold {fold_idx + 1} =====")
 
         # [FIX] Dùng port khác nhau cho mỗi fold để tránh "Address already in use"
         os.environ["MASTER_ADDR"] = "localhost"
