@@ -43,6 +43,7 @@ class Trainer:
         config: dict,
         device: torch.device,
         rank: int = 0,
+        pcgrad=None,          # [PCGrad] PCGrad instance hoặc None
     ):
         """
         Args:
@@ -65,7 +66,8 @@ class Trainer:
         self.config       = config
         self.device       = device
         self.rank         = rank
-        self.output_dir   = config.get("output_dir", "outputs") # Thêm dòng này
+        self.output_dir   = config.get("output_dir", "outputs")
+        self.pcgrad       = pcgrad  # [PCGrad] None nếu disabled
 
         train_cfg = config["training"]
         self.epochs            = int(train_cfg["epochs"])
@@ -122,6 +124,13 @@ class Trainer:
 
             # Backward với GradScaler
             self.scaler.scale(losses["total"]).backward()
+
+            # [PCGrad] Override backbone gradient sau backward — chỉ khi enabled
+            if self.pcgrad is not None and "task_losses" in losses:
+                self.pcgrad.apply(
+                    task_losses=losses["task_losses"],
+                    scaler=self.scaler,
+                )
 
             # Gradient clipping
             self.scaler.unscale_(self.optimizer)
@@ -289,6 +298,9 @@ class Trainer:
             # Unfreeze khi đến epoch chỉ định
             if epoch == self.freeze_enc_epochs:
                 raw_model.unfreeze_encoders()
+                # [PCGrad] Refresh danh sách params sau unfreeze (encoder params được active)
+                if self.pcgrad is not None:
+                    self.pcgrad.refresh_params()
 
             # Set epoch cho DistributedSampler
             if hasattr(self.train_loader.sampler, "set_epoch"):

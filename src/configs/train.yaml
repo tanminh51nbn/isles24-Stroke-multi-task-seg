@@ -3,6 +3,12 @@
 #  Loss, Optimizer, Scheduler, Training params
 # ═══════════════════════════════════════════════════════════════
 
+# ── PCGrad ───────────────────────────────────────────────
+# Gradient Surgery — Yu et al., NeurIPS 2020
+# Tất cả 3 task đều học, gradient chỉ được "xọng nhẹ" khi xung đột.
+pcgrad:
+  enabled: true         # false = tắt PCGrad, chạy backward bình thường
+
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
@@ -13,10 +19,10 @@ loss:
     boundary_weight: 0.3
 
   lvo:
-    type: "modified_focal"  # Heatmap Regression — CenterNet-style
-    mfl_alpha: 2.0          # Phạt mạnh khi bỏ sót tâm LVO
-    mfl_beta: 4.0           # Giảm phạt cho vùng quầng sáng xung quanh
-    weight: 0.4             # Cân bằng với Lesion (0.4) và CoW (0.2)
+    type: "modified_focal" # Heatmap Regression — CenterNet-style
+    mfl_alpha: 2.0 # Phạt mạnh khi bỏ sót tâm LVO
+    mfl_beta: 4.0 # Giảm phạt cho vùng quầng sáng xung quanh
+    weight: 0.4 # Cân bằng với Lesion (0.4) và CoW (0.2)
 
   cow:
     type: "tversky"

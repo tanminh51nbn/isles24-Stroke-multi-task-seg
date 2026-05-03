@@ -27,19 +27,27 @@ class Compose:
         return sample
 
 
-class RandomVerticalFlip:
+class RandomHorizontalFlip:
     """
-    [ĐÃ SỬA] Lật dọc ngẫu nhiên (Vertical Flip - Trục Y).
-    Do dữ liệu ảnh có trục Anterior-Posterior (Trán-Gáy) nằm ngang dọc theo trục X (Width),
-    nên ta phải lật theo trục Y (Height, dims=[-2]) để hoán đổi hai bán cầu não Trái-Phải.
+    Lật trái-phải (Mirror Flip) ngẫu nhiên.
+    
+    Hợp lệ về mặt giải phẫu học vì:
+    - Não người có tính đối xứng tương đối giữa 2 bán cầu
+    - Đột quỵ xảy ra ngẫu nhiên cả hai bên trái và phải
+    
+    KHÔNG dùng lật trên-dưới (Anterior-Posterior) vì:
+    - Hướng đầu trong nhữ́ng lát cắt axial là cố định
+    - Lật dọc sẽ tạo ra ảnh không tồn tại trong thực tế
+    
+    flip(dims=[-1]) = lật theo chiều Width = lật trái-phải ✔
     """
     def __init__(self, prob: float = 0.5):
         self.prob = prob
 
     def __call__(self, sample: dict) -> dict:
         if random.random() < self.prob:
-            sample["input"] = torch.flip(sample["input"], dims=[-2])
-            sample["label"] = torch.flip(sample["label"], dims=[-2])
+            sample["input"] = torch.flip(sample["input"], dims=[-1])
+            sample["label"] = torch.flip(sample["label"], dims=[-1])
         return sample
 
 
@@ -181,8 +189,8 @@ def build_train_transforms(config: dict) -> Callable:
 
     if aug.get("enabled", True):
         # 1. Spatial Transforms (Sync Input + Label)
-        if aug.get("vertical_flip", {}).get("prob", 0) > 0:
-            transforms.append(RandomVerticalFlip(prob=aug["vertical_flip"]["prob"]))
+        if aug.get("horizontal_flip", {}).get("prob", 0) > 0:
+            transforms.append(RandomHorizontalFlip(prob=aug["horizontal_flip"]["prob"]))
             
         transforms.append(RandomAffine(
             prob=aug["affine"]["prob"],

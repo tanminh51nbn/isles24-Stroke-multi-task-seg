@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from models  import build_model
 from data    import build_dataloaders
-from compile import MultiTaskLoss, build_optimizer, build_scheduler
+from compile import MultiTaskLoss, build_optimizer, build_scheduler, PCGrad
 from training import Trainer, EarlyStopping, ModelCheckpoint
 from evaluation import plot_training_curves
 
@@ -135,6 +135,14 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         config=config,
     ) if rank == 0 else None
 
+    # ── PCGrad (Gradient Surgery) ─────────────────────────────────
+    pcgrad_cfg = config.get("pcgrad", {"enabled": False})
+    pcgrad = None
+    if pcgrad_cfg.get("enabled", False):
+        # Chỉ lấy backbone params (encoder + decoder), KHÔNG lấy head params
+        raw_model = model.module if hasattr(model, "module") else model
+        pcgrad = PCGrad(backbone_params=raw_model.get_backbone_params())
+    
     # ── Training ──────────────────────────────────────────────────
     config["output_dir"] = fold_output_dir
     trainer = Trainer(
@@ -147,6 +155,7 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         config=config,
         device=device,
         rank=rank,
+        pcgrad=pcgrad,
     )
 
     history = trainer.fit(
