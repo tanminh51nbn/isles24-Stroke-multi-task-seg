@@ -75,7 +75,7 @@ training:
 
   # Logging
   logging:
-    log_interval: 43
+    log_interval: 41
     visualize_every: 5
     wandb:
       enabled: false

@@ -216,6 +216,10 @@ def main():
     for fold_idx in range(n_folds):
         print(f"\n[PINELINE] ===== Bắt đầu Fold {fold_idx + 1}/{n_folds} =====")
 
+        # [FIX] Dùng port khác nhau cho mỗi fold để tránh "Address already in use"
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = str(12355 + fold_idx)
+
         if world_size > 1:
             mp.spawn(
                 train_worker,
@@ -227,6 +231,7 @@ def main():
             result = train_worker(rank=0, world_size=1, args=args, fold_idx=fold_idx)
             if result:
                 fold_results.append({"fold": fold_idx, **result})
+
 
     # In bảng tổng hợp kết quả tất cả fold
     if fold_results:
