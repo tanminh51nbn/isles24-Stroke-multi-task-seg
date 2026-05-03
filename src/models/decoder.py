@@ -140,6 +140,7 @@ class DecoderBlock(nn.Module):
         # BOTTLENECK: Dùng 1x1 nén trước khi dùng 3x3
         self.conv1 = ConvBnGelu1x1(in_ch + skip_ch + aux_ch, out_ch)
         self.conv2 = ConvBnGelu(out_ch, out_ch)
+        self.dropout = nn.Dropout2d(p=0.2)
         
         if attention_type == "ag":
             self.ag = AttentionGate(F_g=in_ch, F_l=skip_ch, F_int=skip_ch // 2)
@@ -169,6 +170,7 @@ class DecoderBlock(nn.Module):
         out = torch.cat([x_up, skip, prev_mask], dim=1)
         out = self.conv1(out)
         out = self.conv2(out)
+        out = self.dropout(out)
         
         aux_out = self.aux_head(out) if self.use_aux else None
         return out, aux_out

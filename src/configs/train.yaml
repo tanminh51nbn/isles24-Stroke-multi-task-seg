@@ -9,31 +9,31 @@ loss:
     type: "tversky"
     alpha: 0.3
     beta: 0.7
-    weight: 0.4
+    weight: 0.35
     boundary_weight: 0.3
 
   lvo:
-    type: "modified_focal" # Heatmap Regression — CenterNet-style
-    mfl_alpha: 2.0 # Phạt mạnh khi bỏ sót tâm LVO
-    mfl_beta: 4.0 # Giảm phạt cho vùng quầng sáng xung quanh
-    weight: 0.4 # Cân bằng với Lesion (0.4) và CoW (0.2)
+    type: "modified_focal"
+    mfl_alpha: 2.0
+    mfl_beta: 4.0
+    weight: 0.5
 
   cow:
     type: "tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.2
-    boundary_weight: 0.25
+    weight: 0.15
+    boundary_weight: 0.4
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
 # Dùng Recall cho LVO (chỉ cần detect được, không cần viền chính xác)
 composite_score:
-  dice_lesion_weight: 0.4
-  recall_lvo_weight: 0.4
-  dice_cow_weight: 0.2
+  dice_lesion_weight: 0.35
+  recall_lvo_weight: 0.5
+  dice_cow_weight: 0.15
   thresholds:
-    lesion: 0.5
+    lesion: 0.4
     lvo: 0.15
     cow: 0.5
 
@@ -41,8 +41,8 @@ composite_score:
 optimizer:
   type: "adamw"
   lr: 3.0e-4
-  weight_decay: 1.0e-3
-  encoder_lr_scale: 0.05
+  weight_decay: 1.0e-2
+  encoder_lr_scale: 0.01
   eps: 1.0e-7
 
 # ── LR Scheduler ────────────────────────────────────────────────
