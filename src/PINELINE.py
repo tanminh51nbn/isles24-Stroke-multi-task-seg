@@ -121,7 +121,7 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         model, 
         device_ids=[rank], 
         output_device=rank,
-        find_unused_parameters=False  # Tắt để tiết kiệm bộ nhớ và tăng tốc
+        find_unused_parameters=True
     )
 
     # ── Loss / Optimizer / Scheduler ──────────────────────────────
