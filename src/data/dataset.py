@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from typing import List, Optional, Callable
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, distance_transform_edt
 
 
 # ─── Gaussian Heatmap Generator ───────────────────────────────────────────────
@@ -51,6 +51,23 @@ def make_lvo_heatmap(binary_mask: np.ndarray, sigma: float = 4.0) -> np.ndarray:
 
     return heatmap.astype(np.float32)
 
+def compute_sdf(mask: np.ndarray) -> np.ndarray:
+    """
+    Tính toán Signed Distance Function (SDF) từ mask nhị phân.
+    - Ngoài vật thể: Giá trị dương (khoảng cách tới biên gần nhất).
+    - Trong vật thể: Giá trị âm (khoảng cách tới biên gần nhất).
+    """
+    if mask.sum() == 0:
+        # Nếu không có lesion, SDF là một hằng số lớn (mô phỏng vô tận)
+        return np.ones_like(mask, dtype=np.float32) * 255.0
+        
+    dist_out = distance_transform_edt(1 - mask)
+    dist_in  = distance_transform_edt(mask)
+    
+    # SDF = Khoảng cách ngoài - Khoảng cách trong
+    sdf = dist_out - dist_in
+    return sdf.astype(np.float32)
+
 
 class ISLES24Dataset(Dataset):
     """
@@ -79,14 +96,16 @@ class ISLES24Dataset(Dataset):
         raw_label = data["label"].astype(np.float32)
 
         # ── LVO Heatmap Conversion ───────────────────────────────────────────
-        # Thay thế mask LVO nhị phân (label[1]) bằng Gaussian Heatmap.
-        # Điều này biến bài toán LVO từ "vẽ vùng" thành "tìm điểm nóng",
-        # giải quyết triệt để class imbalance khi LVO chỉ chiếm ~0.01% pixel.
         lvo_heatmap = make_lvo_heatmap(raw_label[1], sigma=4.0)
         raw_label[1] = lvo_heatmap
-        # ────────────────────────────────────────────────────────────────────
 
-        lbl = torch.from_numpy(raw_label)
+        # ── Lesion SDF Calculation (Hausdorff Guidance) ─────────────────────
+        lesion_sdf = compute_sdf(raw_label[0])
+        
+        # Gộp thành label 4 kênh: [Lesion_Mask, LVO_Heatmap, CoW_Mask, Lesion_SDF]
+        full_label = np.concatenate([raw_label, lesion_sdf[None, ...]], axis=0)
+        lbl = torch.from_numpy(full_label)
+        # ────────────────────────────────────────────────────────────────────
 
         # ── Sanitize NaN/inf ────────────────────────────────────────────────
         # Một số kênh Perfusion (Tmax, CBF, CBV, MTT) có thể chứa NaN/inf

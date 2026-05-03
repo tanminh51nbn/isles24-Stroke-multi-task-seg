@@ -10,7 +10,7 @@ loss:
     alpha: 0.3
     beta: 0.7
     weight: 0.35
-    boundary_weight: 0.3
+    hd_weight: 0.4
 
   lvo:
     type: "modified_focal"
@@ -19,11 +19,12 @@ loss:
     weight: 0.35
 
   cow:
-    type: "tversky"
+    type: "cl_tversky"
     alpha: 0.5
     beta: 0.5
     weight: 0.3
-    boundary_weight: 0.4
+    cl_weight: 0.55
+    iters: 4
 
 # ── Uncertainty Weighting Settings ──────────────────────────────
 uncertainty:

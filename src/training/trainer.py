@@ -137,9 +137,10 @@ class Trainer:
             if self.rank == 0 and (batch_idx + 1) % self.log_interval == 0:
                 print(
                     f"   Epoch {epoch+1} | Batch {batch_idx+1}/{len(self.train_loader)} "
-                    f"| Loss: {losses['total']:.4f} "
-                    f"(M:{losses['main']:.3f}, LVO:{losses['lvo']:.3f}, B:{losses['boundary']:.3f}) "
-                    f"| Sigmas(L:{losses.get('sigma_lesion', 1.0):.2f}, V:{losses.get('sigma_lvo', 1.0):.2f}, C:{losses.get('sigma_cow', 1.0):.2f})",
+                    f"\n| Loss: {losses['total']:.4f} "
+                    f"\n| Tasks(Lesion:{losses['lesion']:.3f}, LVO:{losses['lvo']:.3f}, CoW:{losses['cow']:.3f}) "
+                    f"\n| Detail(Lesion(tv/hd):{losses['l_L_tv']:.3f}/{losses['l_L_hd']:.3f}, CoW(tv/cl):{losses['l_C_tv']:.3f}/{losses['l_C_cl']:.3f}) "
+                    f"\n| Sigmas(Lesion:{losses['sigma_lesion']:.2f}, LVO:{losses['sigma_lvo']:.2f}, CoW:{losses['sigma_cow']:.2f})",
                     flush=True
                 )
 
@@ -167,6 +168,10 @@ class Trainer:
         sum_dice_lesion = 0.0
         sum_recall_lvo  = 0.0
         sum_dice_cow    = 0.0
+        
+        sum_l_L_tv, sum_l_L_hd = 0.0, 0.0
+        sum_l_C_tv, sum_l_C_cl = 0.0, 0.0
+        
         n_batches     = 0
         n_lvo_batches = 0
         
@@ -200,6 +205,11 @@ class Trainer:
                 continue
 
             total_loss += losses["total"].item()
+            sum_l_L_tv += losses.get("l_L_tv", 0.0)
+            sum_l_L_hd += losses.get("l_L_hd", 0.0)
+            sum_l_C_tv += losses.get("l_C_tv", 0.0)
+            sum_l_C_cl += losses.get("l_C_cl", 0.0)
+            
             metrics = compute_all_metrics(preds, lbl, self.metric_weights)
 
             sum_dice_lesion += metrics["dice_lesion"]
@@ -235,23 +245,33 @@ class Trainer:
         avg_dice_cow    = sum_dice_cow    / max(n_batches, 1)
 
         # ─── ĐỒNG BỘ HÓA DDP (ALL-REDUCE) ───
-        # Để đảm bảo tính minh bạch và chính xác trên toàn bộ tập Validation
         if dist.is_initialized():
-            # Gom tất cả chỉ số vào 1 tensor để gửi đi 1 lần cho nhanh
             sync_data = torch.tensor([
                 total_loss, sum_dice_lesion, sum_recall_lvo, sum_dice_cow,
+                sum_l_L_tv, sum_l_L_hd, sum_l_C_tv, sum_l_C_cl,
                 float(n_batches), float(n_lvo_batches)
             ], device=self.device)
-            
-            # Cộng dồn từ tất cả các GPU
             dist.all_reduce(sync_data, op=dist.ReduceOp.SUM)
             
-            # Tính toán lại trung bình trên quy mô toàn hệ thống
             v = sync_data.cpu().numpy()
-            avg_loss        = v[0] / max(v[4], 1)
-            avg_dice_lesion = v[1] / max(v[4], 1)
-            avg_recall_lvo  = v[2] / max(v[5], 1)
-            avg_dice_cow    = v[3] / max(v[4], 1)
+            avg_loss        = v[0] / max(v[8], 1)
+            avg_dice_lesion = v[1] / max(v[8], 1)
+            avg_recall_lvo  = v[2] / max(v[9], 1)
+            avg_dice_cow    = v[3] / max(v[8], 1)
+            
+            avg_l_L_tv = v[4] / max(v[8], 1)
+            avg_l_L_hd = v[5] / max(v[8], 1)
+            avg_l_C_tv = v[6] / max(v[8], 1)
+            avg_l_C_cl = v[7] / max(v[8], 1)
+        else:
+            avg_loss        = total_loss / max(n_batches, 1)
+            avg_dice_lesion = sum_dice_lesion / max(n_batches, 1)
+            avg_recall_lvo  = sum_recall_lvo  / max(n_lvo_batches, 1)
+            avg_dice_cow    = sum_dice_cow    / max(n_batches, 1)
+            avg_l_L_tv = sum_l_L_tv / max(n_batches, 1)
+            avg_l_L_hd = sum_l_L_hd / max(n_batches, 1)
+            avg_l_C_tv = sum_l_C_tv / max(n_batches, 1)
+            avg_l_C_cl = sum_l_C_cl / max(n_batches, 1)
 
         # 3. Tính Composite Score
         w = self.metric_weights
@@ -275,6 +295,10 @@ class Trainer:
             "recall_lvo":  avg_recall_lvo,
             "dice_cow":    avg_dice_cow,
             "composite":   composite,
+            "l_L_tv":      avg_l_L_tv,
+            "l_L_hd":      avg_l_L_hd,
+            "l_C_tv":      avg_l_C_tv,
+            "l_C_cl":      avg_l_C_cl,
             **sigmas
         }
 
@@ -314,14 +338,13 @@ class Trainer:
             if self.rank == 0:
                 curr_lr = self.optimizer.param_groups[0]['lr']
                 print(
-                    f"--------------------------------------------------"
-                    f"\n=> | [Epoch {epoch+1:03d}/{self.epochs}] | LR: {curr_lr:.2e} "
-                    f"\n   | Dice_L: {val_metrics['dice_lesion']:.4f} | "
-                    f"Recall_LVO: {val_metrics['recall_lvo']:.4f} | "
-                    f"Dice_C: {val_metrics['dice_cow']:.4f}"
-                    f"\n   | Sigmas(L:{val_metrics.get('sigma_lesion', 1.0):.2f}, V:{val_metrics.get('sigma_lvo', 1.0):.2f}, C:{val_metrics.get('sigma_cow', 1.0):.2f})"
-                    f"\n   | Loss(T/V): {train_metrics['train_loss']:.4f}/{val_metrics['val_loss']:.4f} | "
-                    f"Composite: {val_metrics['composite']:.4f}",
+                    f"--------------------------------------------------------------------------------"
+                    f"\n=> | [Epoch {epoch+1:03d}/{self.epochs}] | LR: {curr_lr:.2e} | Composite: {val_metrics['composite']:.4f}"
+                    f"\n   | [VAL METRICS] Dice_L: {val_metrics['dice_lesion']:.4f} | Recall_V: {val_metrics['recall_lvo']:.4f} | Dice_C: {val_metrics['dice_cow']:.4f}"
+                    f"\n   | [VAL LOSSES ] Lesion(tv/hd): {val_metrics['l_L_tv']:.3f}/{val_metrics['l_L_hd']:.3f} | CoW(tv/cl): {val_metrics['l_C_tv']:.3f}/{val_metrics['l_C_cl']:.3f}"
+                    f"\n   | [TRAIN LOSS ] Avg_Total: {train_metrics['train_loss']:.4f}"
+                    f"\n   | [UNCERTAINTY] Sigma_L: {val_metrics['sigma_lesion']:.2f} | Sigma_V: {val_metrics['sigma_lvo']:.2f} | Sigma_C: {val_metrics['sigma_cow']:.2f}"
+                    f"\n--------------------------------------------------------------------------------",
                     flush=True
                 )
 

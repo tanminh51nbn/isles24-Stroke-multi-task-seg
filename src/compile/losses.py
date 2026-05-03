@@ -206,6 +206,89 @@ class BoundaryLoss(nn.Module):
         boundary_dice = (2.0 * intersection + 1e-5) / (union + 1e-5)
         return 1.0 - boundary_dice.mean()
 
+class SDFBoundaryLoss(nn.Module):
+    """
+    Hausdorff-inspired Boundary Loss dựa trên Signed Distance Function (SDF).
+    Paper: "Boundary loss for highly unbalanced segmentation" (Kervadec et al.)
+    
+    Công thức: L = mean( pred * sdf )
+    - Pixel sai ở xa ranh giới (sdf lớn) sẽ bị phạt rất nặng.
+    - Pixel đúng (pred=1, sdf âm) sẽ làm giảm loss.
+    """
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, logits: torch.Tensor, sdf: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            logits: Dự đoán từ mô hình (B, 1, H, W)
+            sdf:    Bản đồ khoảng cách từ ground truth (B, 1, H, W)
+        """
+        probs = torch.sigmoid(logits)
+        
+        # Loss = mean( probs * sdf )
+        # Lưu ý: sdf bên ngoài dương, bên trong âm.
+        # Dự đoán đúng vùng trong (probs=1 * sdf=-5) -> Giảm loss.
+        # Dự đoán sai vùng ngoài (probs=1 * sdf=50) -> Tăng loss cực mạnh.
+        return (probs * sdf).mean()
+
+
+# ─── Soft CL-Dice Loss (Topology-Preserving Loss) ───────────────────────────
+
+def soft_erode(img):
+    """Xói mòn mềm dùng MinPool (phủ định của MaxPool)."""
+    if len(img.shape) != 4:
+        raise ValueError("Input must be 4D tensor (B, C, H, W)")
+    p1 = -F.max_pool2d(-img, (3, 1), (1, 1), (1, 0))
+    p2 = -F.max_pool2d(-p1, (1, 3), (1, 1), (0, 1))
+    return p2
+
+def soft_dilate(img):
+    """Giãn nở mềm dùng MaxPool."""
+    return F.max_pool2d(img, (3, 3), (1, 1), (1, 1))
+
+def soft_open(img):
+    """Phép mở mềm: Erode sau đó Dilate."""
+    return soft_dilate(soft_erode(img))
+
+def soft_skel(img, iters):
+    """Trích xuất khung xương mềm lặp lại."""
+    img1 = img
+    skel = torch.zeros_like(img)
+    for _ in range(iters):
+        eroded = soft_erode(img1)
+        opened = soft_open(eroded)
+        skel = skel + F.relu(eroded - opened)
+        img1 = eroded
+    return skel
+
+class SoftCLDiceLoss(nn.Module):
+    """
+    Soft Centerline Dice Loss (clDice).
+    Đảm bảo tính liên tục của các cấu trúc dạng ống (mạch máu).
+    """
+    def __init__(self, iters: int = 3, smooth: float = 1e-5):
+        super().__init__()
+        self.iters = iters
+        self.smooth = smooth
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits)
+        
+        # Trích xuất khung xương (Skeletonization)
+        t_skel = soft_skel(targets, self.iters)
+        p_skel = soft_skel(probs, self.iters)
+        
+        # Topology Precision & Sensitivity
+        t_prec = ( (p_skel * targets).sum(dim=(1, 2, 3)) + self.smooth ) / \
+                 ( p_skel.sum(dim=(1, 2, 3)) + self.smooth )
+        
+        t_sens = ( (t_skel * probs).sum(dim=(1, 2, 3)) + self.smooth ) / \
+                 ( t_skel.sum(dim=(1, 2, 3)) + self.smooth )
+        
+        cl_dice = (2.0 * t_prec * t_sens) / (t_prec + t_sens + self.smooth)
+        return 1.0 - cl_dice.mean()
+
 
 # ─── Multi-Task Loss ──────────────────────────────────────────────────────────
 
@@ -223,7 +306,11 @@ class MultiTaskLoss(nn.Module):
         lesion_cfg = loss_cfg["lesion"]
         self.lesion_main_loss = TverskyLoss(alpha=lesion_cfg["alpha"], beta=lesion_cfg["beta"])
         self.w_lesion = lesion_cfg["weight"]
-        self.w_lesion_boundary = lesion_cfg.get("boundary_weight", 0.0)
+        
+        # [NEW] Hausdorff/SDF Boundary Loss cho Lesion
+        self.w_lesion_hd = lesion_cfg.get("hd_weight", 0.0)
+        if self.w_lesion_hd > 0:
+            self.hd_loss_fn = SDFBoundaryLoss()
 
         # 2. LVO Task — Dùng Modified Focal Loss cho Heatmap Regression
         lvo_cfg = loss_cfg["lvo"]
@@ -236,9 +323,14 @@ class MultiTaskLoss(nn.Module):
 
         # 3. CoW Task
         cow_cfg = loss_cfg["cow"]
+        self.cow_type = cow_cfg.get("type", "tversky")
         self.cow_main_loss = TverskyLoss(alpha=cow_cfg["alpha"], beta=cow_cfg["beta"])
+        
+        if self.cow_type == "cl_tversky":
+            self.cl_loss = SoftCLDiceLoss(iters=cow_cfg.get("iters", 3))
+            self.cl_weight = cow_cfg.get("cl_weight", 0.5)
+            
         self.w_cow = cow_cfg["weight"]
-        self.w_cow_boundary = cow_cfg.get("boundary_weight", 0.0)
 
         # Tham số Uncertainty Weighting (Learnable)
         self.log_vars = nn.ParameterDict({
@@ -253,21 +345,29 @@ class MultiTaskLoss(nn.Module):
         self.s_min_lvo    = math.log(u_cfg.get("s_min_lvo", 0.6)**2)
         self.s_min_cow    = math.log(u_cfg.get("s_min_cow", 0.6)**2)
 
-        # Công cụ Boundary Loss dùng chung
-        self.boundary_loss = BoundaryLoss(kernel_size=3)
-
     def forward(self, preds: dict, targets: torch.Tensor) -> dict:
-        # 1. Tính toán Main Loss (256x256) như cũ
+        # 1. Tính toán Main Loss (256x256)
+        # Lesion: Kết hợp Tversky (Diện tích) và HD/SDF (Ranh giới)
         l_lesion_main = self.lesion_main_loss(preds["lesion"], targets[:, 0:1])
-        l_lesion_bd   = self.boundary_loss(preds["lesion"], targets[:, 0:1])
-        l_lesion      = (1.0 - self.w_lesion_boundary) * l_lesion_main + self.w_lesion_boundary * l_lesion_bd
+        
+        if hasattr(self, "hd_loss_fn") and targets.shape[1] > 3:
+            # SDF nằm ở kênh thứ 4 của targets (index 3)
+            l_hd = self.hd_loss_fn(preds["lesion"], targets[:, 3:4])
+            l_lesion = (1.0 - self.w_lesion_hd) * l_lesion_main + self.w_lesion_hd * l_hd
+        else:
+            l_lesion = l_lesion_main
 
         # LVO dùng ModifiedFocalLoss với Heatmap GT — không dùng Boundary Loss
         l_lvo = self.lvo_main_loss(preds["lvo"], targets[:, 1:2])
 
-        l_cow_main = self.cow_main_loss(preds["cow"], targets[:, 2:3])
-        l_cow_bd   = self.boundary_loss(preds["cow"], targets[:, 2:3])
-        l_cow      = (1.0 - self.w_cow_boundary) * l_cow_main + self.w_cow_boundary * l_cow_bd
+        # 3. CoW: Kết hợp Tversky (Diện tích) và Soft-CLDice (Thông suốt)
+        l_cow_geom = self.cow_main_loss(preds["cow"], targets[:, 2:3])
+        
+        if hasattr(self, "cl_loss"):
+            l_cl = self.cl_loss(preds["cow"], targets[:, 2:3])
+            l_cow = (1.0 - self.cl_weight) * l_cow_geom + self.cl_weight * l_cl
+        else:
+            l_cow = l_cow_geom
 
         # Áp dụng Uncertainty Weighting (Kendall et al.) với ngưỡng chặn riêng biệt
         s_lesion = torch.clamp(self.log_vars["lesion"], min=self.s_min_lesion, max=10.0)
@@ -325,13 +425,15 @@ class MultiTaskLoss(nn.Module):
         total = main_loss + aux_loss
         total = torch.nan_to_num(total, nan=1.0, posinf=1.0, neginf=1.0)
 
-        # Boundary log chỉ tính cho Lesion và CoW
-        avg_boundary = (l_lesion_bd + l_cow_bd) / 2.0
-
         # Tính Sigma (Uncertainty) để log ra màn hình: sigma = exp(s/2)
         sigma_lesion = torch.exp(s_lesion / 2.0).item()
         sigma_lvo    = torch.exp(s_lvo / 2.0).item()
         sigma_cow    = torch.exp(s_cow / 2.0).item()
+
+        # Trích xuất các thành phần chi tiết để log (dùng .item() để tránh giữ graph)
+        # Nếu không có HD/CL thì mặc định là 0
+        l_hd_val = l_hd.item() if 'l_hd' in locals() else 0.0
+        l_cl_val = l_cl.item() if 'l_cl' in locals() else 0.0
 
         return {
             "total":  total,
@@ -340,7 +442,13 @@ class MultiTaskLoss(nn.Module):
             "lesion": l_lesion,
             "lvo":    l_lvo,
             "cow":    l_cow,
-            "boundary": avg_boundary,
+            
+            # Chi tiết để theo dõi (Log-only)
+            "l_L_tv": l_lesion_main.item(),
+            "l_L_hd": l_hd_val,
+            "l_C_tv": l_cow_geom.item(),
+            "l_C_cl": l_cl_val,
+            
             "sigma_lesion": sigma_lesion,
             "sigma_lvo": sigma_lvo,
             "sigma_cow": sigma_cow
