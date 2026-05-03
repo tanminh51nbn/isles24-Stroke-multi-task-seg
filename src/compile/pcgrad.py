@@ -89,62 +89,55 @@ class PCGrad:
 
         return sum(projected)
 
-    def apply(
-        self,
-        task_losses: List[torch.Tensor],
-        scaler: "torch.amp.GradScaler",
-    ):
+    def prepare(self, task_losses: List[torch.Tensor], scaler: "torch.amp.GradScaler", model: torch.nn.Module):
         """
-        Tính gradient PCGrad và override gradient backbone.
-
-        Gọi SAU khi scaler.scale(total_loss).backward() đã chạy xong,
-        và TRƯỚC khi scaler.unscale_().
-
-        Quy trình:
-            1. Lấy scale_factor từ scaler (gradient hiện tại còn scaled)
-            2. Với mỗi task loss, tính gradient backbone (không qua scaler — tự scale thủ công)
-            3. Project conflicting gradients
-            4. Zero backbone.grad → gán PCGrad gradient thay thế
-               (head params giữ nguyên gradient từ backward trước đó)
-
-        Args:
-            task_losses: losses["task_losses"] — List[Tensor], 3 loss chưa weighted sum
-            scaler:      GradScaler — để lấy scale_factor hiện tại
+        Bước 1: Tính PCGrad gradient trước khi backward total_loss.
+        Lưu kết quả vào self._stored_grads.
         """
         scale = scaler.get_scale()
         task_flat_grads = []
 
-        # ── Bước 1: Thu thập gradient backbone của từng task riêng lẻ ──────────
-        for task_idx, task_loss in enumerate(task_losses):
-            # Backward task này với retain_graph=True (không xóa graph giữa chừng)
-            # Scale thủ công để nhất quán với gradient từ backward(total_loss) đã scaled
+        for task_loss in task_losses:
             (task_loss * scale).backward(retain_graph=True)
 
-            # Thu thập gradient backbone (vẫn đang ở dạng scaled)
             flat_parts = []
             for p in self.backbone_params:
                 if p.grad is not None:
                     flat_parts.append(p.grad.detach().float().flatten())
                 else:
-                    flat_parts.append(
-                        torch.zeros(p.numel(), dtype=torch.float32, device=p.device)
-                    )
+                    flat_parts.append(torch.zeros(p.numel(), dtype=torch.float32, device=p.device))
             task_flat_grads.append(torch.cat(flat_parts))
 
-            # Reset backbone.grad sau mỗi task để task kế tiếp bắt đầu sạch
-            for p in self.backbone_params:
+            # Zero toàn bộ gradient của model để không ảnh hưởng đến backward tiếp theo
+            for p in model.parameters():
                 if p.grad is not None:
                     p.grad.zero_()
 
-        # ── Bước 2: Project và tổng hợp ────────────────────────────────────────
-        combined_flat = self._project_conflicting(task_flat_grads)
+        self._stored_grads = self._project_conflicting(task_flat_grads)
 
-        # ── Bước 3: Override backbone.grad bằng PCGrad gradient ─────────────────
-        # Lưu ý: head params vẫn giữ gradient từ backward(total_loss) ở bước trước
-        # vì ta chỉ gán lại backbone params ở đây.
+    def set_grads(self):
+        """
+        Bước 2: Ghi đè gradient của backbone bằng gradient đã tính từ PCGrad.
+        Gọi SAU khi đã backward total_loss.
+        """
         offset = 0
         for p in self.backbone_params:
             numel = p.numel()
-            pcgrad_slice = combined_flat[offset: offset + numel]
+            pcgrad_slice = self._stored_grads[offset: offset + numel]
             p.grad = pcgrad_slice.reshape(p.shape).to(dtype=p.dtype)
             offset += numel
+
+    def sync_grads(self):
+        """
+        Bước 3: Đồng bộ hóa gradient PCGrad trên tất cả các GPU.
+        Vì PCGrad tính gradient trong block no_sync() của DDP nên ta cần manual all-reduce.
+        """
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            if world_size > 1:
+                for p in self.backbone_params:
+                    if p.grad is not None:
+                        dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+                        p.grad /= world_size
+

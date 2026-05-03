@@ -122,15 +122,22 @@ class Trainer:
                 continue
             # ─────────────────────────────────────────────────────────────────
 
-            # Backward với GradScaler
+            # [PCGrad] Bước 1: Tính gradient PCGrad (khi graph còn nguyên)
+            if self.pcgrad is not None and "task_losses" in losses:
+                # Tránh DDP tự động all-reduce khi backward nhiều lần -> Crash
+                if hasattr(self.model, "no_sync"):
+                    with self.model.no_sync():
+                        self.pcgrad.prepare(losses["task_losses"], self.scaler, self.model)
+                else:
+                    self.pcgrad.prepare(losses["task_losses"], self.scaler, self.model)
+
+            # Backward total_loss bình thường (giải phóng graph, heads nhận gradient và sync DDP)
             self.scaler.scale(losses["total"]).backward()
 
-            # [PCGrad] Override backbone gradient sau backward — chỉ khi enabled
+            # [PCGrad] Bước 2 & 3: Override backbone gradient và Manual Sync
             if self.pcgrad is not None and "task_losses" in losses:
-                self.pcgrad.apply(
-                    task_losses=losses["task_losses"],
-                    scaler=self.scaler,
-                )
+                self.pcgrad.set_grads()
+                self.pcgrad.sync_grads()
 
             # Gradient clipping
             self.scaler.unscale_(self.optimizer)
