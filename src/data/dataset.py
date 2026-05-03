@@ -58,15 +58,19 @@ def compute_sdf(mask: np.ndarray) -> np.ndarray:
     - Trong vật thể: Giá trị âm (khoảng cách tới biên gần nhất).
     """
     if mask.sum() == 0:
-        # Nếu không có lesion, SDF là một hằng số lớn (mô phỏng vô tận)
-        return np.ones_like(mask, dtype=np.float32) * 255.0
+        # Trả về 0.5 (hình phạt trung bình) cho các slice trống để ổn định gradient
+        return np.ones_like(mask, dtype=np.float32) * 0.5
         
     dist_out = distance_transform_edt(1 - mask)
     dist_in  = distance_transform_edt(mask)
     
     # SDF = Khoảng cách ngoài - Khoảng cách trong
-    sdf = dist_out - dist_in
-    return sdf.astype(np.float32)
+    # Giới hạn ở 20 pixel
+    sdf = np.clip(dist_out - dist_in, -20, 20)
+    
+    # [QUY ĐỔI VỀ 0-1]: Chia cho 20 để đưa về thang đo [0, 1]
+    # Lúc này: 0 là ranh giới, 1.0 là cực xa bên ngoài, -1.0 là cực sâu bên trong
+    return (sdf / 20.0).astype(np.float32)
 
 
 class ISLES24Dataset(Dataset):

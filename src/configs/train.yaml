@@ -49,13 +49,13 @@ optimizer:
   type: "adamw"
   lr: 3.0e-4
   weight_decay: 1.0e-2
-  encoder_lr_scale: 0.01
+  encoder_lr_scale: 0.1  # Tăng lên 0.1 để encoder học nhanh hơn
   eps: 1.0e-7
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 10 #can 15
-  hold_epochs: 5 #can 10
+  warmup_epochs: 5    # Giảm xuống 3 để đạt LR đỉnh nhanh hơn
+  hold_epochs: 3
   min_lr: 1.0e-6
 
 # ── Training ────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ training:
   # Checkpointing
   checkpoint:
     dir: "checkpoints"
-    start_epoch: 15 #can 25
+    start_epoch: 10 #can 25
     save_best_overall: true
     save_best_lesion: true
     save_best_lvo: true
@@ -76,7 +76,7 @@ training:
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 15 #can 25
+    start_epoch: 10 #can 25
     patience: 15 #can 30
     min_delta: 0.001
 

@@ -133,17 +133,6 @@ class Trainer:
             total_loss += losses["total"].item()
             n_batches  += 1
 
-            # Log mỗi N batch
-            if self.rank == 0 and (batch_idx + 1) % self.log_interval == 0:
-                print(
-                    f"   Epoch {epoch+1} | Batch {batch_idx+1}/{len(self.train_loader)} "
-                    f"\n| Loss: {losses['total']:.4f} "
-                    f"\n| Tasks(Lesion:{losses['lesion']:.3f}, LVO:{losses['lvo']:.3f}, CoW:{losses['cow']:.3f}) "
-                    f"\n| Detail(Lesion(tv/hd):{losses['l_L_tv']:.3f}/{losses['l_L_hd']:.3f}, CoW(tv/cl):{losses['l_C_tv']:.3f}/{losses['l_C_cl']:.3f}) "
-                    f"\n| Sigmas(Lesion:{losses['sigma_lesion']:.2f}, LVO:{losses['sigma_lvo']:.2f}, CoW:{losses['sigma_cow']:.2f})",
-                    flush=True
-                )
-
         # ─── ĐỒNG BỘ HÓA DDP (ALL-REDUCE) ───
         # Để báo cáo Train Loss chính xác trên toàn bộ hệ thống
         avg_train_loss = total_loss / max(n_batches, 1)
@@ -340,10 +329,10 @@ class Trainer:
                 print(
                     f"--------------------------------------------------------------------------------"
                     f"\n=> | [Epoch {epoch+1:03d}/{self.epochs}] | LR: {curr_lr:.2e} | Composite: {val_metrics['composite']:.4f}"
-                    f"\n   | [VAL METRICS] Dice_L: {val_metrics['dice_lesion']:.4f} | Recall_V: {val_metrics['recall_lvo']:.4f} | Dice_C: {val_metrics['dice_cow']:.4f}"
+                    f"\n   | [VAL METRICS] Dice_Lesion: {val_metrics['dice_lesion']:.4f} | Recall_LVO: {val_metrics['recall_lvo']:.4f} | Dice_CoW: {val_metrics['dice_cow']:.4f}"
                     f"\n   | [VAL LOSSES ] Lesion(tv/hd): {val_metrics['l_L_tv']:.3f}/{val_metrics['l_L_hd']:.3f} | CoW(tv/cl): {val_metrics['l_C_tv']:.3f}/{val_metrics['l_C_cl']:.3f}"
                     f"\n   | [TRAIN LOSS ] Avg_Total: {train_metrics['train_loss']:.4f}"
-                    f"\n   | [UNCERTAINTY] Sigma_L: {val_metrics['sigma_lesion']:.2f} | Sigma_V: {val_metrics['sigma_lvo']:.2f} | Sigma_C: {val_metrics['sigma_cow']:.2f}"
+                    f"\n   | [UNCERTAINTY] Sigma_Lesion: {val_metrics['sigma_lesion']:.2f} | Sigma_LVO: {val_metrics['sigma_lvo']:.2f} | Sigma_CoW: {val_metrics['sigma_cow']:.2f}"
                     f"\n--------------------------------------------------------------------------------",
                     flush=True
                 )

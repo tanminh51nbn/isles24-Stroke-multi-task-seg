@@ -117,11 +117,15 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict) -> di
     thresholds = weights.get("thresholds", {"lesion": 0.5, "lvo": 0.5, "cow": 0.5})
 
     # [QUAN TRỌNG] Đối với LVO Heatmap, chúng ta phải nhị phân hóa GT trước khi tính Recall
-    # Nếu không, Recall sẽ bị chia cho tổng diện tích quầng sáng (sigma) và luôn rất thấp.
-    target_lvo_bin = (targets[:, 1:2] > 0.5).float()
+    # Dùng ngưỡng thấp (0.1) để tạo "vùng đệm" (Hit Zone) lớn hơn, giúp mô hình dễ học hơn.
+    target_lvo_bin = (targets[:, 1:2] > 0.1).float()
 
     d_lesion = dice_score(preds["lesion"],  targets[:, 0:1],   threshold=thresholds["lesion"]).item()
     r_lvo    = recall_score(preds["lvo"],   target_lvo_bin,    threshold=thresholds["lvo"]).item()
+    
+    # Nếu không có LVO trong batch, giả định recall là 0.5 (trung lập) 
+    if r_lvo < 0: r_lvo = 0.5 
+    
     d_cow    = dice_score(preds["cow"],     targets[:, 2:3],   threshold=thresholds["cow"]).item()
     comp     = composite_score(d_lesion, r_lvo, d_cow, weights)
 

@@ -222,15 +222,20 @@ class SDFBoundaryLoss(nn.Module):
         """
         Args:
             logits: Dự đoán từ mô hình (B, 1, H, W)
-            sdf:    Bản đồ khoảng cách từ ground truth (B, 1, H, W)
+            sdf:    Bản đồ khoảng cách từ ground truth (B, 1, H, W) trong khoảng [-1, 1]
         """
         probs = torch.sigmoid(logits)
         
-        # Loss = mean( probs * sdf )
-        # Lưu ý: sdf bên ngoài dương, bên trong âm.
-        # Dự đoán đúng vùng trong (probs=1 * sdf=-5) -> Giảm loss.
-        # Dự đoán sai vùng ngoài (probs=1 * sdf=50) -> Tăng loss cực mạnh.
-        return (probs * sdf).mean()
+        # 1. Phạt lỗi "Dự đoán nhầm ở ngoài" (False Positives)
+        # sdf > 0 cho vùng bên ngoài
+        fp_loss = probs * torch.clamp(sdf, min=0)
+        
+        # 2. Phạt lỗi "Bỏ sót ở trong" (False Negatives)
+        # sdf < 0 cho vùng bên trong
+        fn_loss = (1 - probs) * torch.abs(torch.clamp(sdf, max=0))
+        
+        # Tổng hợp: Kết quả sẽ luôn >= 0 và <= 1
+        return (fp_loss + fn_loss).mean()
 
 
 # ─── Soft CL-Dice Loss (Topology-Preserving Loss) ───────────────────────────
