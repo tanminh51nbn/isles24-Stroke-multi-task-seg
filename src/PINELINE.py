@@ -177,11 +177,15 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         print(f"{'='*60}")
 
         # Trả về best composite để PINELINE tổng hợp
-        return best
+        best_result = best
+    else:
+        best_result = None
 
     if dist.is_initialized():
-        dist.barrier(device_ids=[rank])
+        dist.barrier() # Sync trước khi dọn dẹp
         dist.destroy_process_group()
+    
+    return best_result
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
