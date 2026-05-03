@@ -138,7 +138,8 @@ class Trainer:
                 print(
                     f"   Epoch {epoch+1} | Batch {batch_idx+1}/{len(self.train_loader)} "
                     f"| Loss: {losses['total']:.4f} "
-                    f"(M:{losses['main']:.3f}, A:{losses['aux']:.3f}, LVO:{losses['lvo']:.3f}, B:{losses['boundary']:.3f})",
+                    f"(M:{losses['main']:.3f}, LVO:{losses['lvo']:.3f}, B:{losses['boundary']:.3f}) "
+                    f"| Sigmas(L:{losses.get('sigma_lesion', 1.0):.2f}, V:{losses.get('sigma_lvo', 1.0):.2f}, C:{losses.get('sigma_cow', 1.0):.2f})",
                     flush=True
                 )
 
@@ -260,12 +261,21 @@ class Trainer:
             w["dice_cow_weight"]    * avg_dice_cow
         )
 
+        # Lấy giá trị Sigmas từ loss_fn nếu có
+        import math
+        sigmas = {"sigma_lesion": 1.0, "sigma_lvo": 1.0, "sigma_cow": 1.0}
+        if hasattr(self.loss_fn, "log_vars"):
+            sigmas["sigma_lesion"] = math.exp(self.loss_fn.log_vars["lesion"].item() / 2.0)
+            sigmas["sigma_lvo"]    = math.exp(self.loss_fn.log_vars["lvo"].item() / 2.0)
+            sigmas["sigma_cow"]    = math.exp(self.loss_fn.log_vars["cow"].item() / 2.0)
+
         return {
             "val_loss":    avg_loss,
             "dice_lesion": avg_dice_lesion,
             "recall_lvo":  avg_recall_lvo,
             "dice_cow":    avg_dice_cow,
             "composite":   composite,
+            **sigmas
         }
 
 
@@ -309,6 +319,7 @@ class Trainer:
                     f"\n   | Dice_L: {val_metrics['dice_lesion']:.4f} | "
                     f"Recall_LVO: {val_metrics['recall_lvo']:.4f} | "
                     f"Dice_C: {val_metrics['dice_cow']:.4f}"
+                    f"\n   | Sigmas(L:{val_metrics.get('sigma_lesion', 1.0):.2f}, V:{val_metrics.get('sigma_lvo', 1.0):.2f}, C:{val_metrics.get('sigma_cow', 1.0):.2f})"
                     f"\n   | Loss(T/V): {train_metrics['train_loss']:.4f}/{val_metrics['val_loss']:.4f} | "
                     f"Composite: {val_metrics['composite']:.4f}",
                     flush=True

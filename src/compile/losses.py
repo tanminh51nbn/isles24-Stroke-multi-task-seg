@@ -239,6 +239,14 @@ class MultiTaskLoss(nn.Module):
         self.w_cow = cow_cfg["weight"]
         self.w_cow_boundary = cow_cfg.get("boundary_weight", 0.0)
 
+        # Tham số Uncertainty Weighting (Learnable)
+        # Khởi tạo s = 0.0 => weight = exp(0) = 1.0 ban đầu
+        self.log_vars = nn.ParameterDict({
+            "lesion": nn.Parameter(torch.tensor(0.0)),
+            "lvo":    nn.Parameter(torch.tensor(0.0)),
+            "cow":    nn.Parameter(torch.tensor(0.0)),
+        })
+
         # Công cụ Boundary Loss dùng chung
         self.boundary_loss = BoundaryLoss(kernel_size=3)
 
@@ -249,15 +257,24 @@ class MultiTaskLoss(nn.Module):
         l_lesion      = (1.0 - self.w_lesion_boundary) * l_lesion_main + self.w_lesion_boundary * l_lesion_bd
 
         # LVO dùng ModifiedFocalLoss với Heatmap GT — không dùng Boundary Loss
-        l_lvo_main = self.lvo_main_loss(preds["lvo"], targets[:, 1:2])
-        l_lvo_bd   = torch.tensor(0.0, device=targets.device)  # Không áp dụng
-        l_lvo      = l_lvo_main
+        l_lvo = self.lvo_main_loss(preds["lvo"], targets[:, 1:2])
 
         l_cow_main = self.cow_main_loss(preds["cow"], targets[:, 2:3])
         l_cow_bd   = self.boundary_loss(preds["cow"], targets[:, 2:3])
         l_cow      = (1.0 - self.w_cow_boundary) * l_cow_main + self.w_cow_boundary * l_cow_bd
 
-        main_loss = self.w_lesion * l_lesion + self.w_lvo * l_lvo + self.w_cow * l_cow
+        # Áp dụng Uncertainty Weighting (Kendall et al.)
+        # Kẹp s trong khoảng [-10, 10] để tránh văng NaN khi exp
+        s_lesion = torch.clamp(self.log_vars["lesion"], -10.0, 10.0)
+        s_lvo    = torch.clamp(self.log_vars["lvo"], -10.0, 10.0)
+        s_cow    = torch.clamp(self.log_vars["cow"], -10.0, 10.0)
+
+        # L_total = sum( exp(-s) * L + s )
+        main_lesion_weighted = torch.exp(-s_lesion) * l_lesion + s_lesion
+        main_lvo_weighted    = torch.exp(-s_lvo)    * l_lvo    + s_lvo
+        main_cow_weighted    = torch.exp(-s_cow)    * l_cow    + s_cow
+
+        main_loss = main_lesion_weighted + main_lvo_weighted + main_cow_weighted
 
         # 2. Tính toán Auxiliary Losses (MDS)
         # aux_masks: [mask_32, mask_64, mask_128, mask_256]
@@ -303,6 +320,14 @@ class MultiTaskLoss(nn.Module):
         total = main_loss + aux_loss
         total = torch.nan_to_num(total, nan=1.0, posinf=1.0, neginf=1.0)
 
+        # Boundary log chỉ tính cho Lesion và CoW
+        avg_boundary = (l_lesion_bd + l_cow_bd) / 2.0
+
+        # Tính Sigma (Uncertainty) để log ra màn hình: sigma = exp(s/2)
+        sigma_lesion = torch.exp(s_lesion / 2.0).item()
+        sigma_lvo    = torch.exp(s_lvo / 2.0).item()
+        sigma_cow    = torch.exp(s_cow / 2.0).item()
+
         return {
             "total":  total,
             "main":   main_loss,
@@ -310,5 +335,8 @@ class MultiTaskLoss(nn.Module):
             "lesion": l_lesion,
             "lvo":    l_lvo,
             "cow":    l_cow,
-            "boundary": (l_lesion_bd + l_lvo_bd + l_cow_bd) / 3.0
+            "boundary": avg_boundary,
+            "sigma_lesion": sigma_lesion,
+            "sigma_lvo": sigma_lvo,
+            "sigma_cow": sigma_cow
         }

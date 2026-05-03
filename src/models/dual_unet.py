@@ -17,7 +17,7 @@ import torch.nn as nn
 from typing import List
 
 from models.encoder import ResNet50Encoder, DenseNet121Encoder
-from models.decoder import UNetDecoder
+from models.decoder import MultiHeadDecoder
 from models.heads import MultiTaskHeads
 
 
@@ -54,8 +54,8 @@ class DualEncoderUNet(nn.Module):
             weights_path=config["perfusion_encoder"]["weights"],
         )
 
-        # Decoder kết hợp skip features từ 2 encoder
-        self.decoder = UNetDecoder(config)
+        # Decoder đa nhánh kết hợp skip features từ 2 encoder
+        self.decoder = MultiHeadDecoder(config)
 
         # 3 heads độc lập
         # Lấy in_ch từ config của decoder (mặc định là 16)

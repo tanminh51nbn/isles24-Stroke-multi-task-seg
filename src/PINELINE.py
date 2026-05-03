@@ -121,7 +121,7 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
 
     # ── Loss / Optimizer / Scheduler ──────────────────────────────
     loss_fn   = MultiTaskLoss(config).to(device)
-    optimizer = build_optimizer(model.module, config)
+    optimizer = build_optimizer(model.module, loss_fn, config)
     scheduler = build_scheduler(optimizer, config)
 
     # ── Callbacks ─────────────────────────────────────────────────

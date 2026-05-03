@@ -116,17 +116,16 @@ class MultiTaskHeads(nn.Module):
         # 3. Lesion (Ít, vùng lõi): pi = 0.05 => bias = -2.944
         nn.init.constant_(self.lesion_head.conv_out.bias, -2.944)
 
-    def forward(self, x: torch.Tensor) -> dict:
+    def forward(self, features: dict) -> dict:
         """
         Args:
-            x: Tensor (B, in_ch, H, W) từ decoder
-
+            features: Dictionary chứa feature maps từ MultiHeadDecoder
+                      {"lesion": Tensor, "lvo": Tensor, "cow": Tensor}
         Returns:
-            dict với keys 'lesion', 'lvo', 'cow'
-            Mỗi value là Tensor (B, 1, H, W) — raw logits
+            Dictionary chứa predicted masks/logits
         """
         return {
-            "lesion": self.lesion_head(x),
-            "lvo":    self.lvo_head(x),
-            "cow":    self.cow_head(x),
+            "lesion": self.lesion_head(features["lesion"]),
+            "lvo":    self.lvo_head(features["lvo"]),
+            "cow":    self.cow_head(features["cow"]),
         }
