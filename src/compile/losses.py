@@ -241,12 +241,17 @@ class MultiTaskLoss(nn.Module):
         self.w_cow_boundary = cow_cfg.get("boundary_weight", 0.0)
 
         # Tham số Uncertainty Weighting (Learnable)
-        # Khởi tạo s = 0.0 => weight = exp(0) = 1.0 ban đầu
         self.log_vars = nn.ParameterDict({
             "lesion": nn.Parameter(torch.tensor(0.0)),
             "lvo":    nn.Parameter(torch.tensor(0.0)),
             "cow":    nn.Parameter(torch.tensor(0.0)),
         })
+
+        # Ngưỡng chặn Sigma tối thiểu cho từng task (để tránh hố đen tham số)
+        u_cfg = config.get("uncertainty", {})
+        self.s_min_lesion = math.log(u_cfg.get("s_min_lesion", 0.6)**2)
+        self.s_min_lvo    = math.log(u_cfg.get("s_min_lvo", 0.6)**2)
+        self.s_min_cow    = math.log(u_cfg.get("s_min_cow", 0.6)**2)
 
         # Công cụ Boundary Loss dùng chung
         self.boundary_loss = BoundaryLoss(kernel_size=3)
@@ -264,12 +269,10 @@ class MultiTaskLoss(nn.Module):
         l_cow_bd   = self.boundary_loss(preds["cow"], targets[:, 2:3])
         l_cow      = (1.0 - self.w_cow_boundary) * l_cow_main + self.w_cow_boundary * l_cow_bd
 
-        # Áp dụng Uncertainty Weighting (Kendall et al.)
-        # Giới hạn Sigma tối thiểu ở mức 0.6 (log(0.6**2) ≈ -1.021) để tránh hố đen tham số
-        s_min = math.log(0.36)
-        s_lesion = torch.clamp(self.log_vars["lesion"], min=s_min, max=10.0)
-        s_lvo    = torch.clamp(self.log_vars["lvo"], min=s_min, max=10.0)
-        s_cow    = torch.clamp(self.log_vars["cow"], min=s_min, max=10.0)
+        # Áp dụng Uncertainty Weighting (Kendall et al.) với ngưỡng chặn riêng biệt
+        s_lesion = torch.clamp(self.log_vars["lesion"], min=self.s_min_lesion, max=10.0)
+        s_lvo    = torch.clamp(self.log_vars["lvo"], min=self.s_min_lvo, max=10.0)
+        s_cow    = torch.clamp(self.log_vars["cow"], min=self.s_min_cow, max=10.0)
 
         # L_total = sum( exp(-s) * L + s )
         main_lesion_weighted = torch.exp(-s_lesion) * l_lesion + s_lesion

@@ -16,22 +16,28 @@ loss:
     type: "modified_focal"
     mfl_alpha: 2.0
     mfl_beta: 4.0
-    weight: 0.5
+    weight: 0.35
 
   cow:
     type: "tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.15
+    weight: 0.3
     boundary_weight: 0.4
+
+# ── Uncertainty Weighting Settings ──────────────────────────────
+uncertainty:
+  s_min_lesion: 0.6
+  s_min_lvo: 0.85    # Chặn cứng hơn cho LVO để tránh chiếm quyền ưu tiên
+  s_min_cow: 0.7
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
 # Dùng Recall cho LVO (chỉ cần detect được, không cần viền chính xác)
 composite_score:
   dice_lesion_weight: 0.35
-  recall_lvo_weight: 0.5
-  dice_cow_weight: 0.15
+  recall_lvo_weight: 0.35
+  dice_cow_weight: 0.3
   thresholds:
     lesion: 0.4
     lvo: 0.15
