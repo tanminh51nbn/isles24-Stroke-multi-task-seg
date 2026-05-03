@@ -115,8 +115,21 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
     )
 
     # ── Model ─────────────────────────────────────────────────────
+    # [OPTIMIZATION] Bật CUDNN Benchmark cho kích thước input cố định
+    torch.backends.cudnn.benchmark = True
+    
     model = build_model(config)
     model = model.to(device)
+
+    # [OPTIMIZATION] Torch Compile (PyTorch 2.0+) 
+    # Giúp gộp các kernels và tăng tốc đáng kể bước backward của PCGrad
+    try:
+        if hasattr(torch, "compile"):
+            print("[PINELINE] Đang biên dịch mô hình với torch.compile...")
+            model = torch.compile(model)
+    except Exception as e:
+        print(f"[PINELINE] Không thể compile: {e}")
+
     # Tắt find_unused_parameters vì 100% params đều được sử dụng trong forward pass.
     # Bật nó sẽ làm DDP reducer crash khi PCGrad backward từng task riêng lẻ.
     model = DDP(model, device_ids=[rank], find_unused_parameters=False)

@@ -65,29 +65,37 @@ class PCGrad:
     @torch.no_grad()
     def _project_conflicting(self, flat_grads: List[torch.Tensor]) -> torch.Tensor:
         """
-        Chiếu các gradient xung đột giữa các task.
-
-        Với mỗi cặp (i, j): nếu dot(gi, gj) < 0 → gi đang "chống lại" gj
-            gi_new = gi - (dot(gi, gj) / ||gj||²) × gj
-
-        Args:
-            flat_grads: List[Tensor 1D float32] — gradient mỗi task, đã flatten
-
-        Returns:
-            Tensor 1D — tổng gradient sau khi chiếu (sẵn sàng reshape về param shape)
+        [OPTIMIZED] Chiếu các gradient xung đột bằng vectorization.
         """
-        projected = [g.clone() for g in flat_grads]
+        # Stack các gradient thành một ma trận (n_tasks, n_params)
+        grads_stack = torch.stack(flat_grads) # (3, N)
+        n_tasks = grads_stack.shape[0]
+        
+        # Clone để thực hiện chiếu
+        projected = grads_stack.clone()
+        
+        # Xáo trộn thứ tự task để tránh bias (tùy chọn nhưng tốt cho hội tụ)
+        indices = torch.randperm(n_tasks)
+        
+        for i in indices:
+            # Lấy gradient của task hiện tại
+            gi = projected[i]
+            
+            # So sánh với tất cả các task khác
+            for j in indices:
+                if i == j: continue
+                gj = grads_stack[j]
+                
+                # Tích vô hướng (Dot product)
+                dot = torch.dot(gi, gj)
+                if dot < 0:
+                    # Xung đột: Chiếu gi lên mặt phẳng vuông góc với gj
+                    norm_sq = torch.dot(gj, gj).clamp(min=1e-12)
+                    gi -= (dot / norm_sq) * gj
+            
+            projected[i] = gi
 
-        for i in range(len(projected)):
-            for j, gj_ref in enumerate(flat_grads):
-                if i == j:
-                    continue
-                dot = torch.dot(projected[i], gj_ref)
-                if dot < 0:  # Conflict!
-                    norm_sq = torch.dot(gj_ref, gj_ref).clamp(min=1e-12)
-                    projected[i] = projected[i] - (dot / norm_sq) * gj_ref
-
-        return sum(projected)
+        return projected.sum(dim=0)
 
     def prepare(self, task_losses: List[torch.Tensor], scaler: "torch.amp.GradScaler", model: torch.nn.Module):
         """
