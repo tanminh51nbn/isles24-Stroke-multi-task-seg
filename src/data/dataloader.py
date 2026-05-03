@@ -14,7 +14,7 @@ from typing import Tuple
 
 from .dataset import ISLES24Dataset
 from .transforms import build_train_transforms, build_val_transforms
-from .fold_split import build_patient_split, apply_sampling
+from .fold_split import build_patient_split, apply_sampling, build_stratified_kfold_splits
 
 import os
 import glob
@@ -44,12 +44,32 @@ def build_dataloaders(
         raise FileNotFoundError(f"Không tìm thấy file .npy trong: {dataset_dir}")
 
     # Chia train/val theo bệnh nhân
-    split_cfg = config["split"]
-    train_files, val_files = build_patient_split(
-        all_files,
-        val_ratio=split_cfg["val_ratio"],
-        seed=split_cfg["seed"],
-    )
+    split_cfg  = config["split"]
+    split_mode = split_cfg.get("mode", "single")
+
+    if split_mode == "kfold":
+        # [FIX 3] Stratified K-Fold: lấy đúng fold theo current_fold
+        metadata_csv = config["sampling"]["metadata_csv"]
+        n_folds      = split_cfg.get("n_folds", 5)
+        current_fold = split_cfg.get("current_fold", 0)
+
+        all_splits = build_stratified_kfold_splits(
+            file_list=all_files,
+            metadata_csv=metadata_csv,
+            n_folds=n_folds,
+            seed=split_cfg.get("seed", 42),
+        )
+        train_files, val_files = all_splits[current_fold]
+
+        if rank == 0:
+            print(f"[DataLoader] K-Fold mode: Fold {current_fold + 1}/{n_folds}")
+    else:
+        # Single split (chế độ cũ)
+        train_files, val_files = build_patient_split(
+            all_files,
+            val_ratio=split_cfg["val_ratio"],
+            seed=split_cfg["seed"],
+        )
 
     # Thực hiện Smart Sampling (chỉ áp dụng cho tập train)
     train_files = apply_sampling(train_files, config)
