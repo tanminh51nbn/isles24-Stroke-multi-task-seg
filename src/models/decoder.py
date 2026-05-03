@@ -135,6 +135,7 @@ class DecoderBlock(nn.Module):
         super().__init__()
         self.attention_type = attention_type
         self.use_aux = use_aux
+        self.aux_ch = aux_ch
         
         # BOTTLENECK: Dùng 1x1 nén trước khi dùng 3x3
         self.conv1 = ConvBnGelu1x1(in_ch + skip_ch + aux_ch, out_ch)
@@ -153,7 +154,7 @@ class DecoderBlock(nn.Module):
         x_up = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
         
         if prev_mask is None:
-            prev_mask = torch.zeros((x_up.shape[0], 1, x_up.shape[2], x_up.shape[3]), device=x.device)
+            prev_mask = torch.zeros((x_up.shape[0], self.aux_ch, x_up.shape[2], x_up.shape[3]), device=x.device)
         else:
             prev_mask = F.interpolate(prev_mask, size=(x_up.shape[2], x_up.shape[3]), mode="bilinear", align_corners=False)
         
