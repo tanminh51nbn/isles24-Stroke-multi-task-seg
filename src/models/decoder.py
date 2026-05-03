@@ -93,19 +93,34 @@ class ConvBnGelu(nn.Module):
         return self.block(x)
 
 
-class AuxHead(nn.Module):
-    """Tạo mask 1 kênh từ đặc trưng trung gian của nhánh tương ứng."""
-    def __init__(self, in_ch: int, task_name: str):
+class ConvBnGelu1x1(nn.Module):
+    """1×1 Conv + BN + GELU (Bottleneck)."""
+    def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
-        self.conv = nn.Conv2d(in_ch, 1, kernel_size=1)
+        self.block = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.GELU(),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+
+class AuxHead(nn.Module):
+    """Tạo mask (1 hoặc 3 kênh) từ đặc trưng trung gian."""
+    def __init__(self, in_ch: int, task_name: str, out_ch: int = 1):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=1)
         
-        # [QUAN TRỌNG] Bias Initialization tương tự như Main Head
-        # Tránh Aux Loss bùng nổ (Lên tới hàng trăm) ở Epoch 1
         with torch.no_grad():
             if task_name == "lesion":
                 self.conv.bias[0] = -2.944
-            elif task_name in ["lvo", "cow"]:
+            elif task_name in ["lvo", "cow", "shared"]:
                 self.conv.bias[0] = -4.595
+                if out_ch > 1: # Cho shared dec4
+                    self.conv.bias[1] = -4.595
+                    self.conv.bias[2] = -4.595
 
     def forward(self, x):
         return self.conv(x)
@@ -113,15 +128,16 @@ class AuxHead(nn.Module):
 
 class DecoderBlock(nn.Module):
     """
-    DecoderBlock hỗ trợ Iterative Feedback (1 kênh cho task cụ thể).
+    DecoderBlock Bottleneck: 1x1 Conv nén kênh + 3x3 Conv học không gian.
+    Giúp giảm tham số cực lớn khi skip_ch cao (vd: 2048).
     """
-    def __init__(self, in_ch: int, skip_ch: int, out_ch: int, attention_type: Optional[str] = None, use_aux: bool = True, task_name: str = "lesion"):
+    def __init__(self, in_ch: int, skip_ch: int, out_ch: int, attention_type: Optional[str] = None, use_aux: bool = True, task_name: str = "lesion", aux_ch: int = 1):
         super().__init__()
         self.attention_type = attention_type
         self.use_aux = use_aux
         
-        # Feedback (1 channel) + In_ch + Skip_ch
-        self.conv1 = ConvBnGelu(in_ch + skip_ch + 1, out_ch)
+        # BOTTLENECK: Dùng 1x1 nén trước khi dùng 3x3
+        self.conv1 = ConvBnGelu1x1(in_ch + skip_ch + aux_ch, out_ch)
         self.conv2 = ConvBnGelu(out_ch, out_ch)
         
         if attention_type == "ag":
@@ -130,7 +146,7 @@ class DecoderBlock(nn.Module):
             self.dual_attn = LightweightDualAttention(channels=skip_ch)
             
         if use_aux:
-            self.aux_head = AuxHead(out_ch, task_name)
+            self.aux_head = AuxHead(out_ch, task_name, out_ch=aux_ch)
 
     def forward(self, x: torch.Tensor, skip_cta: torch.Tensor, skip_perf: torch.Tensor, prev_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         # 1. Upsample
@@ -159,19 +175,17 @@ class DecoderBlock(nn.Module):
 
 # ─── UNet Decoder ───────────────────────────────────────────────────────────
 
-class TaskDecoder(nn.Module):
+class TaskBranch(nn.Module):
     """
-    Một nhánh Decoder độc lập cho một Task cụ thể.
-    Chỉ bắt đầu từ tầng sau Bottleneck để tiết kiệm VRAM.
+    Một nhánh Decoder rẽ sau tầng dec4. Bao gồm dec3, dec2, dec1.
     """
     def __init__(self, config: dict, task_name: str):
         super().__init__()
-        dec_ch = config["decoder"]["out_channels"] # [512, 256, 128, 64]
+        dec_ch = config["decoder"]["out_channels"]
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
-        # 4 Cấp giải mã
-        self.dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type, use_aux=True, task_name=task_name)
+        # Rẽ nhánh từ dec3 (64x64)
         self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type, use_aux=True, task_name=task_name)
         self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True, task_name=task_name)
         self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name=task_name)
@@ -179,68 +193,68 @@ class TaskDecoder(nn.Module):
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
-    def forward(self, x, cta_skips, perf_skips):
-        s1, s2, s3, s4, _ = cta_skips
-        d1, d2, d3, d4, _ = perf_skips
+    def forward(self, x, cta_skips, perf_skips, aux4_branch):
+        s1, s2, s3, _, _ = cta_skips
+        d1, d2, d3, _, _ = perf_skips
 
-        x, aux4 = self.dec4(x, s4, d4, prev_mask=None)       # 32x32
-        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4)       # 64x64
-        x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)       # 128x128
-        x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)       # 256x256
+        # Feedback từ aux4 của nhánh tương ứng (1 channel)
+        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_branch) # 64x64
+        x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)        # 128x128
+        x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)        # 256x256
 
         x = self.up_final(x)
         x = self.final_conv(x)
         
-        # Trả về: (đặc trưng cuối 256x256, [mask_32, mask_64, mask_128, mask_256_aux])
-        # Chúng ta có 4 aux masks bây giờ
-        return x, [aux4, aux3, aux2, aux1]
+        return x, [aux3, aux2, aux1]
+
 
 class MultiHeadDecoder(nn.Module):
     """
-    Multi-Head Decoder: 
-    Nhận skips từ 2 encoder, nén qua Bottleneck chung, sau đó rẽ làm 3 nhánh TaskDecoder riêng.
+    Multi-Head Decoder (Late Branching + Bottleneck): 
+    - Shared Bottleneck & Shared dec4 (32x32).
+    - Branching from dec3 (64x64).
+    - Memory efficient for Kaggle T4.
     """
     def __init__(self, config: dict):
         super().__init__()
+        dec_ch = config["decoder"]["out_channels"]
+        attn_type = config["decoder"].get("attention_type", "dual")
         
-        # Bottleneck chung: Nén s5(2048) + d5(1024) = 3072 ch về 1024
-        self.bottleneck = nn.Sequential(
-            ConvBnGelu(3072, 1024),
+        # 1. Bottleneck chung (3072 -> 1024)
+        self.shared_bottleneck = nn.Sequential(
+            ConvBnGelu1x1(3072, 1024),
             ConvBnGelu(1024, 1024),
         )
 
-        # 3 Nhánh độc lập
-        self.lesion_dec = TaskDecoder(config, "lesion")
-        self.lvo_dec    = TaskDecoder(config, "lvo")
-        self.cow_dec    = TaskDecoder(config, "cow")
+        # 2. Shared dec4 (Tầng sâu nhất 32x32 - Đặc trưng ngữ cảnh chung)
+        # Tầng này output 3-channel aux mask để học đặc trưng cho cả 3 task
+        self.shared_dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type, use_aux=True, task_name="shared", aux_ch=3)
+
+        # 3. Rẽ 3 nhánh từ dec3 (64x64 - Bắt đầu chi tiết hóa từng task)
+        self.lesion_branch = TaskBranch(config, "lesion")
+        self.lvo_branch    = TaskBranch(config, "lvo")
+        self.cow_branch    = TaskBranch(config, "cow")
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor]):
-        # Lấy s5, d5 cho bottleneck
-        s5 = cta_skips[4]
-        d5 = perf_skips[4]
+        s5, s4 = cta_skips[4], cta_skips[3]
+        d5, d4 = perf_skips[4], perf_skips[3]
 
-        # Shared Bottleneck
+        # Shared processing
         x = torch.cat([s5, d5], dim=1)
-        x = self.bottleneck(x)
+        x = self.shared_bottleneck(x)
+        x, aux4_3ch = self.shared_dec4(x, s4, d4, prev_mask=None)
 
-        # 3 Nhánh thực thi độc lập (Chống xung đột)
-        f_lesion, aux_lesion = self.lesion_dec(x, cta_skips, perf_skips)
-        f_lvo,    aux_lvo    = self.lvo_dec(x, cta_skips, perf_skips)
-        f_cow,    aux_cow    = self.cow_dec(x, cta_skips, perf_skips)
+        # Splitting (Late Branching)
+        # Lấy từng kênh của aux4 cho từng nhánh
+        f_lesion, aux_l = self.lesion_branch(x, cta_skips, perf_skips, aux4_3ch[:, 0:1])
+        f_lvo,    aux_v = self.lvo_branch(x, cta_skips, perf_skips, aux4_3ch[:, 1:2])
+        f_cow,    aux_c = self.cow_branch(x, cta_skips, perf_skips, aux4_3ch[:, 2:3])
 
-        # Gộp các Aux Masks lại thành Tensor (B, 3, H, W) để tương thích chuẩn với losses.py
-        aux_masks = []
-        for i in range(4):
-            if aux_lesion[i] is not None:
-                mask = torch.cat([aux_lesion[i], aux_lvo[i], aux_cow[i]], dim=1)
-                aux_masks.append(mask)
-            else:
-                aux_masks.append(None)
+        # Gộp các Aux Masks lại thành Tensor (B, 3, H, W)
+        aux_masks = [aux4_3ch] # aux4 đã có sẵn 3 ch
+        for i in range(3): # aux3, aux2, aux1
+            mask = torch.cat([aux_l[i], aux_v[i], aux_c[i]], dim=1)
+            aux_masks.append(mask)
 
-        features = {
-            "lesion": f_lesion,
-            "lvo":    f_lvo,
-            "cow":    f_cow
-        }
-        
+        features = {"lesion": f_lesion, "lvo": f_lvo, "cow": f_cow}
         return features, aux_masks
