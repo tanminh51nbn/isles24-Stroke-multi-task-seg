@@ -294,21 +294,48 @@ class Trainer:
 
     # ── Vòng lặp chính ───────────────────────────────────────────────────────
 
-    def fit(self, early_stopping=None, checkpoint=None):
-        """
-        Chạy toàn bộ training loop.
+    def load_checkpoint(self, checkpoint_path: str):
+        """Nạp lại trạng thái huấn luyện từ file .pt."""
+        if not os.path.exists(checkpoint_path):
+            if self.rank == 0:
+                print(f"[Trainer] KHÔNG tìm thấy file checkpoint: {checkpoint_path}")
+            return 0
 
+        if self.rank == 0:
+            print(f"[Trainer] Đang nạp checkpoint từ: {checkpoint_path}")
+            
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        
+        # Unwrap model nếu đang dùng DDP
+        raw_model = self.model.module if hasattr(self.model, "module") else self.model
+        raw_model.load_state_dict(checkpoint["model"])
+        
+        if "optimizer" in checkpoint and self.optimizer:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        
+        if "scheduler" in checkpoint and self.scheduler:
+            self.scheduler.load_state_dict(checkpoint["scheduler"])
+            
+        if "history" in checkpoint:
+            self.history = checkpoint["history"]
+            
+        start_epoch = checkpoint.get("epoch", 0)
+        return start_epoch
+
+    def fit(self, early_stopping=None, checkpoint=None, start_epoch: int = 0):
+        """
         Args:
             early_stopping: EarlyStopping instance (optional)
             checkpoint:     ModelCheckpoint instance (optional)
+            start_epoch:    Epoch bắt đầu (mặc định 0)
         """
         # Unwrap raw model (để gọi freeze/unfreeze)
         raw_model = self.model.module if hasattr(self.model, "module") else self.model
 
-        # Phase 1: Freeze encoder
+        # Phase 1: Mặc định freeze trước
         raw_model.freeze_encoders()
 
-        for epoch in range(self.epochs):
+        for epoch in range(start_epoch, self.epochs):
             # Unfreeze khi đến epoch chỉ định
             if epoch == self.freeze_enc_epochs:
                 raw_model.unfreeze_encoders()
@@ -344,7 +371,14 @@ class Trainer:
             if checkpoint is not None and self.rank == 0:
                 start_ckpt = self.config["training"]["checkpoint"].get("start_epoch", 1)
                 if (epoch + 1) >= start_ckpt:
-                    checkpoint.update(self.model, self.optimizer, epoch + 1, val_metrics)
+                    checkpoint.update(
+                        self.model, 
+                        self.optimizer, 
+                        epoch + 1, 
+                        val_metrics,
+                        scheduler=self.scheduler,
+                        history=self.history
+                    )
 
             # Early stopping (Chỉ tính patience sau khi đạt start_epoch)
             if early_stopping is not None:

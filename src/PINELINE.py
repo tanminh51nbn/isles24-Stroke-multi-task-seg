@@ -117,7 +117,12 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
     # ── Model ─────────────────────────────────────────────────────
     model = build_model(config)
     model = model.to(device)
-    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+    model = DDP(
+        model, 
+        device_ids=[rank], 
+        output_device=rank,
+        find_unused_parameters=False  # Tắt để tiết kiệm bộ nhớ và tăng tốc
+    )
 
     # ── Loss / Optimizer / Scheduler ──────────────────────────────
     loss_fn   = MultiTaskLoss(config).to(device)
@@ -128,14 +133,15 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
     early_stopping = EarlyStopping(
         patience=config["training"]["early_stopping"]["patience"],
         min_delta=config["training"]["early_stopping"]["min_delta"],
+        rank=rank
     ) if config["training"]["early_stopping"]["enabled"] else None
 
-    checkpoint = ModelCheckpoint(
+    checkpoint_callback = ModelCheckpoint(
         save_dir=os.path.join(fold_output_dir, config["training"]["checkpoint"]["dir"]),
         config=config,
+        rank=rank
     ) if rank == 0 else None
 
-    # ── Training ──────────────────────────────────────────────────
     config["output_dir"] = fold_output_dir
     trainer = Trainer(
         model=model,
@@ -149,9 +155,16 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         rank=rank,
     )
 
+    # ── [RESUME LOGIC] ───────────────────────────────────────────
+    start_epoch = 0
+    if args.resume_from:
+        start_epoch = trainer.load_checkpoint(args.resume_from)
+
+    # ── Fit ───────────────────────────────────────────────────────
     history = trainer.fit(
         early_stopping=early_stopping,
-        checkpoint=checkpoint,
+        checkpoint=checkpoint_callback,
+        start_epoch=start_epoch
     )
 
     # ── Post-training (chỉ rank 0) ────────────────────────────────
@@ -194,11 +207,14 @@ def main():
     parser = argparse.ArgumentParser(description="ISLES'24 Training Pipeline")
     parser.add_argument("--dataset_dir", type=str,
         default="/kaggle/input/isles24-stroke-dataset/ISLES24_NPY_Dataset")
+    parser.add_argument("--model_path", type=str, default="/kaggle/working/outputs/fold_0/checkpoints/best_overall.pt", help="Đường dẫn file .pt")
     parser.add_argument("--output_dir", type=str, default="/kaggle/working/outputs")
     parser.add_argument("--cta_weights",   type=str, default=None)
     parser.add_argument("--perf_weights",  type=str, default=None)
     parser.add_argument("--metadata_path", type=str,
         default="/kaggle/working/dataset_metadata.csv")
+    parser.add_argument("--resume_from", type=str, default=None, 
+        help="Đường dẫn file .pt để tiếp tục huấn luyện")
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()

@@ -19,29 +19,18 @@ import torch
 class EarlyStopping:
     """
     Dừng training khi metric không cải thiện sau `patience` epoch.
-
-    Args:
-        patience:   Số epoch chờ không cải thiện trước khi dừng
-        min_delta:  Ngưỡng cải thiện tối thiểu để tính là "có tiến bộ"
-        mode:       'max' (metric cao hơn là tốt hơn, ví dụ Dice)
     """
 
-    def __init__(self, patience: int = 15, min_delta: float = 0.001, mode: str = "max"):
+    def __init__(self, patience: int = 15, min_delta: float = 0.001, mode: str = "max", rank: int = 0):
         self.patience   = patience
         self.min_delta  = min_delta
         self.mode       = mode
+        self.rank       = rank
         self.counter    = 0
         self.best_score = None
         self.should_stop = False
 
     def __call__(self, score: float) -> bool:
-        """
-        Args:
-            score: Metric hiện tại (Composite Score)
-
-        Returns:
-            True nếu nên dừng training
-        """
         if self.best_score is None:
             self.best_score = score
             return False
@@ -54,10 +43,12 @@ class EarlyStopping:
             self.counter = 0
         else:
             self.counter += 1
-            print(f"[EarlyStopping] Không cải thiện {self.counter}/{self.patience} epoch")
+            if self.rank == 0:
+                print(f"[EarlyStopping] Không cải thiện {self.counter}/{self.patience} epoch")
             if self.counter >= self.patience:
                 self.should_stop = True
-                print("[EarlyStopping] DỪNG TRAINING!")
+                if self.rank == 0:
+                    print("[EarlyStopping] DỪNG TRAINING!")
 
         return self.should_stop
 
@@ -65,15 +56,13 @@ class EarlyStopping:
 class ModelCheckpoint:
     """
     Lưu checkpoint tốt nhất cho từng metric lâm sàng.
-
-    Args:
-        save_dir: Thư mục lưu checkpoint
-        config:   Dict từ train.yaml (phần checkpoint)
     """
 
-    def __init__(self, save_dir: str, config: dict):
+    def __init__(self, save_dir: str, config: dict, rank: int = 0):
         self.save_dir = save_dir
-        os.makedirs(save_dir, exist_ok=True)
+        self.rank     = rank
+        if self.rank == 0:
+            os.makedirs(save_dir, exist_ok=True)
 
         ckpt_cfg = config["training"]["checkpoint"]
         self.save_overall = ckpt_cfg.get("save_best_overall", True)
@@ -84,16 +73,13 @@ class ModelCheckpoint:
         self.best_lesion    = -float("inf")
         self.best_lvo       = -float("inf")
 
-    def update(self, model, optimizer, epoch: int, metrics: dict):
+    def update(self, model, optimizer, epoch: int, metrics: dict, scheduler=None, history=None):
         """
-        Kiểm tra và lưu checkpoint nếu metric tốt hơn.
+        Lưu trạng thái (chỉ rank 0).
+        """
+        if self.rank != 0:
+            return
 
-        Args:
-            model:     DualEncoderUNet (hoặc DDP-wrapped)
-            optimizer: AdamW optimizer
-            epoch:     Epoch hiện tại
-            metrics:   dict {'composite', 'dice_lesion', 'recall_lvo', 'dice_cow'}
-        """
         # Unwrap DDP nếu cần
         raw_model = model.module if hasattr(model, "module") else model
 
@@ -102,6 +88,8 @@ class ModelCheckpoint:
                 "epoch":      epoch,
                 "model":      raw_model.state_dict(),
                 "optimizer":  optimizer.state_dict(),
+                "scheduler":  scheduler.state_dict() if scheduler else None,
+                "history":    history if history else [],
                 "metrics":    metrics,
             }, path)
             print(f"[Checkpoint] Saved {note}: {path}")

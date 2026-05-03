@@ -102,7 +102,7 @@ def run_clinical_review(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--model_path", type=str, default="/kaggle/working/outputs/fold_0/checkpoints/best_overall.pt", help="Đường dẫn file .pt")
     parser.add_argument("--data_dir", type=str, required=True)
     parser.add_argument("--save_dir", type=str, default="clinical_results")
     parser.add_argument("--no_save", action="store_true", help="Chỉ hiển thị ảnh, không lưu file")
