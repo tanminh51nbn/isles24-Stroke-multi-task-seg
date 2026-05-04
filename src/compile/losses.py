@@ -420,7 +420,7 @@ class MultiTaskLoss(nn.Module):
         self.s_min_lvo    = math.log(u_cfg.get("s_min_lvo", 0.6)**2)
         self.s_min_cow    = math.log(u_cfg.get("s_min_cow", 0.6)**2)
 
-    def forward(self, preds: dict, targets: torch.Tensor, epoch: int = 0) -> dict:
+    def forward(self, preds: dict, targets: torch.Tensor, epoch: int = 0, batch_idx: int = 0) -> dict:
         # 1. Tính toán Main Loss (256x256)
         # Lesion: Kết hợp Tversky (Diện tích) và HD/SDF (Ranh giới)
         l_lesion_main = self.lesion_main_loss(preds["lesion"], targets[:, 0:1])
@@ -498,11 +498,11 @@ class MultiTaskLoss(nn.Module):
                 
                 aux_loss += aux_weights[i] * l_aux
 
-                # [DEBUG] Verify MDS ratio ở tầng resolution cao nhất (i=3) tại epoch đầu tiên
-                if i == 3 and epoch == 0:
+                # [DEBUG] Verify MDS ratio định kỳ ở Epoch 0
+                if i == 3 and epoch == 0 and batch_idx % 50 == 0:
                     # In trực tiếp ra console để verify logic cân bằng
                     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-                         print(f"  [MDS_CHECK] LVO_Aux: {l_lvo_aux.item():.4f} | Lesion_Aux: {l_lesion_aux.item():.4f} (Ratio: {l_lvo_aux.item()/(l_lesion_aux.item()+1e-6):.2f})")
+                         print(f"  [MDS_CHECK] B{batch_idx} LVO_Aux: {l_lvo_aux.item():.4f} | Lesion_Aux: {l_lesion_aux.item():.4f} (Ratio: {l_lvo_aux.item()/(l_lesion_aux.item()+1e-6):.2f})")
 
         # 3. Tổng hợp
         total = main_loss + aux_loss

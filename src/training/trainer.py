@@ -108,7 +108,7 @@ class Trainer:
             # Forward với AMP
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 preds  = self.model(inp)
-                losses = self.loss_fn(preds, lbl, epoch=epoch)
+                losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
 
             # ── [DEBUG] Monitor Gating Signal (Khả năng 1) ──────────────────
             # Chỉ in định kỳ để tránh làm loãng log
