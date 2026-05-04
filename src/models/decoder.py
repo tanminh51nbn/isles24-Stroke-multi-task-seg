@@ -318,7 +318,8 @@ class MultiHeadDecoder(nn.Module):
         )
 
         # 0. Shared Base (Bottleneck + dec4)
-        self.dec4_shared = DecoderBlock(dec_ch[0], bottleneck_ch, dec_ch[0], attn_type, use_aux=True, task_name="shared", aux_ch=3)
+        # Tại level 4: skip_cta (1024) + skip_perf (1024) = 2048 channels
+        self.dec4_shared = DecoderBlock(bottleneck_ch, 2048, dec_ch[0], attn_type, use_aux=True, task_name="shared", aux_ch=3)
         
         # 1. Nhánh Mạch máu (CoW)
         self.vascular_branch = TaskBranch(config, "cow")
