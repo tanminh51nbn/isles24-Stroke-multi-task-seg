@@ -28,9 +28,9 @@ loss:
 
 # ── Uncertainty Weighting Settings ──────────────────────────────
 uncertainty:
-  s_min_lesion: 0.4
-  s_min_lvo: 0.4
-  s_min_cow: 0.7
+  s_min_lesion: 0.3  # Cân bằng lại
+  s_min_lvo: 0.3     # Cân bằng lại
+  s_min_cow: 0.3     # Đưa về mức chung
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
@@ -48,27 +48,27 @@ composite_score:
 optimizer:
   type: "adamw"
   lr: 3.0e-4
-  weight_decay: 3.0e-2 # Tăng gấp 3 lần để chống Overfitting mạnh hơn
-  encoder_lr_scale: 0.1  # Tăng lên 0.1 để encoder học nhanh hơn
+  weight_decay: 1.0e-2 # Giảm mức phạt do kiến trúc đã nhẹ hơn
+  encoder_lr_scale: 0.01 # Giảm sâu để bảo vệ pre-trained ImageNet weights
   eps: 1.0e-7
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 5    # Giảm xuống 3 để đạt LR đỉnh nhanh hơn
+  warmup_epochs: 5    
   hold_epochs: 3
   min_lr: 1.0e-6
 
 # ── Training ────────────────────────────────────────────────────
 training:
-  epochs: 50 #can 100
+  epochs: 60 
   amp: true
   grad_clip_norm: 1.0
-  freeze_encoder_epochs: 10
+  freeze_encoder_epochs: 5 # Cho phép Encoder học sớm hơn vì ImageNet khác Medical Domain
 
   # Checkpointing
   checkpoint:
     dir: "checkpoints"
-    start_epoch: 10 #can 25
+    start_epoch: 5
     save_best_overall: true
     save_best_lesion: true
     save_best_lvo: true
@@ -76,8 +76,8 @@ training:
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 10 #can 25
-    patience: 15 #can 30
+    start_epoch: 5
+    patience: 15
     min_delta: 0.001
 
   # Logging

@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from typing import List
 
-from models.encoder import ResNet50Encoder, DenseNet121Encoder
+from models.encoder import build_encoders
 from models.decoder import MultiHeadDecoder
 from models.heads import MultiTaskHeads
 
@@ -27,7 +27,7 @@ class DualEncoderUNet(nn.Module):
 
     Thiết kế:
         - 2 Encoder chuyên biệt (CTA + Perfusion) → tận dụng sở trường từng loại ảnh
-        - 1 Decoder chung → học cách kết hợp thông tin đa phương thức
+        - 1 Decoder chung (nhưng tách nhánh con) → học cách kết hợp thông tin đa phương thức
         - 3 Heads độc lập → multi-task learning
     """
 
@@ -42,17 +42,8 @@ class DualEncoderUNet(nn.Module):
         self.cta_idx  = config["channel_split"]["cta_indices"]    # 6 kênh
         self.perf_idx = config["channel_split"]["perfusion_indices"]  # 12 kênh
 
-        # Encoder CTA: ResNet-50 + RadImageNet
-        self.cta_encoder = ResNet50Encoder(
-            in_channels=len(self.cta_idx),
-            weights_path=config["cta_encoder"]["weights"],
-        )
-
-        # Encoder Perfusion: DenseNet-121 + RadImageNet
-        self.perf_encoder = DenseNet121Encoder(
-            in_channels=len(self.perf_idx),
-            weights_path=config["perfusion_encoder"]["weights"],
-        )
+        # Khởi tạo 2 Encoders thông qua Factory
+        self.cta_encoder, self.perf_encoder = build_encoders(config)
 
         # Decoder đa nhánh kết hợp skip features từ 2 encoder
         self.decoder = MultiHeadDecoder(config)

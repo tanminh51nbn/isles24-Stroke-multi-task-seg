@@ -12,29 +12,22 @@ channel_split:
   cta_indices: [0, 1, 6, 7, 12, 13]         # CTA_w1, CTA_w2 from each slice
   perfusion_indices: [2, 3, 4, 5, 8, 9, 10, 11, 14, 15, 16, 17]  # Tmax,CBF,CBV,MTT from each slice
 
-# ── CTA Encoder (ResNet-50) ──────────────────────────────────────
+# ── CTA Encoder (ResNet-34) ──────────────────────────────────────
 cta_encoder:
-  name: "resnet50"
+  name: "resnet34"
   in_channels: 6
-  # RadImageNet PyTorch weights
-  weights: "/kaggle/input/datasets/muynhmuynh/radimagenet-pytorch/ResNet50.pt"
-  # Conv1 inflation: mean(W, dim=1, keepdim=True).repeat(1, in_channels, 1, 1) * (3 / in_channels)
-  output_channels: [64, 256, 512, 1024, 2048]  # Skip levels 1-5
+  output_channels: [64, 64, 128, 256, 512]
 
-# ── Perfusion Encoder (DenseNet-121) ────────────────────────────
+# ── Perfusion Encoder (EfficientNet-B0) ─────────────────────────
 perfusion_encoder:
-  name: "densenet121"
+  name: "efficientnet_b0"
   in_channels: 12
-  weights: "/kaggle/input/datasets/muynhmuynh/radimagenet-pytorch/DenseNet121.pt"
-
-
-  # Conv0 inflation: same formula, repeat 4x (12/3=4)
-  output_channels: [64, 128, 256, 512, 1024]   # Skip levels 1-5
+  output_channels: [16, 24, 40, 112, 320]
 
 # ── Decoder ─────────────────────────────────────────────────────
 decoder:
   attention_type: "dual"  # "dual", "ag", or null
-  out_channels: [512, 256, 128, 64]
+  out_channels: [128, 64, 32, 16] # Decoder siêu nhẹ
   final_ch: 16
 
 # ── Heads (Residual Task Blocks) ────────────────────────────────

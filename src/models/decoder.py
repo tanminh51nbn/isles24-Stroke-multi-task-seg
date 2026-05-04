@@ -180,134 +180,83 @@ class DecoderBlock(nn.Module):
 
 class TaskBranch(nn.Module):
     """
-    Một nhánh Decoder rẽ sau tầng dec4 dành cho các task đơn lẻ (như CoW).
+    Nhánh Decoder rẽ nhánh độc lập cho từng Task.
+    Được thiết kế siêu nhẹ với các cấp độ giảm dần [128, 64, 32, 16].
     """
-    def __init__(self, config: dict, task_name: str):
+    def __init__(self, config: dict, task_name: str, bottleneck_ch: int = 512):
         super().__init__()
-        dec_ch = config["decoder"]["out_channels"]
+        dec_ch = config["decoder"]["out_channels"] # [128, 64, 32, 16]
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
-        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type, use_aux=True, task_name=task_name)
-        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True, task_name=task_name)
-        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name=task_name)
+        # Tính toán skip_channels từ ResNet34 và EfficientNetB0
+        # s4(256) + d4(112) = 368
+        # s3(128) + d3(40)  = 168
+        # s2(64)  + d2(24)  = 88
+        # s1(64)  + d1(16)  = 80
+        
+        self.dec4 = DecoderBlock(in_ch=bottleneck_ch, skip_ch=368, out_ch=dec_ch[0], attention_type=attn_type, use_aux=True, task_name=task_name)
+        self.dec3 = DecoderBlock(in_ch=dec_ch[0], skip_ch=168, out_ch=dec_ch[1], attention_type=attn_type, use_aux=True, task_name=task_name)
+        self.dec2 = DecoderBlock(in_ch=dec_ch[1], skip_ch=88, out_ch=dec_ch[2], attention_type=attn_type, use_aux=True, task_name=task_name)
+        self.dec1 = DecoderBlock(in_ch=dec_ch[2], skip_ch=80, out_ch=dec_ch[3], attention_type=attn_type, use_aux=True, task_name=task_name)
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
-    def forward(self, x, cta_skips, perf_skips, aux4_branch):
-        s1, s2, s3, _, _ = cta_skips
-        d1, d2, d3, _, _ = perf_skips
+    def forward(self, x, cta_skips, perf_skips):
+        s1, s2, s3, s4, _ = cta_skips
+        d1, d2, d3, d4, _ = perf_skips
 
-        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_branch)
+        x, aux4 = self.dec4(x, s4, d4, prev_mask=None)
+        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4)
         x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
         x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
 
         x = self.up_final(x)
         x = self.final_conv(x)
         
-        return x, [aux3, aux2, aux1]
-
-
-class IschemicBranch(nn.Module):
-    """
-    Nhánh Ischemic dùng chung cho Lesion và LVO.
-    [SOLUTION A]: Tích hợp cơ chế Clinical Guidance từ LVO sang Lesion.
-    """
-    def __init__(self, config: dict):
-        super().__init__()
-        dec_ch = config["decoder"]["out_channels"]
-        final_ch = config["decoder"].get("final_ch", 16)
-        attn_type = config["decoder"].get("attention_type", "dual")
-
-        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type, use_aux=True, task_name="ischemic", aux_ch=2)
-        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True, task_name="ischemic", aux_ch=2)
-        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name="ischemic", aux_ch=2)
-
-        self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
-        
-        # Heads cho Ischemic
-        self.final_conv_lvo    = ConvBnGelu(dec_ch[3], final_ch)
-        
-        # [SOLUTION A] Lesion sẽ nhận thêm thông tin từ LVO Features
-        self.lvo_to_lesion_gate = nn.Sequential(
-            nn.Conv2d(final_ch, final_ch // 2, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(final_ch // 2, 1, kernel_size=1),
-            nn.Sigmoid()
-        )
-        # Conv này sẽ nhận x_up (dec_ch[3]) + guidance (1ch)
-        self.final_conv_lesion = ConvBnGelu(dec_ch[3] + 1, final_ch)
-
-    def forward(self, x, cta_skips, perf_skips, aux4_shared):
-        s1, s2, s3, _, _ = cta_skips
-        d1, d2, d3, _, _ = perf_skips
-
-        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 0:2])
-        x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
-        x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
-
-        x_up = self.up_final(x)
-        
-        # 1. Dự đoán đặc trưng LVO trước
-        f_lvo = self.final_conv_lvo(x_up)
-        
-        # 2. [SOLUTION A] Tạo bản đồ dẫn đường (Spatial Guidance) từ LVO
-        # Bản đồ này báo cho Lesion biết vùng nào có khả năng tắc mạch cao
-        guidance = self.lvo_to_lesion_gate(f_lvo)
-        
-        # 3. Dự đoán đặc trưng Lesion với sự dẫn đường của LVO
-        f_lesion = self.final_conv_lesion(torch.cat([x_up, guidance], dim=1))
-        
-        return f_lesion, f_lvo, [aux3, aux2, aux1]
+        return x, [aux4, aux3, aux2, aux1]
 
 
 class MultiHeadDecoder(nn.Module):
     """
-    Multi-Head Decoder (Ischemic + Vascular Split):
-    - Shared Bottleneck & Shared dec4 (32x32).
-    - Ischemic Branch: Gộp Lesion + LVO (Tiết kiệm VRAM & Tăng cường bổ trợ).
-    - Vascular Branch: CoW riêng biệt.
+    Multi-Head Decoder (Decoupled 100%):
+    - Tách biệt hoàn toàn Lesion, LVO, CoW để tránh xung đột Gradients.
+    - Không còn Toxic Guidance từ LVO sang Lesion.
     """
     def __init__(self, config: dict):
         super().__init__()
-        dec_ch = config["decoder"]["out_channels"]
-        attn_type = config["decoder"].get("attention_type", "dual")
         
-        # 1. Bottleneck chung (3072 -> 1024)
+        # 1. Bottleneck chung 
+        # s5(512) + d5(320) = 832
         self.shared_bottleneck = nn.Sequential(
-            ConvBnGelu1x1(3072, 1024),
-            ConvBnGelu(1024, 1024),
+            ConvBnGelu1x1(832, 512),
+            ConvBnGelu(512, 512),
         )
 
-        # 2. Shared dec4 (32x32)
-        # aux_ch=3 (lesion, lvo, cow)
-        self.shared_dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type, use_aux=True, task_name="shared", aux_ch=3)
-
-        # 3. Hai nhánh chính
-        self.ischemic_branch = IschemicBranch(config)
-        self.cow_branch      = TaskBranch(config, "cow")
+        # 2. Ba nhánh chính độc lập
+        self.lesion_branch = TaskBranch(config, "lesion", bottleneck_ch=512)
+        self.lvo_branch    = TaskBranch(config, "lvo", bottleneck_ch=512)
+        self.cow_branch    = TaskBranch(config, "cow", bottleneck_ch=512)
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor]):
-        s5, s4 = cta_skips[4], cta_skips[3]
-        d5, d4 = perf_skips[4], perf_skips[3]
+        s5 = cta_skips[4]
+        d5 = perf_skips[4]
 
-        # Shared processing
+        # Shared processing tại cấp sâu nhất
         x = torch.cat([s5, d5], dim=1)
         x = self.shared_bottleneck(x)
-        x, aux4_3ch = self.shared_dec4(x, s4, d4, prev_mask=None)
 
         # Splitting
-        # Nhánh Ischemic nhận 2 kênh (0: lesion, 1: lvo)
-        f_lesion, f_lvo, aux_i = self.ischemic_branch(x, cta_skips, perf_skips, aux4_3ch[:, 0:2])
-        # Nhánh Vascular nhận kênh 2 (cow)
-        f_cow, aux_c = self.cow_branch(x, cta_skips, perf_skips, aux4_3ch[:, 2:3])
+        f_lesion, aux_lesion = self.lesion_branch(x, cta_skips, perf_skips)
+        f_lvo, aux_lvo       = self.lvo_branch(x, cta_skips, perf_skips)
+        f_cow, aux_cow       = self.cow_branch(x, cta_skips, perf_skips)
 
-        # Gộp các Aux Masks
-        aux_masks = [aux4_3ch]
-        for i in range(3): # aux3, aux2, aux1
-            # aux_i[i] là 2-channel (lesion, lvo), aux_c[i] là 1-channel (cow)
-            mask = torch.cat([aux_i[i], aux_c[i]], dim=1)
+        # Gộp các Aux Masks (aux4, aux3, aux2, aux1)
+        aux_masks = []
+        for i in range(4): 
+            # Ghép theo thứ tự: lesion(ch0), lvo(ch1), cow(ch2) để tương thích với hàm Loss
+            mask = torch.cat([aux_lesion[i], aux_lvo[i], aux_cow[i]], dim=1)
             aux_masks.append(mask)
 
         features = {"lesion": f_lesion, "lvo": f_lvo, "cow": f_cow}
