@@ -116,11 +116,11 @@ class AuxHead(nn.Module):
         with torch.no_grad():
             if task_name == "lesion":
                 self.conv.bias[0] = -2.944
-            elif task_name in ["lvo", "cow", "shared"]:
+            elif task_name in ["lvo", "cow", "shared", "ischemic"]:
                 self.conv.bias[0] = -4.595
-                if out_ch > 1: # Cho shared dec4
-                    self.conv.bias[1] = -4.595
-                    self.conv.bias[2] = -4.595
+                if out_ch > 1: # Cho shared dec4 hoặc ischemic
+                    for i in range(1, out_ch):
+                        self.conv.bias[i] = -4.595
 
     def forward(self, x):
         return self.conv(x)
@@ -180,7 +180,7 @@ class DecoderBlock(nn.Module):
 
 class TaskBranch(nn.Module):
     """
-    Một nhánh Decoder rẽ sau tầng dec4. Bao gồm dec3, dec2, dec1.
+    Một nhánh Decoder rẽ sau tầng dec4 dành cho các task đơn lẻ (như CoW).
     """
     def __init__(self, config: dict, task_name: str):
         super().__init__()
@@ -188,7 +188,6 @@ class TaskBranch(nn.Module):
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
-        # Rẽ nhánh từ dec3 (64x64)
         self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type, use_aux=True, task_name=task_name)
         self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True, task_name=task_name)
         self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name=task_name)
@@ -200,10 +199,9 @@ class TaskBranch(nn.Module):
         s1, s2, s3, _, _ = cta_skips
         d1, d2, d3, _, _ = perf_skips
 
-        # Feedback từ aux4 của nhánh tương ứng (1 channel)
-        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_branch) # 64x64
-        x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)        # 128x128
-        x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)        # 256x256
+        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_branch)
+        x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
+        x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
 
         x = self.up_final(x)
         x = self.final_conv(x)
@@ -211,12 +209,65 @@ class TaskBranch(nn.Module):
         return x, [aux3, aux2, aux1]
 
 
+class IschemicBranch(nn.Module):
+    """
+    Nhánh Ischemic dùng chung cho Lesion và LVO.
+    [SOLUTION A]: Tích hợp cơ chế Clinical Guidance từ LVO sang Lesion.
+    """
+    def __init__(self, config: dict):
+        super().__init__()
+        dec_ch = config["decoder"]["out_channels"]
+        final_ch = config["decoder"].get("final_ch", 16)
+        attn_type = config["decoder"].get("attention_type", "dual")
+
+        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type, use_aux=True, task_name="ischemic", aux_ch=2)
+        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True, task_name="ischemic", aux_ch=2)
+        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name="ischemic", aux_ch=2)
+
+        self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        
+        # Heads cho Ischemic
+        self.final_conv_lvo    = ConvBnGelu(dec_ch[3], final_ch)
+        
+        # [SOLUTION A] Lesion sẽ nhận thêm thông tin từ LVO Features
+        self.lvo_to_lesion_gate = nn.Sequential(
+            nn.Conv2d(final_ch, final_ch // 2, kernel_size=1),
+            nn.GELU(),
+            nn.Conv2d(final_ch // 2, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        # Conv này sẽ nhận x_up (dec_ch[3]) + guidance (1ch)
+        self.final_conv_lesion = ConvBnGelu(dec_ch[3] + 1, final_ch)
+
+    def forward(self, x, cta_skips, perf_skips, aux4_shared):
+        s1, s2, s3, _, _ = cta_skips
+        d1, d2, d3, _, _ = perf_skips
+
+        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 0:2])
+        x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
+        x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
+
+        x_up = self.up_final(x)
+        
+        # 1. Dự đoán đặc trưng LVO trước
+        f_lvo = self.final_conv_lvo(x_up)
+        
+        # 2. [SOLUTION A] Tạo bản đồ dẫn đường (Spatial Guidance) từ LVO
+        # Bản đồ này báo cho Lesion biết vùng nào có khả năng tắc mạch cao
+        guidance = self.lvo_to_lesion_gate(f_lvo)
+        
+        # 3. Dự đoán đặc trưng Lesion với sự dẫn đường của LVO
+        f_lesion = self.final_conv_lesion(torch.cat([x_up, guidance], dim=1))
+        
+        return f_lesion, f_lvo, [aux3, aux2, aux1]
+
+
 class MultiHeadDecoder(nn.Module):
     """
-    Multi-Head Decoder (Late Branching + Bottleneck): 
+    Multi-Head Decoder (Ischemic + Vascular Split):
     - Shared Bottleneck & Shared dec4 (32x32).
-    - Branching from dec3 (64x64).
-    - Memory efficient for Kaggle T4.
+    - Ischemic Branch: Gộp Lesion + LVO (Tiết kiệm VRAM & Tăng cường bổ trợ).
+    - Vascular Branch: CoW riêng biệt.
     """
     def __init__(self, config: dict):
         super().__init__()
@@ -229,14 +280,13 @@ class MultiHeadDecoder(nn.Module):
             ConvBnGelu(1024, 1024),
         )
 
-        # 2. Shared dec4 (Tầng sâu nhất 32x32 - Đặc trưng ngữ cảnh chung)
-        # Tầng này output 3-channel aux mask để học đặc trưng cho cả 3 task
+        # 2. Shared dec4 (32x32)
+        # aux_ch=3 (lesion, lvo, cow)
         self.shared_dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type, use_aux=True, task_name="shared", aux_ch=3)
 
-        # 3. Rẽ 3 nhánh từ dec3 (64x64 - Bắt đầu chi tiết hóa từng task)
-        self.lesion_branch = TaskBranch(config, "lesion")
-        self.lvo_branch    = TaskBranch(config, "lvo")
-        self.cow_branch    = TaskBranch(config, "cow")
+        # 3. Hai nhánh chính
+        self.ischemic_branch = IschemicBranch(config)
+        self.cow_branch      = TaskBranch(config, "cow")
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor]):
         s5, s4 = cta_skips[4], cta_skips[3]
@@ -247,16 +297,17 @@ class MultiHeadDecoder(nn.Module):
         x = self.shared_bottleneck(x)
         x, aux4_3ch = self.shared_dec4(x, s4, d4, prev_mask=None)
 
-        # Splitting (Late Branching)
-        # Lấy từng kênh của aux4 cho từng nhánh
-        f_lesion, aux_l = self.lesion_branch(x, cta_skips, perf_skips, aux4_3ch[:, 0:1])
-        f_lvo,    aux_v = self.lvo_branch(x, cta_skips, perf_skips, aux4_3ch[:, 1:2])
-        f_cow,    aux_c = self.cow_branch(x, cta_skips, perf_skips, aux4_3ch[:, 2:3])
+        # Splitting
+        # Nhánh Ischemic nhận 2 kênh (0: lesion, 1: lvo)
+        f_lesion, f_lvo, aux_i = self.ischemic_branch(x, cta_skips, perf_skips, aux4_3ch[:, 0:2])
+        # Nhánh Vascular nhận kênh 2 (cow)
+        f_cow, aux_c = self.cow_branch(x, cta_skips, perf_skips, aux4_3ch[:, 2:3])
 
-        # Gộp các Aux Masks lại thành Tensor (B, 3, H, W)
-        aux_masks = [aux4_3ch] # aux4 đã có sẵn 3 ch
+        # Gộp các Aux Masks
+        aux_masks = [aux4_3ch]
         for i in range(3): # aux3, aux2, aux1
-            mask = torch.cat([aux_l[i], aux_v[i], aux_c[i]], dim=1)
+            # aux_i[i] là 2-channel (lesion, lvo), aux_c[i] là 1-channel (cow)
+            mask = torch.cat([aux_i[i], aux_c[i]], dim=1)
             aux_masks.append(mask)
 
         features = {"lesion": f_lesion, "lvo": f_lvo, "cow": f_cow}
