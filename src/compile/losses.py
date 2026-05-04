@@ -501,7 +501,7 @@ class MultiTaskLoss(nn.Module):
                 aux_loss += aux_weights[i] * l_aux
 
                 # [DEBUG] Verify MDS ratio định kỳ ở Epoch 0
-                if i == 3 and epoch == 0 and batch_idx % 50 == 0:
+                if i == 3 and epoch == 0 and batch_idx % 100 == 0:
                     # In trực tiếp ra console để verify logic cân bằng
                     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
                          print(f"  [MDS_CHECK] B{batch_idx} LVO_Aux: {l_lvo_aux.item():.4f} | Lesion_Aux: {l_lesion_aux.item():.4f} (Ratio: {l_lvo_aux.item()/(l_lesion_aux.item()+1e-6):.2f})")
