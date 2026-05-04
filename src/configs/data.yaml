@@ -26,8 +26,8 @@ dataloader:
 sampling:
   enabled: true
   metadata_csv: "/kaggle/working/dataset_metadata.csv"
-  # Oversample lát cắt có LVO (rất hiếm) lên 3 lần (giảm để tránh thống trị task)
-  lvo_oversample_factor: 3
+  # Oversample lát cắt có LVO (rất hiếm) lên 10 lần để hỗ trợ Curriculum Learning
+  lvo_oversample_factor: 10
   # [FIX 1] Tách neg_list thành 2 nhóm:
   # - cow_neg_keepall: Giữ 100% slice CoW(+) Lesion(-) — counter-examples được yếu quý
   # - plain_neg_ratio: Chỉ giữ 30% slice não trống hoàn toàn (không CoW, không Lesion)

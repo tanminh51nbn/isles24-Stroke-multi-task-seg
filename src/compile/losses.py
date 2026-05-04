@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from typing import Tuple
 
 
 # ─── Tversky Loss ─────────────────────────────────────────────────────────────
@@ -112,19 +113,7 @@ class FocalTverskyLoss(nn.Module):
 class ModifiedFocalLoss(nn.Module):
     """
     Modified Focal Loss dành riêng cho Heatmap Regression (LVO).
-    Dựa trên paper CenterNet (Objects as Points, 2019).
-
-    Công thức:
-        Tại tâm (y = 1.0):  L = -(1 - pred)^alpha * log(pred)
-        Tại vùng nền (y < 1): L = -(1 - y)^beta * pred^alpha * log(1 - pred)
-
-    - Giảm phạt vùng "suýt đúng" (gần tâm, gt ~ 0.8): (1-0.8)^4 = 0.0016
-    - Phạt nặng khi bỏ sót tâm thật sự (gt=1, pred=0): (1-0)^2 * log(0+eps)
-    - Loss luôn nằm trong [0, 1] sau khi clamp để AMP an toàn.
-
-    Args:
-        alpha: Hệ số Focal cho vùng tâm (mặc định 2).
-        beta:  Hệ số giảm phạt cho vùng quầng sáng xung quanh (mặc định 4).
+    Hỗ trợ Gaussian Blurring on-the-fly để thực hiện Curriculum Learning.
     """
 
     def __init__(self, alpha: float = 2.0, beta: float = 4.0, eps: float = 1e-6):
@@ -133,42 +122,127 @@ class ModifiedFocalLoss(nn.Module):
         self.beta  = beta
         self.eps   = eps
 
-    def forward(self, logits: torch.Tensor, heatmap_gt: torch.Tensor) -> torch.Tensor:
+    def _apply_gaussian_blur(self, mask: torch.Tensor, sigma: float) -> torch.Tensor:
+        """Áp dụng Gaussian Blur on-the-fly trên GPU."""
+        if sigma <= 0:
+            return mask
+        
+        kernel_size = int(sigma * 4)
+        if kernel_size % 2 == 0: kernel_size += 1
+        
+        # Tạo Gaussian kernel
+        x = torch.arange(kernel_size).float() - (kernel_size - 1) / 2
+        kernel_1d = torch.exp(-x.pow(2) / (2 * sigma**2))
+        kernel_1d = kernel_1d / kernel_1d.sum()
+        
+        kernel_2d = kernel_1d.view(1, 1, -1, 1) * kernel_1d.view(1, 1, 1, -1)
+        kernel_2d = kernel_2d.to(mask.device)
+        
+        # Thêm padding để giữ nguyên size
+        padding = kernel_size // 2
+        blurred = F.conv2d(mask, kernel_2d, padding=padding)
+        
+        # Normalize peak = 1.0 (như make_lvo_heatmap trong dataset.py)
+        # Thực hiện per-instance (batch-wise)
+        peaks = blurred.view(blurred.size(0), -1).max(dim=1)[0].view(-1, 1, 1, 1)
+        return blurred / peaks.clamp(min=1e-6)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, sigma: float = 0.0) -> torch.Tensor:
         """
         Args:
-            logits:     Raw logits từ LVO head, shape (B, 1, H, W)
-            heatmap_gt: Gaussian Heatmap GT, shape (B, 1, H, W), values [0, 1]
+            logits:  Raw logits (B, 1, H, W)
+            targets: Binary mask (B, 1, H, W)
+            sigma:   Độ nhòe của heatmap.
         """
-        # [QUAN TRỌNG] Chuyển sang FP32 để tránh tràn số (overflow) và NaN khi cộng tổng (sum) trong AMP
         logits = logits.float()
+        
+        # Tạo Heatmap từ Binary Mask on-the-fly
+        heatmap_gt = self._apply_gaussian_blur(targets, sigma) if sigma > 0 else targets
         heatmap_gt = heatmap_gt.float()
 
         pred = torch.sigmoid(logits)
         pred = pred.clamp(min=self.eps, max=1.0 - self.eps)
 
-        # Phân vùng tâm (gt = 1.0) và vùng không phải tâm (gt < 1.0)
         pos_mask = (heatmap_gt == 1.0).float()
         neg_mask = 1.0 - pos_mask
 
-        # Loss tại tâm: phạt nặng khi pred thấp
         pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred)
-
-        # Loss tại nền: giảm phạt tỉ lệ với (1 - gt)^beta — càng gần tâm, phạt càng nhẹ
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * \
                    torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
 
-        # Tính tổng theo từng ảnh trong batch (dim H, W)
         pos_loss = pos_loss.sum(dim=(1, 2, 3))
         neg_loss = neg_loss.sum(dim=(1, 2, 3))
         
-        # Số pixel tâm thực sự (tránh chia 0 khi không có LVO trong ảnh)
         num_pos = pos_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
+        return ((pos_loss + neg_loss) / num_pos).mean()
 
-        # Trọng số trung bình của batch
-        # KHÔNG ĐƯỢC CLAMP TỔNG LOSS (sẽ làm gradient = 0)
-        loss = ((pos_loss + neg_loss) / num_pos).mean()
+
+# ─── Curriculum LVO Loss ─────────────────────────────────────────────────────
+
+class CurriculumLVOLoss(nn.Module):
+    """
+    Điều phối lộ trình học tập (Curriculum) cho task LVO.
+    """
+    def __init__(self, config: dict):
+        super().__init__()
+        lvo_cfg = config["loss"]["lvo"]
+        self.mfl = ModifiedFocalLoss(
+            alpha=lvo_cfg.get("mfl_alpha", 2.0),
+            beta=lvo_cfg.get("mfl_beta", 4.0)
+        )
+        self.ftl = FocalTverskyLoss(
+            alpha=0.2, beta=0.8, gamma=2.0 # Mặc định cho giai đoạn sau
+        )
         
-        return loss
+        # Cấu hình lộ trình từ train.yaml
+        curr_cfg = config["training"].get("curriculum_learning", {})
+        self.enabled = curr_cfg.get("enabled", False)
+        
+        # Ngưỡng chuyển giai đoạn
+        self.phase1_end = 6  # Epoch 0-5
+        self.phase2_end = 16 # Epoch 6-15
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, epoch: int) -> Tuple[torch.Tensor, float]:
+        """
+        Trả về: (loss_value, weight_scale)
+        """
+        if not self.enabled:
+            return self.mfl(logits, targets, sigma=4.0), 1.0
+
+        # Giai đoạn 1: Warmup (Soft Heatmap + Low Weight) - Epoch 0-5
+        if epoch < 6:
+            loss = self.mfl(logits, targets, sigma=10.0)
+            return loss, 0.5
+
+        # Giai đoạn 2: Ramp-up (Medium Heatmap + Normal Weight) - Epoch 6-13
+        elif epoch < 14:
+            loss = self.mfl(logits, targets, sigma=5.0)
+            return loss, 1.0
+
+        # Giai đoạn 2b: Bridge (Sharp Heatmap + Bridge Weight) - Epoch 14-15
+        # [SOLUTION] Làm mượt bước nhảy từ Heatmap sang Binary
+        elif epoch < 16:
+            loss = self.mfl(logits, targets, sigma=3.0)
+            return loss, 1.2
+
+        # Giai đoạn 3: Hard Mining (Strict Binary + High Weight) - Epoch 16+
+        else:
+            # Dùng Focal Tversky để tập trung vào precision cực cao
+            loss = self.ftl(logits, targets) 
+            return loss, 1.5
+
+    def get_mds_boost(self, epoch: int) -> float:
+        """
+        [FIX] MDS Boost Schedule để tránh Gradient Shock.
+        Khởi động nhẹ nhàng (x1.0) và bứt phá ở giai đoạn cuối (x3.5).
+        """
+        if epoch < 6:
+            return 1.0  # Giai đoạn 1: Không boost
+        elif epoch < 16:
+            return 2.2  # Giai đoạn 2: Boost trung bình
+        else:
+            return 3.5  # Giai đoạn 3: Boost mạnh để đạt Target Recall > 0.25
+
 
 
 # ─── Multi-Task Loss ──────────────────────────────────────────────────────────
@@ -317,14 +391,10 @@ class MultiTaskLoss(nn.Module):
         if self.w_lesion_hd > 0:
             self.hd_loss_fn = SDFBoundaryLoss()
 
-        # 2. LVO Task — Dùng Modified Focal Loss cho Heatmap Regression
-        lvo_cfg = loss_cfg["lvo"]
-        self.lvo_main_loss = ModifiedFocalLoss(
-            alpha=lvo_cfg.get("mfl_alpha", 2.0),
-            beta=lvo_cfg.get("mfl_beta", 4.0),
-        )
-        self.w_lvo = lvo_cfg["weight"]
-        self.w_lvo_boundary = 0.0  # Boundary Loss không phù hợp với Heatmap
+        # 2. LVO Task — Dùng Curriculum Loss
+        self.lvo_loss_fn = CurriculumLVOLoss(config)
+        self.w_lvo = loss_cfg["lvo"]["weight"]
+        self.w_lvo_boundary = 0.0
 
         # 3. CoW Task
         cow_cfg = loss_cfg["cow"]
@@ -350,7 +420,7 @@ class MultiTaskLoss(nn.Module):
         self.s_min_lvo    = math.log(u_cfg.get("s_min_lvo", 0.6)**2)
         self.s_min_cow    = math.log(u_cfg.get("s_min_cow", 0.6)**2)
 
-    def forward(self, preds: dict, targets: torch.Tensor) -> dict:
+    def forward(self, preds: dict, targets: torch.Tensor, epoch: int = 0) -> dict:
         # 1. Tính toán Main Loss (256x256)
         # Lesion: Kết hợp Tversky (Diện tích) và HD/SDF (Ranh giới)
         l_lesion_main = self.lesion_main_loss(preds["lesion"], targets[:, 0:1])
@@ -362,8 +432,9 @@ class MultiTaskLoss(nn.Module):
         else:
             l_lesion = l_lesion_main
 
-        # LVO dùng ModifiedFocalLoss với Heatmap GT — không dùng Boundary Loss
-        l_lvo = self.lvo_main_loss(preds["lvo"], targets[:, 1:2])
+        # LVO: Dùng Curriculum Learning (trả về loss và weight_scale)
+        l_lvo_base, lvo_scale = self.lvo_loss_fn(preds["lvo"], targets[:, 1:2], epoch)
+        l_lvo = l_lvo_base * lvo_scale
 
         # 3. CoW: Kết hợp Tversky (Diện tích) và Soft-CLDice (Thông suốt)
         l_cow_geom = self.cow_main_loss(preds["cow"], targets[:, 2:3])
@@ -400,12 +471,8 @@ class MultiTaskLoss(nn.Module):
 
                 # [QUAN TRỌNG] Tách biệt logic resize cho từng loại nhãn:
                 #
-                # LVO (Heatmap):   Dùng adaptive_max_pool2d để BẢO TOÀN ĐỈNH (peak=1.0).
-                #   → Nếu dùng 'nearest'/'bilinear', điểm 1.0 đơn lẻ có thể bị mất hoàn toàn.
-                #
+                # LVO (Heatmap/Binary): Dùng adaptive_max_pool2d để BẢO TOÀN ĐỈNH.
                 # Lesion & CoW (Binary Mask): Dùng interpolate(mode='nearest') để GIỮ NGUYÊN ĐỘ MẢNH.
-                #   → Nếu dùng max_pool, nhãn CoW (mạch 1-2 pixel) bị PHÌNH to gấp nhiều lần,
-                #     tạo mâu thuẫn tín hiệu giữa Aux Loss (CoW to) và Main Loss (CoW mảnh).
                 target_lvo     = F.adaptive_max_pool2d(targets[:, 1:2], output_size=(h, w))
                 target_lesion  = F.interpolate(targets[:, 0:1].float(), size=(h, w), mode='nearest')
                 target_cow     = F.interpolate(targets[:, 2:3].float(), size=(h, w), mode='nearest')
@@ -415,10 +482,15 @@ class MultiTaskLoss(nn.Module):
                 l_cow_aux    = self.cow_main_loss(aux_pred[:, 2:3], target_cow)
                 
                 # Chỉ tính LVO ở tầng 128 (i=2) và 256 (i=3)
-                # Lý do: Ở 32 và 64, điểm LVO bị biến mất do nén ảnh, gây nhiễu gradient.
                 if i >= 2:
-                    l_lvo_aux = self.lvo_main_loss(aux_pred[:, 1:2], target_lvo)
-                    l_aux = self.w_lesion * l_lesion_aux + self.w_lvo * l_lvo_aux + self.w_cow * l_cow_aux
+                    # Chú ý: Ở Aux layer cũng dùng Curriculum
+                    l_lvo_aux_base, lvo_aux_scale = self.lvo_loss_fn(aux_pred[:, 1:2], target_lvo, epoch)
+                    l_lvo_aux = l_lvo_aux_base * lvo_aux_scale
+                    
+                    # [FIX] MDS Balancing: Boost LVO động theo epoch để tránh Gradient Shock.
+                    # Khởi đầu x1.0 và tăng dần lên x3.5.
+                    mds_boost = self.lvo_loss_fn.get_mds_boost(epoch)
+                    l_aux = self.w_lesion * l_lesion_aux + (self.w_lvo * l_lvo_aux * mds_boost) + self.w_cow * l_cow_aux
                 else:
                     # Ở tầng sâu, chỉ tập trung vào Lesion và CoW (re-scale trọng số)
                     w_sum = self.w_lesion + self.w_cow
@@ -426,9 +498,16 @@ class MultiTaskLoss(nn.Module):
                 
                 aux_loss += aux_weights[i] * l_aux
 
+                # [DEBUG] Verify MDS ratio ở tầng resolution cao nhất (i=3) tại epoch đầu tiên
+                if i == 3 and epoch == 0:
+                    # In trực tiếp ra console để verify logic cân bằng
+                    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                         print(f"  [MDS_CHECK] LVO_Aux: {l_lvo_aux.item():.4f} | Lesion_Aux: {l_lesion_aux.item():.4f} (Ratio: {l_lvo_aux.item()/(l_lesion_aux.item()+1e-6):.2f})")
+
         # 3. Tổng hợp
         total = main_loss + aux_loss
         total = torch.nan_to_num(total, nan=1.0, posinf=1.0, neginf=1.0)
+
 
         # Tính Sigma (Uncertainty) để log ra màn hình: sigma = exp(s/2)
         sigma_lesion = torch.exp(s_lesion / 2.0).item()

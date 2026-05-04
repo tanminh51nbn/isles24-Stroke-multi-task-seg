@@ -108,7 +108,20 @@ class Trainer:
             # Forward với AMP
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 preds  = self.model(inp)
-                losses = self.loss_fn(preds, lbl)
+                losses = self.loss_fn(preds, lbl, epoch=epoch)
+
+            # ── [DEBUG] Monitor Gating Signal (Khả năng 1) ──────────────────
+            # Chỉ in định kỳ để tránh làm loãng log
+            if batch_idx % self.log_interval == 0 and self.rank == 0:
+                g_maps = preds.get("guidance_maps", {})
+                v_map = g_maps.get("v_guidance") # (B, 1, H, W)
+                if v_map is not None:
+                    m_val = v_map.mean().item()
+                    s_val = v_map.std().item()
+                    print(f"    [GATE_DEBUG] Epoch {epoch+1} Batch {batch_idx}: Mean={m_val:.3f}, Std={s_val:.3f}")
+                    if m_val > 0.45 and m_val < 0.55 and s_val < 0.05:
+                        print("    [WARN] Gate is currently uniform. Vascular Guidance not yet effective.")
+            # ─────────────────────────────────────────────────────────────────
 
             # ── Stage 2: Kiểm tra NaN trong Loss (AMP overflow) ──────────────
             if not torch.isfinite(losses["total"]):
@@ -125,6 +138,23 @@ class Trainer:
 
             # Gradient clipping
             self.scaler.unscale_(self.optimizer)
+
+            # ── [DEBUG] Monitor Branch Gradients (Khả năng 3) ───────────────
+            # Theo dõi xem LVO branch có nhận đủ gradient không
+            if batch_idx % self.log_interval == 0 and self.rank == 0:
+                grad_norms = {"lesion": 0.0, "lvo": 0.0, "cow": 0.0}
+                for name, param in self.model.named_parameters():
+                    if param.grad is not None:
+                        gnorm = param.grad.detach().norm(2).item()
+                        if "lesion" in name.lower(): grad_norms["lesion"] += gnorm
+                        elif "lvo" in name.lower():   grad_norms["lvo"]    += gnorm
+                        elif "cow" in name.lower():   grad_norms["cow"]    += gnorm
+                
+                print(f"    [GRAD_DEBUG] B{batch_idx} Norms: LVO={grad_norms['lvo']:.4f}, Lesion={grad_norms['lesion']:.4f}, CoW={grad_norms['cow']:.4f}")
+                if grad_norms["lvo"] < 0.0001 and epoch > 5:
+                    print("    [WARN] LVO branch gradient is extremely low. Potential Vanishing Gradient.")
+            # ───────────────────────────────────────────────────────────────
+
             nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
 
             self.scaler.step(self.optimizer)
@@ -178,7 +208,7 @@ class Trainer:
 
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 preds  = self.model(inp)
-                losses = self.loss_fn(preds, lbl)
+                losses = self.loss_fn(preds, lbl, epoch=epoch)
 
             pred_ok = True
             for v in preds.values():

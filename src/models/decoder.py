@@ -212,7 +212,7 @@ class TaskBranch(nn.Module):
 class IschemicBranch(nn.Module):
     """
     Nhánh Ischemic dùng chung cho Lesion và LVO.
-    [SOLUTION A]: Tích hợp cơ chế Clinical Guidance từ LVO sang Lesion.
+    Tích hợp cơ chế Clinical Guidance: Vascular -> LVO -> Lesion.
     """
     def __init__(self, config: dict):
         super().__init__()
@@ -226,20 +226,34 @@ class IschemicBranch(nn.Module):
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         
-        # Heads cho Ischemic
-        self.final_conv_lvo    = ConvBnGelu(dec_ch[3], final_ch)
+        # ─── LVO Head với Vascular Guidance ───
+        # LVO chỉ có thể xuất hiện TRÊN mạch máu (CoW)
+        self.vascular_to_lvo_gate = nn.Sequential(
+            nn.Conv2d(final_ch, final_ch // 2, kernel_size=1),
+            nn.BatchNorm2d(final_ch // 2),
+            nn.GELU(),
+
+            nn.Conv2d(final_ch // 2, 1, kernel_size=1),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid()
+        )
+        self.final_conv_lvo = ConvBnGelu(dec_ch[3] + 1, final_ch)
         
-        # [SOLUTION A] Lesion sẽ nhận thêm thông tin từ LVO Features
+        # ─── Lesion Head với LVO Guidance ───
+        # Vùng nhồi máu thường bao quanh điểm tắc mạch
         self.lvo_to_lesion_gate = nn.Sequential(
             nn.Conv2d(final_ch, final_ch // 2, kernel_size=1),
             nn.GELU(),
             nn.Conv2d(final_ch // 2, 1, kernel_size=1),
             nn.Sigmoid()
         )
-        # Conv này sẽ nhận x_up (dec_ch[3]) + guidance (1ch)
         self.final_conv_lesion = ConvBnGelu(dec_ch[3] + 1, final_ch)
 
-    def forward(self, x, cta_skips, perf_skips, aux4_shared):
+    def forward(self, x, cta_skips, perf_skips, aux4_shared, vascular_feat):
+        """
+        Args:
+            vascular_feat: Đặc trưng từ nhánh CoW (Vascular)
+        """
         s1, s2, s3, _, _ = cta_skips
         d1, d2, d3, _, _ = perf_skips
 
@@ -249,17 +263,21 @@ class IschemicBranch(nn.Module):
 
         x_up = self.up_final(x)
         
-        # 1. Dự đoán đặc trưng LVO trước
-        f_lvo = self.final_conv_lvo(x_up)
+        # 1. Vascular Guidance -> LVO
+        v_guidance = self.vascular_to_lvo_gate(vascular_feat)
+        f_lvo = self.final_conv_lvo(torch.cat([x_up, v_guidance], dim=1))
         
-        # 2. [SOLUTION A] Tạo bản đồ dẫn đường (Spatial Guidance) từ LVO
-        # Bản đồ này báo cho Lesion biết vùng nào có khả năng tắc mạch cao
-        guidance = self.lvo_to_lesion_gate(f_lvo)
+        # 2. LVO Guidance -> Lesion
+        l_guidance = self.lvo_to_lesion_gate(f_lvo)
+        f_lesion = self.final_conv_lesion(torch.cat([x_up, l_guidance], dim=1))
         
-        # 3. Dự đoán đặc trưng Lesion với sự dẫn đường của LVO
-        f_lesion = self.final_conv_lesion(torch.cat([x_up, guidance], dim=1))
+        # Trả về thêm guidance maps để phục vụ Debug (Khả năng 1)
+        guidance_outputs = {
+            "v_guidance": v_guidance, # Vascular -> LVO
+            "l_guidance": l_guidance  # LVO -> Lesion
+        }
         
-        return f_lesion, f_lvo, [aux3, aux2, aux1]
+        return f_lesion, f_lvo, [aux3, aux2, aux1], guidance_outputs
 
 
 class MultiHeadDecoder(nn.Module):
@@ -298,10 +316,11 @@ class MultiHeadDecoder(nn.Module):
         x, aux4_3ch = self.shared_dec4(x, s4, d4, prev_mask=None)
 
         # Splitting
-        # Nhánh Ischemic nhận 2 kênh (0: lesion, 1: lvo)
-        f_lesion, f_lvo, aux_i = self.ischemic_branch(x, cta_skips, perf_skips, aux4_3ch[:, 0:2])
-        # Nhánh Vascular nhận kênh 2 (cow)
+        # 1. Nhánh Vascular (CoW) chạy trước để tạo guidance
         f_cow, aux_c = self.cow_branch(x, cta_skips, perf_skips, aux4_3ch[:, 2:3])
+
+        # 2. Nhánh Ischemic (Lesion + LVO) sử dụng đặc trưng Vascular để dẫn đường
+        f_lesion, f_lvo, aux_i, g_maps = self.ischemic_branch(x, cta_skips, perf_skips, aux4_3ch[:, 0:2], vascular_feat=f_cow)
 
         # Gộp các Aux Masks
         aux_masks = [aux4_3ch]
@@ -311,4 +330,4 @@ class MultiHeadDecoder(nn.Module):
             aux_masks.append(mask)
 
         features = {"lesion": f_lesion, "lvo": f_lvo, "cow": f_cow}
-        return features, aux_masks
+        return features, aux_masks, g_maps

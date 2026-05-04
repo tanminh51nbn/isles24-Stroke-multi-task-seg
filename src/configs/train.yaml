@@ -40,30 +40,39 @@ composite_score:
   recall_lvo_weight: 0.38
   dice_cow_weight: 0.24
   thresholds:
-    lesion: 0.3  # Hạ xuống 0.3 để "tô màu" mạnh tay hơn
-    lvo: 0.15
+    lesion: 0.3
+    lvo: 0.1
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
   lr: 3.0e-4
-  weight_decay: 3.0e-2 # Tăng gấp 3 lần để chống Overfitting mạnh hơn
-  encoder_lr_scale: 0.1  # Tăng lên 0.1 để encoder học nhanh hơn
+  weight_decay: 3.0e-2
+  encoder_lr_scale: 0.1
   eps: 1.0e-7
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 5    # Giảm xuống 3 để đạt LR đỉnh nhanh hơn
+  warmup_epochs: 5
   hold_epochs: 3
   min_lr: 1.0e-6
 
 # ── Training ────────────────────────────────────────────────────
 training:
-  epochs: 50 #can 100
+  epochs: 100 # Nâng lên 100 để lộ trình Curriculum có đủ thời gian tinh chỉnh
   amp: true
   grad_clip_norm: 1.0
   freeze_encoder_epochs: 10
+
+  # [NEW] Curriculum Learning Schedule cho LVO
+  curriculum_learning:
+    enabled: true
+    # Giai đoạn 1: Epoch 0-5   (Soft Target, Low Weight)
+    # Giai đoạn 2: Epoch 6-13  (Medium Target, Normal Weight)
+    # Giai đoạn 2b: Epoch 14-15 (Sharp Target, Bridge Weight)
+    # Giai đoạn 3: Epoch 16-100 (Strict Binary, High Weight)
+
 
   # Checkpointing
   checkpoint:

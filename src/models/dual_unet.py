@@ -86,13 +86,14 @@ class DualEncoderUNet(nn.Module):
         perf_skips = self.perf_encoder(perf_input)
 
         # Decode với Iterative Feedback
-        features, aux_masks = self.decoder(cta_skips, perf_skips)
+        features, aux_masks, g_maps = self.decoder(cta_skips, perf_skips)
 
         # Multi-task output (Main heads)
         out = self.heads(features)
         
-        # Đính kèm các masks phụ để phục vụ tính Loss
+        # Đính kèm các masks phụ và guidance maps để phục vụ tính Loss/Debug
         out["aux_masks"] = aux_masks
+        out["guidance_maps"] = g_maps
         
         return out
 
