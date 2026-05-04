@@ -209,10 +209,10 @@ class TaskBranch(nn.Module):
         return x, [aux3, aux2, aux1]
 
 
-class IschemicBranch(nn.Module):
+class LVOBranch(nn.Module):
     """
-    Nhánh Ischemic dùng chung cho Lesion và LVO.
-    Tích hợp cơ chế Clinical Guidance: Vascular -> LVO -> Lesion.
+    Nhánh chuyên biệt để dự đoán LVO.
+    Sử dụng Vascular Guidance để giới hạn vùng tìm kiếm trên mạch máu.
     """
     def __init__(self, config: dict):
         super().__init__()
@@ -220,64 +220,82 @@ class IschemicBranch(nn.Module):
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
-        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type, use_aux=True, task_name="ischemic", aux_ch=2)
-        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True, task_name="ischemic", aux_ch=2)
-        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name="ischemic", aux_ch=2)
+        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type, use_aux=True, task_name="lvo")
+        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True, task_name="lvo")
+        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name="lvo")
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         
-        # ─── LVO Head với Vascular Guidance ───
-        # LVO chỉ có thể xuất hiện TRÊN mạch máu (CoW)
         self.vascular_to_lvo_gate = nn.Sequential(
             nn.Conv2d(final_ch, final_ch // 2, kernel_size=1),
             nn.BatchNorm2d(final_ch // 2),
             nn.GELU(),
-
             nn.Conv2d(final_ch // 2, 1, kernel_size=1),
             nn.BatchNorm2d(1),
             nn.Sigmoid()
         )
-        self.final_conv_lvo = ConvBnGelu(dec_ch[3] + 1, final_ch)
+        # Sử dụng phép nhân nên số kênh vào vẫn là dec_ch[3]
+        self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
+
+    def forward(self, x, cta_skips, perf_skips, aux4_shared, vascular_feat):
+        s1, s2, s3, _, _ = cta_skips
+        d1, d2, d3, _, _ = perf_skips
+
+        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 1:2]) # LVO index
+        x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
+        x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
+
+        x_up = self.up_final(x)
         
-        # ─── Lesion Head với LVO Guidance ───
-        # Vùng nhồi máu thường bao quanh điểm tắc mạch
+        # [CẢI TIẾN] Spatial Gating: Nhân trực tiếp đặc trưng với bản đồ mạch máu
+        v_guidance = self.vascular_to_lvo_gate(vascular_feat)
+        x_guided = x_up * (1.0 + v_guidance) 
+        
+        f_lvo = self.final_conv(x_guided)
+        return f_lvo, [aux3, aux2, aux1], v_guidance
+
+
+class LesionBranch(nn.Module):
+    """
+    Nhánh chuyên biệt để dự đoán Lesion.
+    Sử dụng LVO Guidance để tập trung vào vùng nhồi máu quanh điểm tắc.
+    """
+    def __init__(self, config: dict):
+        super().__init__()
+        dec_ch = config["decoder"]["out_channels"]
+        final_ch = config["decoder"].get("final_ch", 16)
+        attn_type = config["decoder"].get("attention_type", "dual")
+
+        self.dec3 = DecoderBlock(dec_ch[0], 1024, dec_ch[1], attn_type, use_aux=True, task_name="lesion")
+        self.dec2 = DecoderBlock(dec_ch[1], 512, dec_ch[2], attn_type, use_aux=True, task_name="lesion")
+        self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name="lesion")
+
+        self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        
         self.lvo_to_lesion_gate = nn.Sequential(
             nn.Conv2d(final_ch, final_ch // 2, kernel_size=1),
             nn.GELU(),
             nn.Conv2d(final_ch // 2, 1, kernel_size=1),
             nn.Sigmoid()
         )
-        self.final_conv_lesion = ConvBnGelu(dec_ch[3] + 1, final_ch)
+        self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
-    def forward(self, x, cta_skips, perf_skips, aux4_shared, vascular_feat):
-        """
-        Args:
-            vascular_feat: Đặc trưng từ nhánh CoW (Vascular)
-        """
+    def forward(self, x, cta_skips, perf_skips, aux4_shared, lvo_feat):
         s1, s2, s3, _, _ = cta_skips
         d1, d2, d3, _, _ = perf_skips
 
-        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 0:2])
+        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 0:1]) # Lesion index
         x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
         x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
 
         x_up = self.up_final(x)
         
-        # 1. Vascular Guidance -> LVO
-        v_guidance = self.vascular_to_lvo_gate(vascular_feat)
-        f_lvo = self.final_conv_lvo(torch.cat([x_up, v_guidance], dim=1))
+        # [CẢI TIẾN] Spatial Gating: Tập trung vào vùng nhồi máu quanh điểm tắc
+        l_guidance = self.lvo_to_lesion_gate(lvo_feat)
+        x_guided = x_up * (1.0 + l_guidance)
         
-        # 2. LVO Guidance -> Lesion
-        l_guidance = self.lvo_to_lesion_gate(f_lvo)
-        f_lesion = self.final_conv_lesion(torch.cat([x_up, l_guidance], dim=1))
-        
-        # Trả về thêm guidance maps để phục vụ Debug (Khả năng 1)
-        guidance_outputs = {
-            "v_guidance": v_guidance, # Vascular -> LVO
-            "l_guidance": l_guidance  # LVO -> Lesion
-        }
-        
-        return f_lesion, f_lvo, [aux3, aux2, aux1], guidance_outputs
+        f_lesion = self.final_conv(x_guided)
+        return f_lesion, [aux3, aux2, aux1], l_guidance
 
 
 class MultiHeadDecoder(nn.Module):
@@ -290,44 +308,59 @@ class MultiHeadDecoder(nn.Module):
     def __init__(self, config: dict):
         super().__init__()
         dec_ch = config["decoder"]["out_channels"]
+        bottleneck_ch = 1024
         attn_type = config["decoder"].get("attention_type", "dual")
         
         # 1. Bottleneck chung (3072 -> 1024)
         self.shared_bottleneck = nn.Sequential(
-            ConvBnGelu1x1(3072, 1024),
-            ConvBnGelu(1024, 1024),
+            ConvBnGelu1x1(3072, bottleneck_ch),
+            ConvBnGelu(bottleneck_ch, bottleneck_ch),
         )
 
-        # 2. Shared dec4 (32x32)
-        # aux_ch=3 (lesion, lvo, cow)
-        self.shared_dec4 = DecoderBlock(1024, 2048, dec_ch[0], attn_type, use_aux=True, task_name="shared", aux_ch=3)
+        # 0. Shared Base (Bottleneck + dec4)
+        self.dec4_shared = DecoderBlock(dec_ch[0], bottleneck_ch, dec_ch[0], attn_type, use_aux=True, task_name="shared", aux_ch=3)
+        
+        # 1. Nhánh Mạch máu (CoW)
+        self.vascular_branch = TaskBranch(config, "cow")
 
-        # 3. Hai nhánh chính
-        self.ischemic_branch = IschemicBranch(config)
-        self.cow_branch      = TaskBranch(config, "cow")
+        # 2. Nhánh Điểm tắc (LVO) - TÁCH RIÊNG
+        self.lvo_branch = LVOBranch(config)
+
+        # 3. Nhánh Tổn thương (Lesion) - TÁCH RIÊNG
+        self.lesion_branch = LesionBranch(config)
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor]):
         s5, s4 = cta_skips[4], cta_skips[3]
         d5, d4 = perf_skips[4], perf_skips[3]
 
-        # Shared processing
-        x = torch.cat([s5, d5], dim=1)
-        x = self.shared_bottleneck(x)
-        x, aux4_3ch = self.shared_dec4(x, s4, d4, prev_mask=None)
+        # 1. Shared Bottleneck (32x32)
+        x_bottleneck = torch.cat([s5, d5], dim=1)
+        x_bottleneck = self.shared_bottleneck(x_bottleneck)
+        
+        # 2. Shared dec4
+        x_shared, aux4_shared = self.dec4_shared(x_bottleneck, s4, d4)
 
-        # Splitting
-        # 1. Nhánh Vascular (CoW) chạy trước để tạo guidance
-        f_cow, aux_c = self.cow_branch(x, cta_skips, perf_skips, aux4_3ch[:, 2:3])
+        # 3. Nhánh Vascular (CoW) -> Chạy trước để làm guidance
+        f_cow, cow_auxs = self.vascular_branch(x_shared, cta_skips, perf_skips, aux4_shared[:, 2:3])
 
-        # 2. Nhánh Ischemic (Lesion + LVO) sử dụng đặc trưng Vascular để dẫn đường
-        f_lesion, f_lvo, aux_i, g_maps = self.ischemic_branch(x, cta_skips, perf_skips, aux4_3ch[:, 0:2], vascular_feat=f_cow)
+        # 4. Nhánh LVO -> Chạy sau, nhận guidance từ Vascular (f_cow)
+        f_lvo, lvo_auxs, v_guidance = self.lvo_branch(x_shared, cta_skips, perf_skips, aux4_shared, f_cow)
 
-        # Gộp các Aux Masks
-        aux_masks = [aux4_3ch]
+        # 5. Nhánh Lesion -> Chạy cuối, nhận guidance từ LVO (f_lvo)
+        f_lesion, lesion_auxs, l_guidance = self.lesion_branch(x_shared, cta_skips, perf_skips, aux4_shared, f_lvo)
+
+        # Trình tự Aux Masks: [32, 64, 128, 256]
+        # Mỗi mask chứa [Lesion, LVO, CoW]
+        aux_masks = [aux4_shared]
         for i in range(3): # aux3, aux2, aux1
-            # aux_i[i] là 2-channel (lesion, lvo), aux_c[i] là 1-channel (cow)
-            mask = torch.cat([aux_i[i], aux_c[i]], dim=1)
+            mask = torch.cat([lesion_auxs[i], lvo_auxs[i], cow_auxs[i]], dim=1)
             aux_masks.append(mask)
 
-        features = {"lesion": f_lesion, "lvo": f_lvo, "cow": f_cow}
-        return features, aux_masks, g_maps
+        # Guidance maps để debug
+        g_maps = {
+            "v_guidance": v_guidance,
+            "l_guidance": l_guidance
+        }
+
+        preds = {"lesion": f_lesion, "lvo": f_lvo, "cow": f_cow}
+        return preds, aux_masks, g_maps

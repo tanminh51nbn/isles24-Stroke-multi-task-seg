@@ -54,16 +54,16 @@ optimizer:
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
-  warmup_epochs: 20
-  hold_epochs: 10
-  min_lr: 1.0e-6
+  warmup_epochs: 7
+  hold_epochs: 18
+  min_lr: 5.0e-6
 
 # ── Training ────────────────────────────────────────────────────
 training:
-  epochs: 65 # Nâng lên 100 để lộ trình Curriculum có đủ thời gian tinh chỉnh
+  epochs: 100 # Nâng lên 100 để lộ trình Curriculum có đủ thời gian tinh chỉnh
   amp: true
   grad_clip_norm: 1.0
-  freeze_encoder_epochs: 10
+  freeze_encoder_epochs: 7
 
   # [NEW] Curriculum Learning Schedule cho LVO
   curriculum_learning:
@@ -77,7 +77,7 @@ training:
   # Checkpointing
   checkpoint:
     dir: "checkpoints"
-    start_epoch: 30 #can 25
+    start_epoch: 25 
     save_best_overall: true
     save_best_lesion: true
     save_best_lvo: true
@@ -85,7 +85,7 @@ training:
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 30 #can 25
+    start_epoch: 25 
     patience: 20 #can 30
     min_delta: 0.001
 

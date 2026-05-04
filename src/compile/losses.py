@@ -209,27 +209,27 @@ class CurriculumLVOLoss(nn.Module):
         if not self.enabled:
             return self.mfl(logits, targets, sigma=4.0), 1.0
 
-        # Giai đoạn 1: Warmup (Soft Heatmap + Low Weight) - Epoch 0-5
+        # Giai đoạn 1: Warmup (Soft Heatmap) - Epoch 0-5
         if epoch < 6:
             loss = self.mfl(logits, targets, sigma=10.0)
-            return loss, 0.5
+            return loss, 1.0 # Trọng số cơ bản
 
-        # Giai đoạn 2: Ramp-up (Medium Heatmap + Normal Weight) - Epoch 6-13
-        elif epoch < 14:
-            loss = self.mfl(logits, targets, sigma=5.0)
-            return loss, 1.0
-
-        # Giai đoạn 2b: Bridge (Sharp Heatmap + Bridge Weight) - Epoch 14-15
-        # [SOLUTION] Làm mượt bước nhảy từ Heatmap sang Binary
+        # Giai đoạn 2: Ramp-up (Medium Heatmap) - Epoch 6-15
         elif epoch < 16:
-            loss = self.mfl(logits, targets, sigma=3.0)
-            return loss, 1.2
+            loss = self.mfl(logits, targets, sigma=5.0)
+            return loss, 1.5 # Bắt đầu ưu tiên LVO
 
-        # Giai đoạn 3: Hard Mining (Strict Binary + High Weight) - Epoch 16+
+        # Giai đoạn 3: Hard Mining (Sharp Heatmap) - Epoch 16-39
+        # [NEW] Kéo dài giai đoạn này để mô hình học kỹ không gian trước khi sang Binary
+        elif epoch < 40:
+            loss = self.mfl(logits, targets, sigma=3.0)
+            return loss, 2.5 # Ưu tiên mạnh (x2.5)
+
+        # Giai đoạn 4: Final Push (Strict Binary) - Epoch 40+
         else:
-            # Dùng Focal Tversky để tập trung vào precision cực cao
+            # Dùng Focal Tversky để tập trung vào precision và bứt phá Recall
             loss = self.ftl(logits, targets) 
-            return loss, 1.5
+            return loss, 5.0 # TẤT TAY (x5.0)
 
     def get_mds_boost(self, epoch: int) -> float:
         """
@@ -237,11 +237,13 @@ class CurriculumLVOLoss(nn.Module):
         Khởi động nhẹ nhàng (x1.0) và bứt phá ở giai đoạn cuối (x3.5).
         """
         if epoch < 6:
-            return 1.0  # Giai đoạn 1: Không boost
+            return 1.0  # Giai đoạn 1: Warmup
         elif epoch < 16:
-            return 2.2  # Giai đoạn 2: Boost trung bình
+            return 2.5  # Giai đoạn 2: Ramp-up
+        elif epoch < 40:
+            return 5.0  # Giai đoạn 3: Hard Mining
         else:
-            return 3.5  # Giai đoạn 3: Boost mạnh để đạt Target Recall > 0.25
+            return 8.0  # Giai đoạn 4: Final Push (Balanced Aggressive)
 
 
 
