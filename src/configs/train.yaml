@@ -7,38 +7,38 @@
 loss:
   lesion:
     type: "tversky"
-    alpha: 0.2    # Giảm alpha, tăng beta để tập trung vào Recall (tránh bỏ sót vùng bệnh)
+    alpha: 0.2
     beta: 0.8
-    weight: 0.4   # Tăng nhẹ trọng số tổng của Lesion
-    hd_weight: 0.2 # GIẢM HD xuống vì mô hình đã học viền quá tốt, cần tập trung vào "ruột"
+    weight: 0.38
+    hd_weight: 0.2
 
   lvo:
     type: "modified_focal"
     mfl_alpha: 2.0
     mfl_beta: 4.0
-    weight: 0.4
+    weight: 0.38
 
   cow:
     type: "cl_tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.2  # Giảm nhẹ CoW vì đã đạt 90%, nhường tài nguyên cho Task khác
+    weight: 0.24
     cl_weight: 0.55
     iters: 4
 
 # ── Uncertainty Weighting Settings ──────────────────────────────
 uncertainty:
-  s_min_lesion: 0.4   # Hạ sàn xuống 0.4 để mô hình có thể dồn lực mạnh hơn vào Lesion
-  s_min_lvo: 0.7     # Hạ sàn LVO như đã thảo luận trước đó
+  s_min_lesion: 0.4
+  s_min_lvo: 0.4
   s_min_cow: 0.7
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
 # Dùng Recall cho LVO (chỉ cần detect được, không cần viền chính xác)
 composite_score:
-  dice_lesion_weight: 0.4 # Ưu tiên Lesion hơn trong điểm tổng
-  recall_lvo_weight: 0.4
-  dice_cow_weight: 0.2
+  dice_lesion_weight: 0.38 # Ưu tiên Lesion hơn trong điểm tổng
+  recall_lvo_weight: 0.38
+  dice_cow_weight: 0.24
   thresholds:
     lesion: 0.3  # Hạ xuống 0.3 để "tô màu" mạnh tay hơn
     lvo: 0.15
