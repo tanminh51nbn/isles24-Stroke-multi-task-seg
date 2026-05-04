@@ -251,7 +251,7 @@ class Trainer:
                 
                 overlay_predictions(
                     sample={"input": inp[idx], "label": lbl[idx], "path": batch["path"][idx]},
-                    preds={k: v[idx:idx+1] for k, v in preds.items()},
+                    preds={k: v[idx:idx+1] for k, v in preds.items() if isinstance(v, torch.Tensor)},
                     epoch=epoch,
                     save_dir=vis_dir,
                     thresholds=self.metric_weights.get("thresholds", {})
