@@ -105,8 +105,20 @@ class TimmEncoder(nn.Module):
 
         self.first_conv = new_conv
 
-        print(f"[TimmEncoder] Khởi tạo {name} (ImageNet pre-trained) với in_channels={in_channels}.")
-        tmp_model = timm.create_model(name, pretrained=True)
+        # 2. Khởi tạo một model tạm thời để lấy trọng số ImageNet (phục vụ Inflation)
+        if weights_path:
+            print(f"[TimmEncoder] Load ImageNet weights từ file: {weights_path}")
+            tmp_model = timm.create_model(name, pretrained=False)
+            state_dict = torch.load(weights_path, map_location="cpu")
+            # Xử lý nếu file save từ DDP (có tiền tố 'module.')
+            if any(k.startswith('module.') for k in state_dict.keys()):
+                state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            tmp_model.load_state_dict(state_dict, strict=False)
+        else:
+            print(f"[TimmEncoder] Tải ImageNet weights tự động cho {name}...")
+            tmp_model = timm.create_model(name, pretrained=True)
+
+        # 3. Thực hiện Conv1 Inflation
         for n, m in tmp_model.named_modules():
             if isinstance(m, nn.Conv2d):
                 old_weight = m.weight.data
@@ -114,6 +126,7 @@ class TimmEncoder(nn.Module):
                     self.first_conv.weight.copy_(inflate_weights(old_weight, in_channels))
                 break
                 
+        # 4. Nạp các trọng số còn lại vào backbone chính
         state_dict = tmp_model.state_dict()
         state_dict_filtered = {k: v for k, v in state_dict.items() if not k.startswith(first_conv_name + ".weight")}
         self.backbone.load_state_dict(state_dict_filtered, strict=False)
@@ -130,15 +143,19 @@ def build_encoders(config: dict):
     """
     Khởi tạo 2 encoder từ config dict (đọc từ model.yaml).
     """
+    # Lấy đường dẫn weights từ config (nếu có)
+    cta_weights = config["cta_encoder"].get("weights", None)
+    perf_weights = config["perfusion_encoder"].get("weights", None)
+
     cta_enc = TimmEncoder(
         name=config["cta_encoder"]["name"],
         in_channels=config["cta_encoder"]["in_channels"],
-        weights_path=None,
+        weights_path=cta_weights,
     )
     perf_enc = TimmEncoder(
         name=config["perfusion_encoder"]["name"],
         in_channels=config["perfusion_encoder"]["in_channels"],
-        weights_path=None,
+        weights_path=perf_weights,
     )
     return cta_enc, perf_enc
 
