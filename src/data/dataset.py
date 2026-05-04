@@ -97,7 +97,8 @@ class ISLES24Dataset(Dataset):
         inp = torch.from_numpy(data["input"].astype(np.float32))
 
         # Label gốc: float32, shape (3, 256, 256), values {0, 1}
-        raw_label = data["label"].astype(np.float32)
+        # [FIX] Chuyển sang Tensor ngay từ đầu để tương thích với transforms.py
+        raw_label = torch.from_numpy(data["label"].astype(np.float32)).contiguous()
 
         # ── Augmentation ────────────────────────────────────────────────────
         sample = {"input": inp, "label": raw_label, "path": path}
