@@ -237,27 +237,31 @@ class LVOBranch(nn.Module):
 
         # 1. Tầng 64x64 (dec3)
         x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 1:2])
-        # [CẢI TIẾN] Anatomical Gating ngay từ tầng sâu
-        # aux4_shared[:, 2:3] là CoW prediction ở tầng 32x32
+        # [CẢI TIẾN] Dilated Anatomical Gating: Mở rộng tầm nhìn mạch máu
         cow_gate_32 = F.interpolate(aux4_shared[:, 2:3], size=x.shape[2:], mode='bilinear', align_corners=False)
-        x = x * (1.0 + torch.sigmoid(cow_gate_32))
+        cow_gate_32_dilated = F.max_pool2d(cow_gate_32, kernel_size=3, stride=1, padding=1)
+        x = x * (1.0 + torch.sigmoid(cow_gate_32_dilated))
 
         # 2. Tầng 128x128 (dec2)
         x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
-        # Gating với CoW 64x64 (cow_auxs[0])
+        # Gating với CoW 64x64 (cow_auxs[0]) - Dilation để bắt được vùng perivascular
         cow_gate_64 = F.interpolate(cow_auxs[0], size=x.shape[2:], mode='bilinear', align_corners=False)
-        x = x * (1.0 + torch.sigmoid(cow_gate_64))
+        cow_gate_64_dilated = F.max_pool2d(cow_gate_64, kernel_size=5, stride=1, padding=2)
+        x = x * (1.0 + torch.sigmoid(cow_gate_64_dilated))
 
         # 3. Tầng 256x256 (dec1)
         x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
         # Gating với CoW 128x128 (cow_auxs[1])
         cow_gate_128 = F.interpolate(cow_auxs[1], size=x.shape[2:], mode='bilinear', align_corners=False)
-        x = x * (1.0 + torch.sigmoid(cow_gate_128))
+        cow_gate_128_dilated = F.max_pool2d(cow_gate_128, kernel_size=5, stride=1, padding=2)
+        x = x * (1.0 + torch.sigmoid(cow_gate_128_dilated))
 
         x_up = self.up_final(x)
         
         # 4. Tầng cuối: Gating với CoW 256x256 (cow_auxs[2])
-        v_guidance = torch.sigmoid(F.interpolate(cow_auxs[2], size=x_up.shape[2:], mode='bilinear', align_corners=False))
+        cow_gate_final = F.interpolate(cow_auxs[2], size=x_up.shape[2:], mode='bilinear', align_corners=False)
+        # Dùng Dilation lớn ở tầng cuối để bao phủ toàn bộ vùng nghi ngờ nhồi máu
+        v_guidance = torch.sigmoid(F.max_pool2d(cow_gate_final, kernel_size=7, stride=1, padding=3))
         x_guided = x_up * (1.0 + v_guidance) 
         
         f_lvo = self.final_conv(x_guided)

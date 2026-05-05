@@ -194,6 +194,10 @@ class Trainer:
         n_batches     = 0
         n_lvo_batches = 0
         
+        # Biến tích lũy cho thi đua
+        sum_l_L, sum_l_V, sum_l_C = 0.0, 0.0, 0.0
+        sum_p_lvo, sum_sigma_lvo = 0.0, 0.0
+        
         # Biến để kiểm tra xem đã vẽ ảnh cho epoch này chưa
         visualized = False
         vis_interval = self.config["training"]["logging"].get("visualize_every", 5)
@@ -224,10 +228,13 @@ class Trainer:
                 continue
 
             total_loss += losses["total"].item()
-            sum_l_L_tv += losses.get("l_L_tv", 0.0)
-            sum_l_L_hd += losses.get("l_L_hd", 0.0)
-            sum_l_C_tv += losses.get("l_C_tv", 0.0)
-            sum_l_C_cl += losses.get("l_C_cl", 0.0)
+            sum_l_L += losses.get("l_lesion", 0.0)
+            sum_l_V += losses.get("l_lvo", 0.0)
+            sum_l_C += losses.get("l_cow", 0.0)
+            
+            # Theo dõi hỏa lực và độ bất định
+            sum_p_lvo += losses.get("p_lvo", 1.0)
+            sum_sigma_lvo += losses.get("sigma_lvo", 1.0)
             
             metrics = compute_all_metrics(preds, lbl, self.metric_weights)
 
@@ -387,9 +394,8 @@ class Trainer:
                     f"--------------------------------------------------------------------------------"
                     f"\n=> | [Epoch {epoch+1:03d}/{self.epochs}] | LR: {curr_lr:.2e} | Composite: {val_metrics['composite']:.4f}"
                     f"\n   | [VAL METRICS] Dice_Lesion: {val_metrics['dice_lesion']:.4f} | Recall_LVO: {val_metrics['recall_lvo']:.4f} | Dice_CoW: {val_metrics['dice_cow']:.4f}"
-                    f"\n   | [VAL LOSSES ] Lesion(tv/hd): {val_metrics['l_L_tv']:.3f}/{val_metrics['l_L_hd']:.3f} | CoW(tv/cl): {val_metrics['l_C_tv']:.3f}/{val_metrics['l_C_cl']:.3f}"
                     f"\n   | [TRAIN LOSS ] Avg_Total: {train_metrics['train_loss']:.4f}"
-                    f"\n   | [UNCERTAINTY] Sigma_Lesion: {val_metrics['sigma_lesion']:.2f} | Sigma_LVO: {val_metrics['sigma_lvo']:.2f} | Sigma_CoW: {val_metrics['sigma_cow']:.2f}"
+                    f"\n   | [COMPETITION] P_LVO: {val_metrics.get('p_lvo', 1.0):.2f} | Sigma_LVO: {val_metrics.get('sigma_lvo', 1.0):.2f}"
                     f"\n--------------------------------------------------------------------------------",
                     flush=True
                 )
@@ -419,7 +425,11 @@ class Trainer:
                             print(f"[Trainer] Early stopping tại epoch {epoch+1}", flush=True)
                         break
             
-            # Cập nhật LR sau mỗi epoch (Sau optimizer.step đã chạy trong train_one_epoch)
+            # Cập nhật LR sau mỗi epoch
             self.scheduler.step()
+
+            # [QUAN TRỌNG] Cập nhật thống kê thi đua (DWA) cho epoch tiếp theo
+            if hasattr(self.loss_fn, "update_epoch_stats"):
+                self.loss_fn.update_epoch_stats()
 
         return self.history

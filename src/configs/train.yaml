@@ -28,9 +28,12 @@ loss:
 
 # ── Uncertainty Weighting Settings ──────────────────────────────
 uncertainty:
-  s_min_lesion: 0.4
-  s_min_lvo: 0.4
-  s_min_cow: 0.6
+    s_min_lvo: 0.1         # [NEW] Ép LVO cực gắt để phá vỡ bám đuổi CoW
+    s_min_lesion: 0.3      # [NEW] Giảm nhẹ sàn để tăng độ nhạy
+    s_min_cow: 0.6         # Giữ nguyên để CoW làm nền móng
+    
+    # --- DWA+ Configuration ---
+    dwa_temperature: 2.0   # [NEW] Điều chỉnh độ gắt của thi đua (Thấp = Gắt, Cao = Ôn hòa)
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW

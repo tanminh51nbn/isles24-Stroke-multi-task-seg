@@ -366,7 +366,6 @@ class SoftCLDiceLoss(nn.Module):
         
         t_sens = ( (t_skel * probs).sum(dim=(1, 2, 3)) + self.smooth ) / \
                  ( t_skel.sum(dim=(1, 2, 3)) + self.smooth )
-        
         cl_dice = (2.0 * t_prec * t_sens) / (t_prec + t_sens + self.smooth)
         return 1.0 - cl_dice.mean()
 
@@ -375,127 +374,113 @@ class SoftCLDiceLoss(nn.Module):
 
 class MultiTaskLoss(nn.Module):
     """
-    Tổng hợp loss từ 3 tasks với trọng số riêng.
-    Hỗ trợ kết hợp Tversky/FocalTversky với Boundary Loss.
+    Hệ thống Loss Đa nhiệm Adaptive Competition (DWA+).
+    Kết hợp giữa Uncertainty Weighting (Sigma) và Thi đua động (DWA).
     """
-
     def __init__(self, config: dict):
         super().__init__()
-        loss_cfg = config["loss"]
-
-        # 1. Lesion Task
-        lesion_cfg = loss_cfg["lesion"]
-        self.lesion_main_loss = TverskyLoss(alpha=lesion_cfg["alpha"], beta=lesion_cfg["beta"])
-        self.w_lesion = lesion_cfg["weight"]
-        
-        # [NEW] Hausdorff/SDF Boundary Loss cho Lesion
-        self.w_lesion_hd = lesion_cfg.get("hd_weight", 0.0)
-        if self.w_lesion_hd > 0:
-            self.hd_loss_fn = SDFBoundaryLoss()
-
-        # 2. LVO Task — Dùng Curriculum Loss
+        # 1. Khởi tạo các hàm loss thành phần
+        self.lesion_main_loss = FocalTverskyLoss(
+            alpha=config["loss"].get("lesion_alpha", 0.7),
+            beta=config["loss"].get("lesion_beta", 0.3),
+            gamma=config["loss"].get("lesion_gamma", 2.0)
+        )
         self.lvo_loss_fn = CurriculumLVOLoss(config)
-        self.w_lvo = loss_cfg["lvo"]["weight"]
-        self.w_lvo_boundary = 0.0
-
-        # 3. CoW Task
-        cow_cfg = loss_cfg["cow"]
-        self.cow_type = cow_cfg.get("type", "tversky")
-        self.cow_main_loss = TverskyLoss(alpha=cow_cfg["alpha"], beta=cow_cfg["beta"])
+        self.cow_main_loss = FocalTverskyLoss(alpha=0.3, beta=0.7, gamma=2.0)
         
-        if self.cow_type == "cl_tversky":
-            self.cl_loss = SoftCLDiceLoss(iters=cow_cfg.get("iters", 3))
-            self.cl_weight = cow_cfg.get("cl_weight", 0.5)
-            
-        self.w_cow = cow_cfg["weight"]
-
-        # Tham số Uncertainty Weighting (Learnable)
+        # 2. Uncertainty Weighting (Sigma)
         self.log_vars = nn.ParameterDict({
-            "lesion": nn.Parameter(torch.tensor(0.0)),
-            "lvo":    nn.Parameter(torch.tensor(0.0)),
-            "cow":    nn.Parameter(torch.tensor(0.0)),
+            'lesion': nn.Parameter(torch.tensor(0.5)),
+            'lvo': nn.Parameter(torch.tensor(0.5)),
+            'cow': nn.Parameter(torch.tensor(0.5))
         })
-
-        # Ngưỡng chặn Sigma tối thiểu cho từng task (để tránh hố đen tham số)
-        u_cfg = config.get("uncertainty", {})
-        self.s_min_lesion = math.log(u_cfg.get("s_min_lesion", 0.6)**2)
-        self.s_min_lvo    = math.log(u_cfg.get("s_min_lvo", 0.6)**2)
-        self.s_min_cow    = math.log(u_cfg.get("s_min_cow", 0.6)**2)
-
-    def forward(self, preds: dict, targets: torch.Tensor, epoch: int = 0, batch_idx: int = 0) -> dict:
-        # 1. Tính toán Main Loss (256x256)
-        # Lesion: Kết hợp Tversky (Diện tích) và HD/SDF (Ranh giới)
-        l_lesion_main = self.lesion_main_loss(preds["lesion"], targets[:, 0:1])
         
-        if hasattr(self, "hd_loss_fn") and targets.shape[1] > 3:
-            # SDF nằm ở kênh thứ 4 của targets (index 3)
-            l_hd = self.hd_loss_fn(preds["lesion"], targets[:, 3:4])
-            l_lesion = (1.0 - self.w_lesion_hd) * l_lesion_main + self.w_lesion_hd * l_hd
-        else:
-            l_lesion = l_lesion_main
-
-        # LVO: Dùng Curriculum Learning (trả về loss và weight_scale)
-        l_lvo_base, lvo_scale = self.lvo_loss_fn(preds["lvo"], targets[:, 1:2], epoch)
-        l_lvo = l_lvo_base * lvo_scale
-
-        # 3. CoW: Kết hợp Tversky (Diện tích) và Soft-CLDice (Thông suốt)
-        l_cow_geom = self.cow_main_loss(preds["cow"], targets[:, 2:3])
+        # 3. Cấu hình DWA+ (Thi đua)
+        self.register_buffer('prev_loss', torch.ones(3))      # Loss epoch (t-1)
+        self.register_buffer('prev_loss_2', torch.ones(3))    # Loss epoch (t-2)
+        self.register_buffer('current_weights', torch.ones(3)) # Trọng số đang áp dụng
         
-        if hasattr(self, "cl_loss"):
-            l_cl = self.cl_loss(preds["cow"], targets[:, 2:3])
-            l_cow = (1.0 - self.cl_weight) * l_cow_geom + self.cl_weight * l_cl
-        else:
-            l_cow = l_cow_geom
+        self.temp = config["loss"].get("dwa_temperature", 2.0) # Độ gắt của cuộc thi
+        self.s_min_lvo = config["loss"].get("s_min_lvo", 0.1)
+        self.s_min_lesion = config["loss"].get("s_min_lesion", 0.4)
+        self.s_min_cow = config["loss"].get("s_min_cow", 0.6)
 
-        # Áp dụng Uncertainty Weighting (Kendall et al.) với ngưỡng chặn riêng biệt
-        s_lesion = torch.clamp(self.log_vars["lesion"], min=self.s_min_lesion, max=10.0)
-        s_lvo    = torch.clamp(self.log_vars["lvo"], min=self.s_min_lvo, max=10.0)
-        s_cow    = torch.clamp(self.log_vars["cow"], min=self.s_min_cow, max=10.0)
+        # 4. Lưu trữ tạm thời cho Epoch hiện tại
+        self.running_loss = [0.0, 0.0, 0.0]
+        self.running_counts = 0
 
-        # L_total = sum( exp(-s) * L + s )
-        main_lesion_weighted = torch.exp(-s_lesion) * l_lesion + s_lesion
-        main_lvo_weighted    = torch.exp(-s_lvo)    * l_lvo    + s_lvo
-        main_cow_weighted    = torch.exp(-s_cow)    * l_cow    + s_cow
+    def update_epoch_stats(self):
+        """
+        Được gọi bởi Trainer vào CUỐI mỗi epoch để cập nhật 'Bảng xếp hạng thi đua'.
+        """
+        if self.running_counts > 0:
+            avg_loss = torch.tensor([l / self.running_counts for l in self.running_loss])
+            
+            # Đẩy lịch sử: t-1 -> t-2, current -> t-1
+            self.prev_loss_2.copy_(self.prev_loss)
+            self.prev_loss.copy_(avg_loss)
+            
+            # Reset bộ đếm cho epoch mới
+            self.running_loss = [0.0, 0.0, 0.0]
+            self.running_counts = 0
 
-        main_loss = main_lesion_weighted + main_lvo_weighted + main_cow_weighted
+    def _calculate_dwa(self, epoch):
+        """
+        Toán học 2026: Tính toán trọng số dựa trên Vận tốc học (Loss Velocity).
+        """
+        if epoch < 2: # Chưa đủ dữ liệu lịch sử
+            return torch.ones(3)
+        
+        # Vận tốc học: r = Loss(t-1) / Loss(t-2)
+        r = self.prev_loss / self.prev_loss_2
+        
+        # Softmax Weighting
+        exp_r = torch.exp(r / self.temp)
+        w = (exp_r / exp_r.sum()) * 3.0
+        return w
 
-        # [CẢI TIẾN] Task Priority Scheduling: Gate MUST learn first
-        p_cow, p_lvo, p_lesion = 1.0, 1.0, 1.0
+    def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
+        # --- PHASE-BASED POLICY (Manual Override) ---
+        p_lesion, p_lvo, p_cow = 1.0, 1.0, 1.0
+        
         if epoch < 16:
             p_cow, p_lvo, p_lesion = 3.0, 0.1, 0.1
-        elif epoch >= 40:
-            p_lvo = 2.0 
-            p_lesion = 1.5
+        elif epoch < 40:
+            # Sử dụng DWA thi đua
+            dwa_w = self._calculate_dwa(epoch).to(targets.device)
+            p_lesion, p_lvo, p_cow = dwa_w[0], dwa_w[1], dwa_w[2]
+        else:
+            # Mệnh lệnh hành chính
+            p_lvo, p_lesion, p_cow = 3.0, 2.0, 0.2
 
-        main_lesion_weighted *= p_lesion
-        main_lvo_weighted    *= p_lvo
-        main_cow_weighted    *= p_cow
+        # 1. Tính toán Losses cơ bản
+        l_lesion_main = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
+        l_lvo_base, lvo_scale = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], epoch)
+        l_lvo_main = l_lvo_base * lvo_scale
+        l_cow_main = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
-        main_loss = main_lesion_weighted + main_lvo_weighted + main_cow_weighted
-        # aux_masks: [mask_32, mask_64, mask_128, mask_256]
-        aux_loss = 0.0
-        # Trọng số tăng dần, giảm áp lực ở tầng quá sâu để tránh nhiễu
-        aux_weights = [0.05, 0.075, 0.125, 0.25] 
+        # 2. Uncertainty Weighting (Sigma)
+        s_lesion = torch.clamp(self.log_vars['lesion'], min=self.s_min_lesion, max=10.0)
+        s_lvo = torch.clamp(self.log_vars['lvo'], min=self.s_min_lvo, max=10.0)
+        s_cow = torch.clamp(self.log_vars['cow'], min=self.s_min_cow, max=10.0)
+
+        # 3. Tổng hợp Main Loss với Trọng số Thi đua
+        loss_lesion = (torch.exp(-s_lesion) * l_lesion_main + s_lesion) * p_lesion
+        loss_lvo    = (torch.exp(-s_lvo) * l_lvo_main + s_lvo) * p_lvo
+        loss_cow    = (torch.exp(-s_cow) * l_cow_main + s_cow) * p_cow
         
+        main_loss = loss_lesion + loss_lvo + loss_cow
+
+        # 4. Cập nhật thống kê để DWA học vào epoch sau
+        with torch.no_grad():
+            self.running_loss[0] += l_lesion_main.item()
+            self.running_loss[1] += l_lvo_main.item()
+            self.running_loss[2] += l_cow_main.item()
+            self.running_counts += 1
+
+        # 5. Deep Supervision (AUX)
+        aux_loss = 0.0
         if "aux_masks" in preds and preds["aux_masks"] is not None:
-            for i, aux_pred in enumerate(preds["aux_masks"]):
-                if aux_pred is None or i >= len(aux_weights): continue
-                
-                h, w = aux_pred.shape[2], aux_pred.shape[3]
-
-                # [QUAN TRỌNG] Tách biệt logic resize cho từng loại nhãn:
-                #
-                # LVO (Heatmap/Binary): Dùng adaptive_max_pool2d để BẢO TOÀN ĐỈNH.
-                # Lesion & CoW (Binary Mask): Dùng interpolate(mode='nearest') để GIỮ NGUYÊN ĐỘ MẢNH.
-                target_lvo     = F.adaptive_max_pool2d(targets[:, 1:2], output_size=(h, w))
-                target_lesion  = F.interpolate(targets[:, 0:1].float(), size=(h, w), mode='nearest')
-                target_cow     = F.interpolate(targets[:, 2:3].float(), size=(h, w), mode='nearest')
-
-                # --- Selective Supervision Logic ---
-                l_lesion_aux = self.lesion_main_loss(aux_pred[:, 0:1], target_lesion)
-                l_cow_aux    = self.cow_main_loss(aux_pred[:, 2:3], target_cow)
-                
-                # [NEW] Sync Priority with Main Loss
                 p_cow, p_lvo, p_lesion = 1.0, 1.0, 1.0
                 if epoch < 16:
                     p_cow, p_lvo, p_lesion = 3.0, 0.1, 0.1
