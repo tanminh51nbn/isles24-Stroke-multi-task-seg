@@ -510,14 +510,22 @@ class MultiTaskLoss(nn.Module):
                     
                     # MDS Balancing: Boost LVO động theo epoch
                     mds_boost = self.lvo_loss_fn.get_mds_boost(epoch)
-                    l_aux = (self.w_lesion * l_lesion_aux * p_lesion) + \
+                    
+                    # [FIX] Apply weight balancing to Aux losses to match Main Loss logic
+                    l_lesion_aux_balanced = (1.0 - self.w_lesion_hd) * l_lesion_aux
+                    l_cow_aux_balanced    = (1.0 - self.cl_weight) * l_cow_aux
+                    
+                    l_aux = (self.w_lesion * l_lesion_aux_balanced * p_lesion) + \
                             (self.w_lvo * l_lvo_aux * mds_boost * p_lvo) + \
-                            (self.w_cow * l_cow_aux * p_cow)
+                            (self.w_cow * l_cow_aux_balanced * p_cow)
                 else:
                     # Ở tầng sâu, chỉ tập trung vào Lesion và CoW
                     w_sum = self.w_lesion + self.w_cow
-                    l_aux = (self.w_lesion / w_sum * l_lesion_aux * p_lesion) + \
-                            (self.w_cow / w_sum * l_cow_aux * p_cow)
+                    l_lesion_aux_balanced = (1.0 - self.w_lesion_hd) * l_lesion_aux
+                    l_cow_aux_balanced    = (1.0 - self.cl_weight) * l_cow_aux
+
+                    l_aux = (self.w_lesion / w_sum * l_lesion_aux_balanced * p_lesion) + \
+                            (self.w_cow / w_sum * l_cow_aux_balanced * p_cow)
                 
                 aux_loss += aux_weights[i] * l_aux
 

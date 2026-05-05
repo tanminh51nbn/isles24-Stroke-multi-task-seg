@@ -57,14 +57,13 @@ scheduler:
   warmup_epochs: 7
   hold_epochs: 18
   min_lr: 5.0e-6
-  freeze_encoder_epochs: 15
 
 # ── Training ────────────────────────────────────────────────────
 training:
   epochs: 100 # Nâng lên 100 để lộ trình Curriculum có đủ thời gian tinh chỉnh
   amp: true
   grad_clip_norm: 1.0
-  freeze_encoder_epochs: 7
+  freeze_encoder_epochs: 15
 
   # [NEW] Curriculum Learning Schedule cho LVO
   curriculum_learning:
@@ -74,11 +73,10 @@ training:
     # Giai đoạn 2b: Epoch 14-15 (Sharp Target, Bridge Weight)
     # Giai đoạn 3: Epoch 16-100 (Strict Binary, High Weight)
 
-
   # Checkpointing
   checkpoint:
     dir: "checkpoints"
-    start_epoch: 25 
+    start_epoch: 25
     save_best_overall: true
     save_best_lesion: true
     save_best_lvo: true
@@ -86,7 +84,7 @@ training:
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 30 
+    start_epoch: 30
     patience: 30 #can 30
     min_delta: 0.0001
 
