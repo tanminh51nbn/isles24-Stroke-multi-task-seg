@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import torch.distributed as dist
 from typing import Tuple
 
 
@@ -411,32 +412,36 @@ class MultiTaskLoss(nn.Module):
 
     def update_epoch_stats(self):
         """
-        Được gọi bởi Trainer vào CUỐI mỗi epoch để cập nhật 'Bảng xếp hạng thi đua'.
+        Đồng bộ hóa Loss giữa các GPU (DDP) và cập nhật lịch sử.
         """
         if self.running_counts > 0:
-            avg_loss = torch.tensor([l / self.running_counts for l in self.running_loss])
+            avg_loss = torch.tensor([l / self.running_counts for l in self.running_loss], 
+                                  device=self.prev_loss.device)
             
-            # Đẩy lịch sử: t-1 -> t-2, current -> t-1
+            # ĐỒNG BỘ HÓA DDP: Cộng tổng avg_loss từ tất cả các GPU
+            if dist.is_initialized():
+                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
+                avg_loss = avg_loss / dist.get_world_size()
+            
+            # Đẩy lịch sử
             self.prev_loss_2.copy_(self.prev_loss)
             self.prev_loss.copy_(avg_loss)
             
-            # Reset bộ đếm cho epoch mới
+            # Reset
             self.running_loss = [0.0, 0.0, 0.0]
             self.running_counts = 0
 
     def _calculate_dwa(self, epoch):
-        """
-        Toán học 2026: Tính toán trọng số dựa trên Vận tốc học (Loss Velocity).
-        """
-        if epoch < 2: # Chưa đủ dữ liệu lịch sử
-            return torch.ones(3)
+        if epoch < 2:
+            return torch.ones(3, device=self.prev_loss.device)
         
-        # Vận tốc học: r = Loss(t-1) / Loss(t-2)
-        r = self.prev_loss / self.prev_loss_2
+        # Thêm epsilon 1e-8 để tránh chia cho 0
+        r = self.prev_loss / (self.prev_loss_2 + 1e-8)
         
-        # Softmax Weighting
-        exp_r = torch.exp(r / self.temp)
-        w = (exp_r / exp_r.sum()) * 3.0
+        # Ổn định số học cho Softmax (r - r.max)
+        r_stable = r - torch.max(r)
+        exp_r = torch.exp(r_stable / self.temp)
+        w = (exp_r / (exp_r.sum() + 1e-8)) * 3.0
         return w
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
@@ -478,78 +483,45 @@ class MultiTaskLoss(nn.Module):
             self.running_loss[2] += l_cow_main.item()
             self.running_counts += 1
 
-        # 5. Deep Supervision (AUX)
+        # 5. Deep Supervision (AUX) - Áp dụng hỏa lực thi đua (p_task)
         aux_loss = 0.0
         if "aux_masks" in preds and preds["aux_masks"] is not None:
-                p_cow, p_lvo, p_lesion = 1.0, 1.0, 1.0
-                if epoch < 16:
-                    p_cow, p_lvo, p_lesion = 3.0, 0.1, 0.1
-                elif epoch >= 40:
-                    p_lvo = 2.0 
-                    p_lesion = 1.5
-
-                if i >= 2:
-                    # Chú ý: Ở Aux layer cũng dùng Curriculum
-                    l_lvo_aux_base, lvo_aux_scale = self.lvo_loss_fn(aux_pred[:, 1:2], target_lvo, epoch)
-                    l_lvo_aux = l_lvo_aux_base * lvo_aux_scale
-                    
-                    # MDS Balancing: Boost LVO động theo epoch
-                    mds_boost = self.lvo_loss_fn.get_mds_boost(epoch)
-                    
-                    # [FIX] Apply weight balancing to Aux losses to match Main Loss logic
-                    l_lesion_aux_balanced = (1.0 - self.w_lesion_hd) * l_lesion_aux
-                    l_cow_aux_balanced    = (1.0 - self.cl_weight) * l_cow_aux
-                    
-                    l_aux = (self.w_lesion * l_lesion_aux_balanced * p_lesion) + \
-                            (self.w_lvo * l_lvo_aux * mds_boost * p_lvo) + \
-                            (self.w_cow * l_cow_aux_balanced * p_cow)
-                else:
-                    # Ở tầng sâu, chỉ tập trung vào Lesion và CoW
-                    w_sum = self.w_lesion + self.w_cow
-                    l_lesion_aux_balanced = (1.0 - self.w_lesion_hd) * l_lesion_aux
-                    l_cow_aux_balanced    = (1.0 - self.cl_weight) * l_cow_aux
-
-                    l_aux = (self.w_lesion / w_sum * l_lesion_aux_balanced * p_lesion) + \
-                            (self.w_cow / w_sum * l_cow_aux_balanced * p_cow)
+            aux_weights = [0.05, 0.075, 0.125, 0.25]
+            for task_name, p_task in [('lesion', p_lesion), ('lvo', p_lvo), ('cow', p_cow)]:
+                task_aux = preds['aux_masks'].get(task_name, [])
+                if not task_aux:
+                    continue
                 
-                aux_loss += aux_weights[i] * l_aux
+                for i, aux_pred in enumerate(task_aux):
+                    if aux_pred is None or i >= len(aux_weights):
+                        continue
+                    
+                    h, w = aux_pred.shape[2], aux_pred.shape[3]
+                    
+                    if task_name == 'lvo':
+                        target_aux = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
+                        l_a_base, _ = self.lvo_loss_fn(aux_pred, target_aux, epoch)
+                        l_a = l_a_base
+                    else:
+                        t_idx = 0 if task_name == 'lesion' else 2
+                        target_aux = F.interpolate(targets[:, t_idx:t_idx+1].float(), (h, w), mode='nearest')
+                        if task_name == 'lesion':
+                            l_a = self.lesion_main_loss(aux_pred, target_aux)
+                        else:
+                            l_a = self.cow_main_loss(aux_pred, target_aux)
+                    
+                    aux_loss += aux_weights[i] * l_a * p_task
 
-                # [DEBUG] Verify MDS ratio định kỳ ở Epoch 0
-                if i == 3 and epoch == 0 and batch_idx % 100 == 0:
-                    # In trực tiếp ra console để verify logic cân bằng
-                    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-                         print(f"  [MDS_CHECK] B{batch_idx} LVO_Aux: {l_lvo_aux.item():.4f} | Lesion_Aux: {l_lesion_aux.item():.4f} (Ratio: {l_lvo_aux.item()/(l_lesion_aux.item()+1e-6):.2f})")
-
-        # 3. Tổng hợp
+        # 6. Tổng hợp kết quả
         total = main_loss + aux_loss
-        total = torch.nan_to_num(total, nan=1.0, posinf=1.0, neginf=1.0)
-
-
-        # Tính Sigma (Uncertainty) để log ra màn hình: sigma = exp(s/2)
-        sigma_lesion = torch.exp(s_lesion / 2.0).item()
-        sigma_lvo    = torch.exp(s_lvo / 2.0).item()
-        sigma_cow    = torch.exp(s_cow / 2.0).item()
-
-        # Trích xuất các thành phần chi tiết để log (dùng .item() để tránh giữ graph)
-        # Nếu không có HD/CL thì mặc định là 0
-        l_hd_val = l_hd.item() if 'l_hd' in locals() else 0.0
-        l_cl_val = l_cl.item() if 'l_cl' in locals() else 0.0
-
+        
         return {
-            "total":  total,
-            "main":   main_loss,
-            "aux":    aux_loss,
-            "lesion": l_lesion,
-            "lvo":    l_lvo,
-            "cow":    l_cow,
-            
-            # Chi tiết để theo dõi (Log-only)
-            "l_L_tv": l_lesion_main.item(),
-            "l_L_hd": l_hd_val,
-            "l_C_tv": l_cow_geom.item(),
-            "l_C_cl": l_cl_val,
-            
-            "sigma_lesion": sigma_lesion,
-            "sigma_lvo": sigma_lvo,
-            "sigma_cow": sigma_cow
+            'total': total,
+            'main': main_loss,
+            'aux': aux_loss,
+            'l_lesion': loss_lesion.item(),
+            'l_lvo': loss_lvo.item(),
+            'l_cow': loss_cow.item(),
+            'p_lvo': p_lvo if isinstance(p_lvo, float) else p_lvo.item(),
+            'sigma_lvo': torch.exp(s_lvo * 0.5).item()
         }
