@@ -131,7 +131,17 @@ class Trainer:
 
         w = self.metric_weights
         comp = (w["dice_lesion_weight"] * ad_l + w["recall_lvo_weight"] * ar_v + w["dice_cow_weight"] * ad_c)
-        return {"val_loss": avg_l, "dice_lesion": ad_l, "recall_lvo": ar_v, "dice_cow": ad_c, "composite": comp, "p_lvo": ap_v, "sigma_lvo": as_v}
+        
+        # Trích xuất p_task từ batch cuối cùng (để vẽ đồ thị)
+        p_l = losses.get("p_lesion", 1.0)
+        p_v = losses.get("p_lvo", 1.0)
+        p_c = losses.get("p_cow", 1.0)
+
+        return {
+            "val_loss": avg_l, "dice_lesion": ad_l, "recall_lvo": ar_v, "dice_cow": ad_c, 
+            "composite": comp, "p_lesion": p_l, "p_lvo": p_v, "p_cow": p_c,
+            "sigma_lvo": as_v
+        }
 
     def load_checkpoint(self, path: str):
         if not os.path.exists(path): return 0
@@ -154,7 +164,7 @@ class Trainer:
             if self.rank == 0:
                 lr = self.optimizer.param_groups[0]['lr']
                 print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR: {lr:.2e} | Comp: {v_m['composite']:.4f}")
-                print(f"   | [VAL] L: {v_m['dice_lesion']:.4f} | V: {v_m['recall_lvo']:.4f} | C: {v_m['dice_cow']:.4f}")
+                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} | Recall_LVO: {v_m['recall_lvo']:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
                 print(f"   | [TRN] Loss: {t_m['train_loss']:.4f} | P_V: {v_m['p_lvo']:.2f} | Sig_V: {v_m['sigma_lvo']:.2f}\n{'-'*80}", flush=True)
             self.history.append({**t_m, **v_m, "epoch": epoch + 1})
             if checkpoint and self.rank == 0:

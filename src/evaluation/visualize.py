@@ -30,30 +30,43 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     dice_cow     = [h["dice_cow"]     for h in history]
     composite    = [h["composite"]    for h in history]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    fig.suptitle("ISLES'24 — Training Progress", fontsize=14, fontweight="bold")
+    fig, axes = plt.subplots(1, 4, figsize=(22, 5))
+    fig.suptitle("ISLES'24 — Training Progress & Multi-Task Dynamics", fontsize=14, fontweight="bold")
 
+    # Panel 0: Loss
     axes[0].plot(epochs, train_losses, color="#E74C3C", linewidth=2, label="Train Loss")
     axes[0].plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss", linestyle="--")
-    axes[0].set_title("Training & Validation Loss")
-    axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("Loss")
+    axes[0].set_title("Loss Curves")
+    axes[0].set_xlabel("Epoch"); axes[0].set_ylabel("Loss")
     axes[0].legend(); axes[0].grid(True, alpha=0.3)
 
+    # Panel 1: Per-Task Metrics
     axes[1].plot(epochs, dice_lesion, color="#3498DB", linewidth=2, label="Dice Lesion")
     axes[1].plot(epochs, recall_lvo,  color="#E74C3C", linewidth=2, label="Recall LVO",  linestyle="--")
     axes[1].plot(epochs, dice_cow,    color="#2ECC71", linewidth=2, label="Dice CoW",    linestyle=":")
-    axes[1].set_title("Per-Task Metrics (Validation)")
-    axes[1].set_xlabel("Epoch")
-    axes[1].set_ylabel("Score")
+    axes[1].set_title("Validation Metrics")
+    axes[1].set_xlabel("Epoch"); axes[1].set_ylabel("Score")
     axes[1].legend(); axes[1].set_ylim(0, 1); axes[1].grid(True, alpha=0.3)
 
-    axes[2].plot(epochs, composite, color="#9B59B6", linewidth=2.5, label="Composite")
-    axes[2].fill_between(epochs, composite, alpha=0.15, color="#9B59B6")
-    axes[2].set_title("Composite Score")
-    axes[2].set_xlabel("Epoch")
-    axes[2].set_ylabel("Score")
-    axes[2].legend(); axes[2].set_ylim(0, 1); axes[2].grid(True, alpha=0.3)
+    # Panel 2: Multi-Task Competition (Trọng số P)
+    # Lấy các giá trị p_task từ history (mặc định 1.0 nếu không có)
+    p_l = [h.get("p_lesion", 1.0) for h in history]
+    p_v = [h.get("p_lvo", 1.0) for h in history]
+    p_c = [h.get("p_cow", 1.0) for h in history]
+    
+    axes[2].plot(epochs, p_l, color="#3498DB", alpha=0.8, label="P_Lesion")
+    axes[2].plot(epochs, p_v, color="#E74C3C", alpha=0.8, label="P_LVO")
+    axes[2].plot(epochs, p_c, color="#2ECC71", alpha=0.8, label="P_CoW")
+    axes[2].set_title("Competition Weights (P)")
+    axes[2].set_xlabel("Epoch"); axes[2].set_ylabel("Weight")
+    axes[2].legend(); axes[2].grid(True, alpha=0.3)
+
+    # Panel 3: Composite Score
+    axes[3].plot(epochs, composite, color="#9B59B6", linewidth=2.5, label="Composite")
+    axes[3].fill_between(epochs, composite, alpha=0.15, color="#9B59B6")
+    axes[3].set_title("Overall Performance")
+    axes[3].set_xlabel("Epoch"); axes[3].set_ylabel("Score")
+    axes[3].legend(); axes[3].set_ylim(0, 1); axes[3].grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_path:

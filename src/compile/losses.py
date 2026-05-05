@@ -283,6 +283,10 @@ class MultiTaskLoss(nn.Module):
         return {
             'total': total, 'main': main_loss, 'aux': aux_loss,
             'l_lesion': loss_l.item(), 'l_lvo': loss_v.item(), 'l_cow': loss_c.item(),
+            'p_lesion': p_l if isinstance(p_l, (float, int)) else p_l.item(),
             'p_lvo': p_v if isinstance(p_v, (float, int)) else p_v.item(),
-            'sigma_lvo': torch.exp(s_v * 0.5).item()
+            'p_cow': p_c if isinstance(p_c, (float, int)) else p_c.item(),
+            'sigma_lesion': torch.exp(s_l * 0.5).item(),
+            'sigma_lvo': torch.exp(s_v * 0.5).item(),
+            'sigma_cow': torch.exp(s_c * 0.5).item()
         }
