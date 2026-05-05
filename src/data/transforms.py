@@ -176,7 +176,100 @@ class RandomElasticTransform(nn.Module):
         # Áp dụng
         sample["input"] = F.grid_sample(inp.unsqueeze(0), grid, mode="bilinear", align_corners=False).squeeze(0)
         sample["label"] = F.grid_sample(lbl.unsqueeze(0), grid, mode="nearest", align_corners=False).squeeze(0)
+        return sample
+
+
+class GaussianBlur:
+    """Làm mờ Gaussian cho input (CHỈ input)."""
+    def __init__(self, prob: float = 0.3, max_sigma: float = 1.0):
+        self.prob = prob
+        self.max_sigma = max_sigma
+
+    def __call__(self, sample: dict) -> dict:
+        if random.random() > self.prob:
+            return sample
         
+        sigma = random.uniform(0.1, self.max_sigma)
+        k_size = int(sigma * 4)
+        if k_size % 2 == 0: k_size += 1
+        
+        inp = sample["input"] # (C, H, W)
+        C, H, W = inp.shape
+        
+        # Tạo kernel 1D
+        x = torch.arange(k_size).float() - (k_size - 1) / 2
+        kernel_1d = torch.exp(-x.pow(2) / (2 * sigma**2))
+        kernel_1d = kernel_1d / kernel_1d.sum()
+        
+        # Tạo kernel 2D
+        kernel_2d = kernel_1d.view(1, 1, -1, 1) * kernel_1d.view(1, 1, 1, -1)
+        kernel_2d = kernel_2d.expand(C, 1, k_size, k_size).to(inp.device)
+        
+        inp_blur = F.conv2d(inp.unsqueeze(0), kernel_2d, padding=k_size//2, groups=C)
+        sample["input"] = inp_blur.squeeze(0)
+        return sample
+
+
+class RandomGamma:
+    """Điều chỉnh Gamma ngẫu nhiên (CHỈ input)."""
+    def __init__(self, prob: float = 0.5, gamma_range: tuple = (0.7, 1.3)):
+        self.prob = prob
+        self.gamma_range = gamma_range
+
+    def __call__(self, sample: dict) -> dict:
+        if random.random() < self.prob:
+            gamma = random.uniform(*self.gamma_range)
+            # Giả định input đã được normalize [0, 1]
+            sample["input"] = torch.pow(sample["input"], gamma)
+        return sample
+
+
+class RandomGridDistortion:
+    """Biến dạng lưới (Grid Distortion) đồng bộ cho input và label."""
+    def __init__(self, prob: float = 0.4, num_steps: int = 5, distort_limit: float = 0.2):
+        self.prob = prob
+        self.num_steps = num_steps
+        self.distort_limit = distort_limit
+
+    def __call__(self, sample: dict) -> dict:
+        if random.random() > self.prob:
+            return sample
+
+        inp = sample["input"]
+        lbl = sample["label"]
+        C, H, W = inp.shape
+
+        # Tạo lưới biến dạng
+        x_steps = torch.linspace(-1, 1, self.num_steps + 1)
+        y_steps = torch.linspace(-1, 1, self.num_steps + 1)
+        
+        x_noise = (torch.rand(self.num_steps + 1) - 0.5) * self.distort_limit * (2.0 / self.num_steps)
+        y_noise = (torch.rand(self.num_steps + 1) - 0.5) * self.distort_limit * (2.0 / self.num_steps)
+        
+        # Cố định các cạnh để tránh hở lưới
+        x_noise[0] = x_noise[-1] = 0
+        y_noise[0] = y_noise[-1] = 0
+        
+        x_distorted = (x_steps + x_noise).to(inp.device)
+        y_distorted = (y_steps + y_noise).to(inp.device)
+
+        # Nội suy lưới (Grid Interpolation)
+        yy, xx = torch.meshgrid(torch.linspace(0, self.num_steps, H), torch.linspace(0, self.num_steps, W), indexing='ij')
+        
+        # Trích xuất phần nguyên và phần dư để nội suy tuyến tính
+        x_idx = xx.long().clamp(0, self.num_steps - 1)
+        y_idx = yy.long().clamp(0, self.num_steps - 1)
+        x_frac = xx - x_idx.float()
+        y_frac = yy - y_idx.float()
+
+        # Nội suy tọa độ X và Y mới
+        new_x = (1 - x_frac) * x_distorted[x_idx] + x_frac * x_distorted[x_idx + 1]
+        new_y = (1 - y_frac) * y_distorted[y_idx] + y_frac * y_distorted[y_idx + 1]
+        
+        grid = torch.stack([new_x, new_y], dim=-1).unsqueeze(0).to(inp.device)
+
+        sample["input"] = F.grid_sample(inp.unsqueeze(0), grid, mode="bilinear", align_corners=False).squeeze(0)
+        sample["label"] = F.grid_sample(lbl.unsqueeze(0), grid, mode="nearest", align_corners=False).squeeze(0)
         return sample
 
 
@@ -207,6 +300,25 @@ def build_train_transforms(config: dict) -> Callable:
             ))
 
         # 2. Intensity Transforms (Input Only)
+        if "gaussian_blur" in aug:
+            transforms.append(GaussianBlur(
+                prob=aug["gaussian_blur"]["prob"],
+                max_sigma=aug["gaussian_blur"]["max_sigma"]
+            ))
+
+        if "random_gamma" in aug:
+            transforms.append(RandomGamma(
+                prob=aug["random_gamma"]["prob"],
+                gamma_range=aug["random_gamma"]["gamma_range"]
+            ))
+
+        if "grid_distortion" in aug:
+            transforms.append(RandomGridDistortion(
+                prob=aug["grid_distortion"]["prob"],
+                num_steps=aug["grid_distortion"]["num_steps"],
+                distort_limit=aug["grid_distortion"]["distort_limit"]
+            ))
+
         transforms.append(GaussianNoise(
             prob=aug["gaussian_noise"]["prob"],
             std=aug["gaussian_noise"]["std"],

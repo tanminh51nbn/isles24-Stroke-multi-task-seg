@@ -169,9 +169,28 @@ class SoftCLDiceLoss(nn.Module):
 class MultiTaskLoss(nn.Module):
     def __init__(self, config: dict):
         super().__init__()
-        self.lesion_main_loss = FocalTverskyLoss(alpha=0.7, beta=0.3, gamma=2.0)
+        l_cfg = config["loss"]
+        
+        # 1. Lesion Task
+        self.lesion_main_loss = FocalTverskyLoss(
+            alpha=l_cfg["lesion"].get("alpha", 0.7),
+            beta=l_cfg["lesion"].get("beta", 0.3),
+            gamma=l_cfg["lesion"].get("gamma", 2.0)
+        )
+        self.lesion_hd_loss = SDFBoundaryLoss()
+        self.lesion_hd_w = l_cfg["lesion"].get("hd_weight", 0.0)
+
+        # 2. LVO Task
         self.lvo_loss_fn = CurriculumLVOLoss(config)
-        self.cow_main_loss = FocalTverskyLoss(alpha=0.3, beta=0.7, gamma=2.0)
+
+        # 3. CoW Task
+        self.cow_main_loss = FocalTverskyLoss(
+            alpha=l_cfg["cow"].get("alpha", 0.5),
+            beta=l_cfg["cow"].get("beta", 0.5),
+            gamma=l_cfg["cow"].get("gamma", 2.0)
+        )
+        self.cow_cl_loss = SoftCLDiceLoss(iters=l_cfg["cow"].get("iters", 3))
+        self.cow_cl_w = l_cfg["cow"].get("cl_weight", 0.0)
         
         self.log_vars = nn.ParameterDict({
             'lesion': nn.Parameter(torch.tensor(0.5)),
@@ -219,18 +238,26 @@ class MultiTaskLoss(nn.Module):
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             print(f"    [LOSS_POLICY] Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")
 
+        # 1. Main Losses
         l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
         l_v_b, l_v_s = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], cur_ep)
         l_v_m = l_v_b * l_v_s
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
+        # 2. Additional Task-specific Losses (Boundary & Topology)
+        # Lesion SDF (từ kênh 3 của target)
+        l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4]) * self.lesion_hd_w
+        # CoW clDice
+        l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) * self.cow_cl_w
+
+        # 3. Uncertainty Weighting
         s_l = torch.clamp(self.log_vars['lesion'], min=self.s_min_lesion, max=10.0)
         s_v = torch.clamp(self.log_vars['lvo'], min=self.s_min_lvo, max=10.0)
         s_c = torch.clamp(self.log_vars['cow'], min=self.s_min_cow, max=10.0)
 
-        loss_l = (torch.exp(-s_l) * l_l_m + s_l) * p_l
+        loss_l = (torch.exp(-s_l) * (l_l_m + l_l_hd) + s_l) * p_l
         loss_v = (torch.exp(-s_v) * l_v_m + s_v) * p_v
-        loss_c = (torch.exp(-s_c) * l_c_m + s_c) * p_c
+        loss_c = (torch.exp(-s_c) * (l_c_m + l_c_cl) + s_c) * p_c
         main_loss = loss_l + loss_v + loss_c
 
         with torch.no_grad():

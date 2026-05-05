@@ -189,13 +189,18 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         print(f"  Composite:   {best['composite']:.4f}")
         print(f"{'='*60}")
 
-        # Trả về best composite để PINELINE tổng hợp
+    if rank == 0:
+        # Lưu kết quả tốt nhất vào file để PINELINE.py có thể đọc được (vì mp.spawn không return)
+        import json
+        res_path = os.path.join(fold_output_dir, "best_result.json")
+        with open(res_path, "w") as f:
+            json.dump(best, f)
         best_result = best
     else:
         best_result = None
 
     if dist.is_initialized():
-        dist.barrier() # Sync trước khi dọn dẹp
+        dist.barrier()
         dist.destroy_process_group()
     
     return best_result
@@ -255,6 +260,13 @@ def main():
                 nprocs=world_size,
                 join=True,
             )
+            # Sau khi spawn xong, đọc lại kết quả từ file (do rank 0 lưu)
+            import json
+            res_path = os.path.join(args.output_dir, f"fold_{fold_idx}", "best_result.json")
+            if os.path.exists(res_path):
+                with open(res_path, "r") as f:
+                    result = json.load(f)
+                fold_results.append({"fold": fold_idx, **result})
         else:
             result = train_worker(rank=0, world_size=1, args=args, fold_idx=fold_idx)
             if result:

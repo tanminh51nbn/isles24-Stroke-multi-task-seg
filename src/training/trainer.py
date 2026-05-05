@@ -96,7 +96,7 @@ class Trainer:
 
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 preds = self.model(inp)
-                losses = self.loss_fn(preds, lbl, epoch=epoch)
+                losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=-1) # -1 để tắt log thi đua trong val
 
             if not torch.isfinite(losses["total"]): continue
 
@@ -130,7 +130,7 @@ class Trainer:
             avg_l, ad_l, ar_v, ad_c, ap_v, as_v = total_loss/max(n_b,1), sum_d_l/max(n_b,1), sum_r_v/max(n_v_b,1), sum_d_c/max(n_b,1), sum_p_v/max(n_b,1), sum_s_v/max(n_b,1)
 
         w = self.metric_weights
-        comp = (w["w_lesion"] * ad_l + w["w_lvo"] * ar_v + w["w_cow"] * ad_c)
+        comp = (w["dice_lesion_weight"] * ad_l + w["recall_lvo_weight"] * ar_v + w["dice_cow_weight"] * ad_c)
         return {"val_loss": avg_l, "dice_lesion": ad_l, "recall_lvo": ar_v, "dice_cow": ad_c, "composite": comp, "p_lvo": ap_v, "sigma_lvo": as_v}
 
     def load_checkpoint(self, path: str):
