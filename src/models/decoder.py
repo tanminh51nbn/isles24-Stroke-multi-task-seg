@@ -225,30 +225,39 @@ class LVOBranch(nn.Module):
         self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name="lvo")
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
-        
-        self.vascular_to_lvo_gate = nn.Sequential(
-            nn.Conv2d(final_ch, final_ch // 2, kernel_size=1),
-            nn.BatchNorm2d(final_ch // 2),
-            nn.GELU(),
-            nn.Conv2d(final_ch // 2, 1, kernel_size=1),
-            nn.BatchNorm2d(1),
-            nn.Sigmoid()
-        )
         # Sử dụng phép nhân nên số kênh vào vẫn là dec_ch[3]
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
-    def forward(self, x, cta_skips, perf_skips, aux4_shared, vascular_feat):
+    def forward(self, x, cta_skips, perf_skips, aux4_shared, cow_auxs):
+        """
+        cow_auxs: [aux3_cow, aux2_cow, aux1_cow] độ phân giải [64, 128, 256]
+        """
         s1, s2, s3, _, _ = cta_skips
         d1, d2, d3, _, _ = perf_skips
 
-        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 1:2]) # LVO index
+        # 1. Tầng 64x64 (dec3)
+        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 1:2])
+        # [CẢI TIẾN] Anatomical Gating ngay từ tầng sâu
+        # aux4_shared[:, 2:3] là CoW prediction ở tầng 32x32
+        cow_gate_32 = F.interpolate(aux4_shared[:, 2:3], size=x.shape[2:], mode='bilinear', align_corners=False)
+        x = x * (1.0 + torch.sigmoid(cow_gate_32))
+
+        # 2. Tầng 128x128 (dec2)
         x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
+        # Gating với CoW 64x64 (cow_auxs[0])
+        cow_gate_64 = F.interpolate(cow_auxs[0], size=x.shape[2:], mode='bilinear', align_corners=False)
+        x = x * (1.0 + torch.sigmoid(cow_gate_64))
+
+        # 3. Tầng 256x256 (dec1)
         x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
+        # Gating với CoW 128x128 (cow_auxs[1])
+        cow_gate_128 = F.interpolate(cow_auxs[1], size=x.shape[2:], mode='bilinear', align_corners=False)
+        x = x * (1.0 + torch.sigmoid(cow_gate_128))
 
         x_up = self.up_final(x)
         
-        # [CẢI TIẾN] Spatial Gating: Nhân trực tiếp đặc trưng với bản đồ mạch máu
-        v_guidance = self.vascular_to_lvo_gate(vascular_feat)
+        # 4. Tầng cuối: Gating với CoW 256x256 (cow_auxs[2])
+        v_guidance = torch.sigmoid(F.interpolate(cow_auxs[2], size=x_up.shape[2:], mode='bilinear', align_corners=False))
         x_guided = x_up * (1.0 + v_guidance) 
         
         f_lvo = self.final_conv(x_guided)
@@ -271,27 +280,37 @@ class LesionBranch(nn.Module):
         self.dec1 = DecoderBlock(dec_ch[2], 128, dec_ch[3], attn_type, use_aux=True, task_name="lesion")
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
-        
-        self.lvo_to_lesion_gate = nn.Sequential(
-            nn.Conv2d(final_ch, final_ch // 2, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(final_ch // 2, 1, kernel_size=1),
-            nn.Sigmoid()
-        )
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
-    def forward(self, x, cta_skips, perf_skips, aux4_shared, lvo_feat):
+    def forward(self, x, cta_skips, perf_skips, aux4_shared, lvo_auxs):
+        """
+        lvo_auxs: [aux3_lvo, aux2_lvo, aux1_lvo] độ phân giải [64, 128, 256]
+        """
         s1, s2, s3, _, _ = cta_skips
         d1, d2, d3, _, _ = perf_skips
 
-        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 0:1]) # Lesion index
+        # 1. Tầng 64x64 (dec3)
+        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4_shared[:, 0:1])
+        # Gating với LVO 32x32
+        lvo_gate_32 = F.interpolate(aux4_shared[:, 1:2], size=x.shape[2:], mode='bilinear', align_corners=False)
+        x = x * (1.0 + torch.sigmoid(lvo_gate_32))
+
+        # 2. Tầng 128x128 (dec2)
         x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
+        # Gating với LVO 64x64
+        lvo_gate_64 = F.interpolate(lvo_auxs[0], size=x.shape[2:], mode='bilinear', align_corners=False)
+        x = x * (1.0 + torch.sigmoid(lvo_gate_64))
+
+        # 3. Tầng 256x256 (dec1)
         x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
+        # Gating với LVO 128x128
+        lvo_gate_128 = F.interpolate(lvo_auxs[1], size=x.shape[2:], mode='bilinear', align_corners=False)
+        x = x * (1.0 + torch.sigmoid(lvo_gate_128))
 
         x_up = self.up_final(x)
         
-        # [CẢI TIẾN] Spatial Gating: Tập trung vào vùng nhồi máu quanh điểm tắc
-        l_guidance = self.lvo_to_lesion_gate(lvo_feat)
+        # 4. Tầng cuối: Gating với LVO 256x256
+        l_guidance = torch.sigmoid(F.interpolate(lvo_auxs[2], size=x_up.shape[2:], mode='bilinear', align_corners=False))
         x_guided = x_up * (1.0 + l_guidance)
         
         f_lesion = self.final_conv(x_guided)
@@ -344,18 +363,17 @@ class MultiHeadDecoder(nn.Module):
         # 3. Nhánh Vascular (CoW) -> Chạy trước để làm guidance
         f_cow, cow_auxs = self.vascular_branch(x_shared, cta_skips, perf_skips, aux4_shared[:, 2:3])
 
-        # 4. Nhánh LVO -> Chạy sau, nhận guidance từ Vascular (f_cow)
-        f_lvo, lvo_auxs, v_guidance = self.lvo_branch(x_shared, cta_skips, perf_skips, aux4_shared, f_cow)
+        # 4. Nhánh LVO -> Chạy sau, nhận guidance từ toàn bộ các tầng CoW (cow_auxs)
+        f_lvo, lvo_auxs, v_guidance = self.lvo_branch(x_shared, cta_skips, perf_skips, aux4_shared, cow_auxs)
 
-        # 5. Nhánh Lesion -> Chạy cuối, nhận guidance từ LVO (f_lvo)
-        f_lesion, lesion_auxs, l_guidance = self.lesion_branch(x_shared, cta_skips, perf_skips, aux4_shared, f_lvo)
+        # 5. Nhánh Lesion -> Chạy cuối, nhận guidance từ toàn bộ các tầng LVO (lvo_auxs)
+        f_lesion, lesion_auxs, l_guidance = self.lesion_branch(x_shared, cta_skips, perf_skips, aux4_shared, lvo_auxs)
 
         # Trình tự Aux Masks: [32, 64, 128, 256]
-        # Mỗi mask chứa [Lesion, LVO, CoW]
-        aux_masks = [aux4_shared]
-        for i in range(3): # aux3, aux2, aux1
-            mask = torch.cat([lesion_auxs[i], lvo_auxs[i], cow_auxs[i]], dim=1)
-            aux_masks.append(mask)
+        # Mỗi tầng phải chứa đủ [Lesion, LVO, CoW] theo đúng thứ tự kênh của targets
+        aux_masks = [aux4_shared] # Bắt đầu bằng tầng 32x32
+        for i in range(3): # Tiếp nối bằng các tầng 64, 128, 256
+            aux_masks.append(torch.cat([lesion_auxs[i], lvo_auxs[i], cow_auxs[i]], dim=1))
 
         # Guidance maps để debug
         g_maps = {

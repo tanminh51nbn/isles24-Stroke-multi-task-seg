@@ -459,7 +459,19 @@ class MultiTaskLoss(nn.Module):
 
         main_loss = main_lesion_weighted + main_lvo_weighted + main_cow_weighted
 
-        # 2. Tính toán Auxiliary Losses (MDS)
+        # [CẢI TIẾN] Task Priority Scheduling: Gate MUST learn first
+        p_cow, p_lvo, p_lesion = 1.0, 1.0, 1.0
+        if epoch < 16:
+            p_cow, p_lvo, p_lesion = 2.0, 0.5, 0.5
+        elif epoch >= 40:
+            p_lvo = 2.0 
+            p_lesion = 1.5
+
+        main_lesion_weighted *= p_lesion
+        main_lvo_weighted    *= p_lvo
+        main_cow_weighted    *= p_cow
+
+        main_loss = main_lesion_weighted + main_lvo_weighted + main_cow_weighted
         # aux_masks: [mask_32, mask_64, mask_128, mask_256]
         aux_loss = 0.0
         # Trọng số tăng dần, giảm áp lực ở tầng quá sâu để tránh nhiễu
@@ -483,20 +495,29 @@ class MultiTaskLoss(nn.Module):
                 l_lesion_aux = self.lesion_main_loss(aux_pred[:, 0:1], target_lesion)
                 l_cow_aux    = self.cow_main_loss(aux_pred[:, 2:3], target_cow)
                 
-                # Chỉ tính LVO ở tầng 128 (i=2) và 256 (i=3)
+                # [NEW] Sync Priority with Main Loss
+                p_cow, p_lvo, p_lesion = 1.0, 1.0, 1.0
+                if epoch < 16:
+                    p_cow, p_lvo, p_lesion = 2.0, 0.5, 0.5
+                elif epoch >= 40:
+                    p_lvo = 2.0 
+                    p_lesion = 1.5
+
                 if i >= 2:
                     # Chú ý: Ở Aux layer cũng dùng Curriculum
                     l_lvo_aux_base, lvo_aux_scale = self.lvo_loss_fn(aux_pred[:, 1:2], target_lvo, epoch)
                     l_lvo_aux = l_lvo_aux_base * lvo_aux_scale
                     
-                    # [FIX] MDS Balancing: Boost LVO động theo epoch để tránh Gradient Shock.
-                    # Khởi đầu x1.0 và tăng dần lên x3.5.
+                    # MDS Balancing: Boost LVO động theo epoch
                     mds_boost = self.lvo_loss_fn.get_mds_boost(epoch)
-                    l_aux = self.w_lesion * l_lesion_aux + (self.w_lvo * l_lvo_aux * mds_boost) + self.w_cow * l_cow_aux
+                    l_aux = (self.w_lesion * l_lesion_aux * p_lesion) + \
+                            (self.w_lvo * l_lvo_aux * mds_boost * p_lvo) + \
+                            (self.w_cow * l_cow_aux * p_cow)
                 else:
-                    # Ở tầng sâu, chỉ tập trung vào Lesion và CoW (re-scale trọng số)
+                    # Ở tầng sâu, chỉ tập trung vào Lesion và CoW
                     w_sum = self.w_lesion + self.w_cow
-                    l_aux = (self.w_lesion / w_sum) * l_lesion_aux + (self.w_cow / w_sum) * l_cow_aux
+                    l_aux = (self.w_lesion / w_sum * l_lesion_aux * p_lesion) + \
+                            (self.w_cow / w_sum * l_cow_aux * p_cow)
                 
                 aux_loss += aux_weights[i] * l_aux
 

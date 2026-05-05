@@ -30,7 +30,7 @@ loss:
 uncertainty:
   s_min_lesion: 0.4
   s_min_lvo: 0.4
-  s_min_cow: 0.7
+  s_min_cow: 0.4
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
@@ -40,7 +40,7 @@ composite_score:
   recall_lvo_weight: 0.38
   dice_cow_weight: 0.24
   thresholds:
-    lesion: 0.3
+    lesion: 0.45
     lvo: 0.1
     cow: 0.5
 
@@ -85,9 +85,9 @@ training:
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 25 
-    patience: 20 #can 30
-    min_delta: 0.001
+    start_epoch: 30 
+    patience: 30 #can 30
+    min_delta: 0.0001
 
   # Logging
   logging:
