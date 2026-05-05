@@ -9,20 +9,20 @@ loss:
     type: "tversky"
     alpha: 0.2
     beta: 0.8
-    weight: 0.38
+    weight: 0.45
     hd_weight: 0.2
 
   lvo:
     type: "modified_focal"
     mfl_alpha: 2.0
     mfl_beta: 4.0
-    weight: 0.38
+    weight: 0.50
 
   cow:
     type: "cl_tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.24
+    weight: 0.05
     cl_weight: 0.55
     iters: 4
 
@@ -39,12 +39,12 @@ uncertainty:
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
 # Dùng Recall cho LVO (chỉ cần detect được, không cần viền chính xác)
 composite_score:
-  dice_lesion_weight: 0.38 # Ưu tiên Lesion hơn trong điểm tổng
-  recall_lvo_weight: 0.38
-  dice_cow_weight: 0.24
+  dice_lesion_weight: 0.45 # Ưu tiên tối đa Lesion
+  recall_lvo_weight: 0.50  # Ưu tiên tối đa LVO
+  dice_cow_weight: 0.05    # CoW chỉ còn là phụ trợ
   thresholds:
     lesion: 0.45
-    lvo: 0.1
+    lvo: 0.05 # Hạ ngưỡng để tăng Recall cho LVO
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
@@ -71,10 +71,6 @@ training:
   # [NEW] Curriculum Learning Schedule cho LVO
   curriculum_learning:
     enabled: true
-    # Giai đoạn 1: Epoch 0-5   (Soft Target, Low Weight)
-    # Giai đoạn 2: Epoch 6-13  (Medium Target, Normal Weight)
-    # Giai đoạn 2b: Epoch 14-15 (Sharp Target, Bridge Weight)
-    # Giai đoạn 3: Epoch 16-100 (Strict Binary, High Weight)
 
   # Checkpointing
   checkpoint:

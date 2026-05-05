@@ -229,11 +229,17 @@ class MultiTaskLoss(nn.Module):
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
         p_l, p_v, p_c = 1.0, 1.0, 1.0
         cur_ep = int(epoch)
-        if cur_ep < 16: p_c, p_v, p_l = 3.0, 0.1, 0.1
+        # NEW POLICY: Dựng bản đồ giải phẫu 10 epoch đầu, sau đó mới tổng tấn công LVO
+        if cur_ep < 10: 
+            p_v, p_l, p_c = 1.5, 1.0, 1.0 # CoW cần đủ lực để dựng bản đồ giải phẫu
+        elif cur_ep < 25:
+            p_v, p_l, p_c = 2.5, 1.5, 0.1 # Bắt đầu dìm CoW, đẩy LVO lên
         elif cur_ep < 40:
             w = self._calculate_dwa(cur_ep).to(targets.device)
             p_l, p_v, p_c = w[0], w[1], w[2]
-        else: p_v, p_l, p_c = 3.0, 2.0, 0.2
+            p_c = p_c * 0.1 # Luôn dìm CoW trong giai đoạn thi đua
+        else: 
+            p_v, p_l, p_c = 4.0, 2.0, 0.05 # Giai đoạn hủy diệt
 
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             print(f"    [LOSS_POLICY] Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")

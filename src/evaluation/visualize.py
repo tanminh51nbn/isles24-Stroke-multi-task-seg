@@ -1,18 +1,16 @@
 """
-visualize.py — Trực quan hóa kết quả training và predictions (Bản nâng cấp lâm sàng v3)
+visualize.py — Trực quan hóa kết quả (Bản "LVO Sát Thủ" v4)
 
-Thay đổi v3:
-    - LVO được hiển thị dạng Heatmap (colormap 'hot') thay vì overlay màu đơn.
-      Điều này phản ánh đúng bản chất Gaussian Heatmap của nhãn LVO mới.
-    - GT LVO: Heatmap gốc từ dataset (giá trị [0,1] liên tục).
-    - Pred LVO: Sigmoid của logit LVO head (giá trị [0,1] liên tục).
+Nâng cấp: 
+    - Hiển thị 2 hàng 4 cột (Dashboard Lâm sàng).
+    - Bao gồm cả CTA và Perfusion để đối chiếu.
+    - Tách biệt các thành phần dự đoán để soi chi tiết.
 """
 
 import os
 import numpy as np
 import torch
-import matplotlib
-# matplotlib.use("Agg")  # Sẽ tự động nhận diện backend tùy môi trường
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from typing import List, Optional
@@ -21,7 +19,6 @@ from typing import List, Optional
 # ─── Training Curves ──────────────────────────────────────────────────────────
 
 def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
-    """Vẽ các biểu đồ Loss và Metric theo epoch."""
     epochs       = [h["epoch"] for h in history]
     train_losses = [h["train_loss"]   for h in history]
     val_losses   = [h["val_loss"]     for h in history]
@@ -33,151 +30,128 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     fig, axes = plt.subplots(1, 4, figsize=(22, 5))
     fig.suptitle("ISLES'24 — Training Progress & Multi-Task Dynamics", fontsize=14, fontweight="bold")
 
-    # Panel 0: Loss
     axes[0].plot(epochs, train_losses, color="#E74C3C", linewidth=2, label="Train Loss")
     axes[0].plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss", linestyle="--")
-    axes[0].set_title("Loss Curves")
-    axes[0].set_xlabel("Epoch"); axes[0].set_ylabel("Loss")
-    axes[0].legend(); axes[0].grid(True, alpha=0.3)
+    axes[0].set_title("Loss Curves"); axes[0].legend(); axes[0].grid(True, alpha=0.3)
 
-    # Panel 1: Per-Task Metrics
     axes[1].plot(epochs, dice_lesion, color="#3498DB", linewidth=2, label="Dice Lesion")
     axes[1].plot(epochs, recall_lvo,  color="#E74C3C", linewidth=2, label="Recall LVO",  linestyle="--")
     axes[1].plot(epochs, dice_cow,    color="#2ECC71", linewidth=2, label="Dice CoW",    linestyle=":")
-    axes[1].set_title("Validation Metrics")
-    axes[1].set_xlabel("Epoch"); axes[1].set_ylabel("Score")
-    axes[1].legend(); axes[1].set_ylim(0, 1); axes[1].grid(True, alpha=0.3)
+    axes[1].set_title("Validation Metrics"); axes[1].legend(); axes[1].set_ylim(0, 1); axes[1].grid(True, alpha=0.3)
 
-    # Panel 2: Multi-Task Competition (Trọng số P)
-    # Lấy các giá trị p_task từ history (mặc định 1.0 nếu không có)
     p_l = [h.get("p_lesion", 1.0) for h in history]
     p_v = [h.get("p_lvo", 1.0) for h in history]
     p_c = [h.get("p_cow", 1.0) for h in history]
-    
     axes[2].plot(epochs, p_l, color="#3498DB", alpha=0.8, label="P_Lesion")
     axes[2].plot(epochs, p_v, color="#E74C3C", alpha=0.8, label="P_LVO")
     axes[2].plot(epochs, p_c, color="#2ECC71", alpha=0.8, label="P_CoW")
-    axes[2].set_title("Competition Weights (P)")
-    axes[2].set_xlabel("Epoch"); axes[2].set_ylabel("Weight")
-    axes[2].legend(); axes[2].grid(True, alpha=0.3)
+    axes[2].set_title("Competition Weights (P)"); axes[2].legend(); axes[2].grid(True, alpha=0.3)
 
-    # Panel 3: Composite Score
     axes[3].plot(epochs, composite, color="#9B59B6", linewidth=2.5, label="Composite")
     axes[3].fill_between(epochs, composite, alpha=0.15, color="#9B59B6")
-    axes[3].set_title("Overall Performance")
-    axes[3].set_xlabel("Epoch"); axes[3].set_ylabel("Score")
-    axes[3].legend(); axes[3].set_ylim(0, 1); axes[3].grid(True, alpha=0.3)
+    axes[3].set_title("Overall Performance"); axes[3].legend(); axes[3].set_ylim(0, 1); axes[3].grid(True, alpha=0.3)
 
     plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    if save_path: plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
 
 
-# ─── Prediction Overlay (Clinical Style v3) ───────────────────────────────────
+# ─── Prediction Overlay (Dashboard v4) ───────────────────────────────────────
 
-def overlay_predictions(
-    sample: dict,
-    preds: dict,
-    epoch: int,
-    save_dir: Optional[str] = None,
-    thresholds: dict = None,
-    show: bool = False,
-):
-    """
-    Hiển thị kết quả phân vùng theo phong cách đối chiếu lâm sàng (GT vs Pred).
-
-    Cách hiển thị:
-        - Lesion: Overlay màu đỏ (mask nhị phân).
-        - LVO:    Heatmap colormap 'hot' (giá trị liên tục [0,1]).
-                  Hiển thị riêng hàng dưới để thấy rõ quầng sáng Gaussian.
-        - CoW:    Overlay màu xanh lá (mask nhị phân).
-    """
+def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optional[str] = None, thresholds: dict = None, show: bool = False):
     if thresholds is None:
-        thresholds = {"lesion": 0.5, "lvo": 0.15, "cow": 0.5}
+        thresholds = {"lesion": 0.45, "lvo": 0.05, "cow": 0.5}
 
     if save_dir: os.makedirs(save_dir, exist_ok=True)
 
-    # ── Chuẩn bị dữ liệu ──────────────────────────────────────────────────────
-    cta_img = sample["input"][6].cpu().numpy()
+    # 1. Chuẩn bị dữ liệu (B, C, H, W)
+    cta_img  = sample["input"][6].cpu().numpy() # Kênh CTA chính
+    perf_img = sample["input"][12].cpu().numpy() # Một kênh Perfusion đại diện (Tmax)
 
-    # GT: LVO là Heatmap liên tục [0,1], Lesion/CoW là mask nhị phân
+    # GT
     gt_lesion = sample["label"][0].cpu().numpy()
-    gt_lvo    = sample["label"][1].cpu().numpy()          # Heatmap [0,1]
+    gt_lvo    = sample["label"][1].cpu().numpy()
     gt_cow    = sample["label"][2].cpu().numpy()
 
-    # Pred: LVO là sigmoid của logit (liên tục), Lesion/CoW dùng threshold
-    lvo_thresh = thresholds.get("lvo", 0.15)
-    pr_lesion  = (torch.sigmoid(preds["lesion"].squeeze()) > thresholds.get("lesion", 0.5)).float().cpu().numpy()
-    pr_lvo     = torch.sigmoid(preds["lvo"].squeeze()).float().cpu().numpy()   # Heatmap [0,1]
-    pr_lvo_bin = (pr_lvo > lvo_thresh).astype(float)                          # Binary để overlay
-    pr_cow     = (torch.sigmoid(preds["cow"].squeeze()) > thresholds.get("cow", 0.5)).float().cpu().numpy()
+    # Pred
+    lvo_t = thresholds.get("lvo", 0.05)
+    sig_lesion = torch.sigmoid(preds["lesion"].squeeze()).float().cpu().numpy()
+    sig_lvo    = torch.sigmoid(preds["lvo"].squeeze()).float().cpu().numpy()
+    sig_cow    = torch.sigmoid(preds["cow"].squeeze()).float().cpu().numpy()
 
-    # ── Layout 2x2: [GT | Pred] × [Tổng quan | LVO Heatmap] ──────────────────
-    fig, axes = plt.subplots(2, 2, figsize=(16, 14))
-    title = f"Epoch {epoch} — Clinical Review" if epoch < 999 else "Final Clinical Review"
-    fig.suptitle(title, fontsize=14, fontweight="bold")
+    pr_lesion_bin = (sig_lesion > thresholds.get("lesion", 0.45)).astype(float)
+    pr_lvo_bin    = (sig_lvo > lvo_t).astype(float)
+    pr_cow_bin    = (sig_cow > thresholds.get("cow", 0.5)).astype(float)
 
-    # ── Hàng trên: Overlay tổng quan (Lesion đỏ + LVO xanh dương + CoW xanh lá) ──
-    for col, (lesion, cow, lvo_bin, panel_title) in enumerate([
-        (gt_lesion, gt_cow, (gt_lvo > lvo_thresh).astype(float), "BÁC SĨ (Ground Truth)"),
-        (pr_lesion, pr_cow, pr_lvo_bin,                           "AI DỰ ĐOÁN"),
-    ]):
-        ax = axes[0, col]
-        ax.imshow(cta_img, cmap="bone")
-        ax.set_title(panel_title, fontsize=12, fontweight="bold")
+    # 2. Tính toán Metric nhanh cho mẫu này (để in tiêu đề)
+    intersection_l = (pr_lesion_bin * gt_lesion).sum()
+    dice_l = (2. * intersection_l) / (pr_lesion_bin.sum() + gt_lesion.sum() + 1e-8)
+    
+    # LVO Recall (Instance-wise đơn giản cho visualization)
+    lvo_hit = 1.0 if (gt_lvo.max() > 0.5 and pr_lvo_bin.max() > 0.5) else (0.0 if gt_lvo.max() > 0.5 else 1.0)
 
-        # Lesion = đỏ
-        if lesion.sum() > 0:
-            overlay = np.zeros((*lesion.shape, 4))
-            overlay[..., 0] = 1.0
-            overlay[..., 3] = lesion * 0.5
-            ax.imshow(overlay)
+    # 3. Layout 2x4
+    fig, axes = plt.subplots(2, 4, figsize=(24, 12))
+    plt.subplots_adjust(wspace=0.1, hspace=0.2)
+    
+    title = f"Epoch {epoch} | Sample Dice_L: {dice_l:.4f} | LVO_Hit: {int(lvo_hit)}"
+    fig.suptitle(title, fontsize=16, fontweight="bold")
 
-        # LVO detected = xanh dương
-        if lvo_bin.sum() > 0:
-            overlay = np.zeros((*lvo_bin.shape, 4))
-            overlay[..., 2] = 1.0
-            overlay[..., 3] = lvo_bin * 0.65
-            ax.imshow(overlay)
+    # --- Hàng 1: Tham chiếu & Tổng hợp ---
+    # [1.1] CTA Anatomy
+    axes[0, 0].imshow(cta_img, cmap="bone"); axes[0, 0].set_title("CTA (Anatomy)"); axes[0, 0].axis("off")
+    # [1.2] Perfusion Tmax
+    axes[0, 1].imshow(perf_img, cmap="viridis"); axes[0, 1].set_title("Perfusion (Physiology)"); axes[0, 1].axis("off")
+    
+    # [1.3] GT Overlay
+    axes[0, 2].imshow(cta_img, cmap="bone")
+    # RGB: R=Lesion, G=CoW, B=LVO
+    gt_overlay = np.zeros((*gt_lesion.shape, 3))
+    gt_overlay[..., 0] = gt_lesion * 0.7
+    gt_overlay[..., 1] = gt_cow * 0.4
+    gt_overlay[..., 2] = (gt_lvo > 0.5).astype(float) * 0.9
+    axes[0, 2].imshow(gt_overlay, alpha=0.5)
+    axes[0, 2].set_title("BÁC SĨ (Ground Truth)"); axes[0, 2].axis("off")
 
-        # CoW = xanh lá
-        if cow.sum() > 0:
-            overlay = np.zeros((*cow.shape, 4))
-            overlay[..., 1] = 1.0
-            overlay[..., 3] = cow * 0.4
-            ax.imshow(overlay)
+    # [1.4] Pred Overlay
+    axes[0, 3].imshow(cta_img, cmap="bone")
+    pr_overlay = np.zeros((*pr_lesion_bin.shape, 3))
+    pr_overlay[..., 0] = pr_lesion_bin * 0.7
+    pr_overlay[..., 1] = pr_cow_bin * 0.4
+    pr_overlay[..., 2] = pr_lvo_bin * 0.9
+    axes[0, 3].imshow(pr_overlay, alpha=0.5)
+    axes[0, 3].set_title("AI DỰ ĐOÁN (Tổng hợp)"); axes[0, 3].axis("off")
 
-        ax.axis("off")
+    # --- Hàng 2: Chi tiết từng Task ---
+    # [2.1] Lesion Probability
+    axes[1, 0].imshow(sig_lesion, cmap="Reds", vmin=0, vmax=1)
+    axes[1, 0].set_title("Lesion Probability Map"); axes[1, 0].axis("off")
 
-    # ── Hàng dưới: LVO Heatmap riêng biệt — nhìn rõ quầng sáng Gaussian ──────
-    for col, (lvo_heat, heat_title) in enumerate([
-        (gt_lvo, "LVO Heatmap — BÁC SĨ"),
-        (pr_lvo, "LVO Heatmap — AI DỰ ĐOÁN"),
-    ]):
-        ax = axes[1, col]
-        ax.imshow(cta_img, cmap="bone")
-        if lvo_heat.max() > 0:
-            # colormap 'hot': đen → đỏ → cam → vàng → trắng (đỉnh 1.0)
-            ax.imshow(lvo_heat, cmap="hot", alpha=0.65, vmin=0, vmax=1)
-        ax.set_title(heat_title, fontsize=11)
-        ax.axis("off")
+    # [2.2] LVO Heatmap (Sát thủ soi điểm)
+    axes[1, 1].imshow(cta_img, cmap="bone")
+    axes[1, 1].imshow(sig_lvo, cmap="hot", alpha=0.7, vmin=0, vmax=1)
+    axes[1, 1].set_title("LVO Heatmap (Target)"); axes[1, 1].axis("off")
 
-    # ── Legend ────────────────────────────────────────────────────────────────
+    # [2.3] CoW Anatomy
+    axes[1, 2].imshow(sig_cow, cmap="Greens", vmin=0, vmax=1)
+    axes[1, 2].set_title("CoW Anatomy Map"); axes[1, 2].axis("off")
+
+    # [2.4] Error Map (Những chỗ AI làm sai)
+    error_map = np.abs(pr_lesion_bin - gt_lesion)
+    axes[1, 3].imshow(error_map, cmap="magma")
+    axes[1, 3].set_title("Lesion Error Map"); axes[1, 3].axis("off")
+
+    # Legend
     patches = [
-        mpatches.Patch(color=(1, 0, 0), label="Lesion"),
-        mpatches.Patch(color=(0, 0, 1), label="LVO (detected)"),
-        mpatches.Patch(color=(0, 1, 0), label="CoW"),
+        mpatches.Patch(color=(0.7, 0, 0), label="Lesion"),
+        mpatches.Patch(color=(0, 0.4, 0), label="CoW"),
+        mpatches.Patch(color=(0, 0, 0.9), label="LVO (Heatmap Peak)")
     ]
-    fig.legend(handles=patches, loc="lower center", ncol=3, fontsize=11)
-    plt.tight_layout()
+    fig.legend(handles=patches, loc="lower center", ncol=3, fontsize=12)
 
     if save_dir:
         fname = os.path.basename(sample.get("path", "sample")).replace(".npy", "")
         save_path = os.path.join(save_dir, f"epoch{epoch:03d}_{fname}.png")
         plt.savefig(save_path, dpi=120, bbox_inches="tight")
-
-    if show:
-        plt.show()
-
+    if show: plt.show()
     plt.close()
