@@ -462,7 +462,7 @@ class MultiTaskLoss(nn.Module):
         # [CẢI TIẾN] Task Priority Scheduling: Gate MUST learn first
         p_cow, p_lvo, p_lesion = 1.0, 1.0, 1.0
         if epoch < 16:
-            p_cow, p_lvo, p_lesion = 2.0, 0.5, 0.5
+            p_cow, p_lvo, p_lesion = 3.0, 0.1, 0.1
         elif epoch >= 40:
             p_lvo = 2.0 
             p_lesion = 1.5
@@ -498,7 +498,7 @@ class MultiTaskLoss(nn.Module):
                 # [NEW] Sync Priority with Main Loss
                 p_cow, p_lvo, p_lesion = 1.0, 1.0, 1.0
                 if epoch < 16:
-                    p_cow, p_lvo, p_lesion = 2.0, 0.5, 0.5
+                    p_cow, p_lvo, p_lesion = 3.0, 0.1, 0.1
                 elif epoch >= 40:
                     p_lvo = 2.0 
                     p_lesion = 1.5

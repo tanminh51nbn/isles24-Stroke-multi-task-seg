@@ -30,7 +30,7 @@ loss:
 uncertainty:
   s_min_lesion: 0.4
   s_min_lvo: 0.4
-  s_min_cow: 0.4
+  s_min_cow: 0.6
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
@@ -57,6 +57,7 @@ scheduler:
   warmup_epochs: 7
   hold_epochs: 18
   min_lr: 5.0e-6
+  freeze_encoder_epochs: 15
 
 # ── Training ────────────────────────────────────────────────────
 training:
