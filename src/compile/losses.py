@@ -487,30 +487,33 @@ class MultiTaskLoss(nn.Module):
         aux_loss = 0.0
         if "aux_masks" in preds and preds["aux_masks"] is not None:
             aux_weights = [0.05, 0.075, 0.125, 0.25]
-            for task_name, p_task in [('lesion', p_lesion), ('lvo', p_lvo), ('cow', p_cow)]:
-                task_aux = preds['aux_masks'].get(task_name, [])
-                if not task_aux:
+            aux_list = preds["aux_masks"] # List of 4 tensors, each (B, 3, H, W)
+            
+            for i, aux_pred_3ch in enumerate(aux_list):
+                if aux_pred_3ch is None or i >= len(aux_weights):
                     continue
                 
-                for i, aux_pred in enumerate(task_aux):
-                    if aux_pred is None or i >= len(aux_weights):
-                        continue
-                    
-                    h, w = aux_pred.shape[2], aux_pred.shape[3]
-                    
-                    if task_name == 'lvo':
-                        target_aux = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
-                        l_a_base, _ = self.lvo_loss_fn(aux_pred, target_aux, epoch)
-                        l_a = l_a_base
-                    else:
-                        t_idx = 0 if task_name == 'lesion' else 2
-                        target_aux = F.interpolate(targets[:, t_idx:t_idx+1].float(), (h, w), mode='nearest')
-                        if task_name == 'lesion':
-                            l_a = self.lesion_main_loss(aux_pred, target_aux)
-                        else:
-                            l_a = self.cow_main_loss(aux_pred, target_aux)
-                    
-                    aux_loss += aux_weights[i] * l_a * p_task
+                h, w = aux_pred_3ch.shape[2], aux_pred_3ch.shape[3]
+                
+                # Tách 3 kênh: 0=Lesion, 1=LVO, 2=CoW
+                aux_lesion = aux_pred_3ch[:, 0:1]
+                aux_lvo    = aux_pred_3ch[:, 1:2]
+                aux_cow    = aux_pred_3ch[:, 2:3]
+                
+                # 1. Lesion Aux Loss
+                t_lesion = F.interpolate(targets[:, 0:1].float(), (h, w), mode='nearest')
+                l_a_lesion = self.lesion_main_loss(aux_lesion, t_lesion) * p_lesion
+                
+                # 2. LVO Aux Loss
+                t_lvo = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
+                l_a_lvo_base, _ = self.lvo_loss_fn(aux_lvo, t_lvo, epoch)
+                l_a_lvo = l_a_lvo_base * p_lvo
+                
+                # 3. CoW Aux Loss
+                t_cow = F.interpolate(targets[:, 2:3].float(), (h, w), mode='nearest')
+                l_a_cow = self.cow_main_loss(aux_cow, t_cow) * p_cow
+                
+                aux_loss += aux_weights[i] * (l_a_lesion + l_a_lvo + l_a_cow)
 
         # 6. Tổng hợp kết quả
         total = main_loss + aux_loss
