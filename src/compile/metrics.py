@@ -1,133 +1,104 @@
 """
-metrics.py — Clinical Metrics cho Multi-Task Stroke Segmentation
+metrics.py — Clinical Metrics chuẩn ISLES'24 ( Kurtlab & Top Leaderboard)
 
-Metrics:
-    Lesion: Volumetric Dice — đo độ chồng lấp thể tích ổ nhồi máu
-    LVO:    Recall (Sensitivity) — chỉ cần phát hiện được điểm tắc
-    CoW:    Volumetric Dice — đo độ chính xác lập bản đồ mạch máu
-
-    Composite = 0.4*Dice_Lesion + 0.4*Recall_LVO + 0.2*Dice_CoW
-
-Lý do dùng Recall cho LVO thay vì Dice:
-    LVO là một điểm nhỏ (đôi khi chỉ vài pixel).
-    Dice rất nhạy cảm với kích thước → đánh giá không công bằng.
-    Recall chỉ hỏi: "Có detect được không?" — đúng với yêu cầu lâm sàng.
+Hệ quy chiếu chung với các đội vô địch:
+    1. Dice (%) ↑ : Độ chồng lấp thể tích (Lesion/CoW)
+    2. AVD (%) ↓  : Sai lệch thể tích tuyệt đối (Average Volumetric Difference)
+    3. F1 (%) ↑   : Chỉ số F1 cho LVO (Instance-level, cân bằng Precision/Recall)
+    4. ALCD ↓     : Chênh lệch số lượng ổ tổn thương (Absolute Lesion Count Difference)
 """
 
 import torch
+import numpy as np
+from scipy.ndimage import label
 
 
-def dice_score(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    threshold: float = 0.5,
-    smooth: float = 1e-6,
-) -> torch.Tensor:
-    """
-    Tính Dice Score từ raw logits.
-
-    Args:
-        logits:    (B, 1, H, W) raw logits
-        targets:   (B, 1, H, W) binary targets {0, 1}
-        threshold: Ngưỡng để binarize predictions
-        smooth:    Epsilon tránh division by zero
-
-    Returns:
-        Scalar Dice score (mean over batch)
-    """
+def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, smooth: float = 1e-6) -> torch.Tensor:
     preds = (torch.sigmoid(logits) > threshold).float()
     preds   = preds.view(preds.size(0), -1)
     targets = targets.view(targets.size(0), -1)
-
     intersection = (preds * targets).sum(dim=1)
     dice = (2.0 * intersection + smooth) / (preds.sum(dim=1) + targets.sum(dim=1) + smooth)
     return dice.mean()
 
 
-def recall_score(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    threshold: float = 0.5,
-    smooth: float = 1e-6,
-) -> torch.Tensor:
-    """
-    [ĐÃ SỬA: INSTANCE-WISE RECALL]
-    Tính Tỉ lệ phát hiện (Detection Rate) cho LVO Heatmap thay vì đếm từng Pixel.
-    Luật: Cứ đốm sáng của AI "chạm" vào vùng LVO của Bác sĩ thì tính là 1 điểm (Thành công).
-    Bắn trượt ra ngoài hoặc không có đốm sáng thì tính là 0 điểm (Thất bại).
-    """
+def aad_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
+    """Average Area Difference (%) — Sai lệch diện tích trên từng lát cắt 2D"""
     preds = (torch.sigmoid(logits) > threshold).float()
-    preds   = preds.view(preds.size(0), -1)
-    targets = targets.view(targets.size(0), -1)
-
-    # 1. Kiểm tra xem slice này có bệnh (LVO) không?
-    has_lvo = targets.sum(dim=1) > 0
-
-    if has_lvo.sum() == 0:
-        # Không có LVO -> Bỏ qua
-        return torch.tensor(-1.0)
-
-    # 2. Kiểm tra AI bắn trúng hay trượt
-    # (preds * targets) chỉ > 0 khi đốm sáng AI nằm CHỒNG lên vùng bệnh của bác sĩ
-    is_hit = ((preds * targets).sum(dim=1) > 0).float()
-
-    # 3. Tính trung bình tỉ lệ phát hiện thành công
-    return is_hit[has_lvo].mean()
+    area_p = preds.sum().item()
+    area_g = targets.sum().item()
+    if area_g == 0:
+        return 100.0 if area_p > 0 else 0.0
+    return abs(area_p - area_g) / area_g * 100.0
 
 
-def composite_score(
-    dice_lesion: float,
-    recall_lvo: float,
-    dice_cow: float,
-    weights: dict,
-) -> float:
-    """
-    Tổng hợp các metric thành một điểm số duy nhất.
+def f1_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
+    """Instance-level F1 Score cho LVO Detection"""
+    preds = (torch.sigmoid(logits) > threshold).float().cpu().numpy()
+    gt    = (targets > 0.1).float().cpu().numpy() # Dùng 0.1 để binarize heatmap GT
+    
+    tp, fp, fn = 0, 0, 0
+    
+    for i in range(preds.shape[0]):
+        p_slice = preds[i, 0]
+        g_slice = gt[i, 0]
+        
+        has_p = p_slice.max() > 0
+        has_g = g_slice.max() > 0
+        
+        if has_p and has_g:
+            # Kiểm tra xem có chạm nhau không
+            if (p_slice * g_slice).sum() > 0: tp += 1
+            else: 
+                fp += 1
+                fn += 1
+        elif has_p and not has_g: fp += 1
+        elif not has_p and has_g: fn += 1
+            
+    precision = tp / (tp + fp + 1e-8)
+    recall    = tp / (tp + fn + 1e-8)
+    f1 = (2 * precision * recall) / (precision + recall + 1e-8)
+    return f1 * 100.0
 
-    Score = w_lesion * Dice_Lesion + w_lvo * Recall_LVO + w_cow * Dice_CoW
 
-    Args:
-        dice_lesion: Dice score cho Lesion
-        recall_lvo:  Recall score cho LVO
-        dice_cow:    Dice score cho CoW
-        weights:     dict với keys 'dice_lesion_weight', 'recall_lvo_weight', 'dice_cow_weight'
-
-    Returns:
-        Composite score (float, higher is better)
-    """
-    return (
-        weights["dice_lesion_weight"] * dice_lesion +
-        weights["recall_lvo_weight"]  * recall_lvo  +
-        weights["dice_cow_weight"]    * dice_cow
-    )
+def alcd_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
+    """Absolute Lesion Count Difference"""
+    preds = (torch.sigmoid(logits) > threshold).float().cpu().numpy()
+    gt    = (targets > 0.5).float().cpu().numpy()
+    
+    total_diff = 0
+    for i in range(preds.shape[0]):
+        _, n_p = label(preds[i, 0])
+        _, n_g = label(gt[i, 0])
+        total_diff += abs(n_p - n_g)
+    return total_diff / preds.shape[0]
 
 
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict) -> dict:
-    """
-    Tính toàn bộ metrics trong một lần gọi.
+    t = weights.get("thresholds", {"lesion": 0.45, "lvo": 0.05, "cow": 0.5})
 
-    Args:
-        preds:   dict {'lesion', 'lvo', 'cow'} — raw logits
-        targets: (B, 3, H, W) — binary masks (hoặc heatmap cho LVO)
-        weights: dict composite score weights VÀ thresholds từ train.yaml
+    # Lesion Metrics
+    d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]).item()
+    aad_lesion = aad_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"])
+    alcd_lesion = alcd_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"])
 
-    Returns:
-        dict {'dice_lesion', 'recall_lvo', 'dice_cow', 'composite'}
-    """
-    thresholds = weights.get("thresholds", {"lesion": 0.5, "lvo": 0.5, "cow": 0.5})
+    # LVO Metrics (F1 instead of simple Recall)
+    f1_lvo = f1_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"])
+    
+    # CoW Metrics
+    d_cow = dice_score(preds["cow"], targets[:, 2:3], threshold=t["cow"]).item()
 
-    # [QUAN TRỌNG] Đối với LVO Heatmap, chúng ta phải nhị phân hóa GT trước khi tính Recall
-    # Dùng ngưỡng thấp (0.1) để tạo "vùng đệm" (Hit Zone) lớn hơn, giúp mô hình dễ học hơn.
-    target_lvo_bin = (targets[:, 1:2] > 0.1).float()
-
-    d_lesion = dice_score(preds["lesion"],  targets[:, 0:1],   threshold=thresholds["lesion"]).item()
-    r_lvo    = recall_score(preds["lvo"],   target_lvo_bin,    threshold=thresholds["lvo"]).item()
-    d_cow    = dice_score(preds["cow"],     targets[:, 2:3],   threshold=thresholds["cow"]).item()
-    comp     = composite_score(d_lesion, r_lvo, d_cow, weights)
+    # Composite Score (Giữ nguyên logic cũ để so sánh nội bộ, nhưng in thêm chuẩn ISLES)
+    w = weights
+    comp = (w["dice_lesion_weight"] * d_lesion + 
+            w["recall_lvo_weight"]  * (f1_lvo/100.0) + 
+            w["dice_cow_weight"]    * d_cow)
 
     return {
         "dice_lesion": d_lesion,
-        "recall_lvo":  r_lvo,
+        "avd_lesion":  avd_lesion,
+        "alcd_lesion": alcd_lesion,
+        "f1_lvo":      f1_lvo,
         "dice_cow":    d_cow,
-        "composite":   comp,
+        "composite":   comp
     }

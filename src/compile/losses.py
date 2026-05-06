@@ -84,7 +84,15 @@ class ModifiedFocalLoss(nn.Module):
         pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred)
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
         num_pos = pos_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
-        return ((pos_loss.sum(dim=(1, 2, 3)) + neg_loss.sum(dim=(1, 2, 3))) / num_pos).mean()
+
+        # [FIX] Tách biệt cách tính để tránh khuếch đại nhiễu nền (Background Noise)
+        # loss_pos: Chia cho số lượng điểm dương để đảm bảo tín hiệu điểm tắc đủ mạnh
+        loss_pos = pos_loss.sum(dim=(1, 2, 3)) / num_pos
+        # loss_neg: Dùng mean để tránh việc sum của 65k pixels bị chia cho 1 (gây nổ Gradient)
+        loss_neg = neg_loss.mean(dim=(1, 2, 3))
+        
+        loss = (loss_pos + loss_neg).mean()
+        return torch.nan_to_num(loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
 
 # ─── Curriculum LVO Loss ─────────────────────────────────────────────────────
 
@@ -229,17 +237,22 @@ class MultiTaskLoss(nn.Module):
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
         p_l, p_v, p_c = 1.0, 1.0, 1.0
         cur_ep = int(epoch)
-        # NEW POLICY: Dựng bản đồ giải phẫu 10 epoch đầu, sau đó mới tổng tấn công LVO
+        # NEW POLICY: Linear Warmup cho trọng số LVO để tránh sốc Gradient
         if cur_ep < 10: 
-            p_v, p_l, p_c = 1.5, 1.0, 1.0 # CoW cần đủ lực để dựng bản đồ giải phẫu
+            # Dựng bản đồ, LVO tăng dần từ 1.0 lên 1.5
+            p_v = 1.0 + (0.5 * cur_ep / 10)
+            p_l, p_c = 1.0, 1.0
         elif cur_ep < 25:
-            p_v, p_l, p_c = 2.5, 1.5, 0.1 # Bắt đầu dìm CoW, đẩy LVO lên
+            # Giai đoạn tấn công: LVO tăng từ 1.5 lên 2.5
+            p_v = 1.5 + (1.0 * (cur_ep - 10) / 15)
+            p_l, p_c = 1.5, 0.1
         elif cur_ep < 40:
             w = self._calculate_dwa(cur_ep).to(targets.device)
             p_l, p_v, p_c = w[0], w[1], w[2]
-            p_c = p_c * 0.1 # Luôn dìm CoW trong giai đoạn thi đua
+            p_v = torch.clamp(p_v, max=2.5) # Giới hạn trần để tránh nổ
+            p_c = p_c * 0.1
         else: 
-            p_v, p_l, p_c = 4.0, 2.0, 0.05 # Giai đoạn hủy diệt
+            p_v, p_l, p_c = 3.0, 2.0, 0.05 # Giai đoạn về đích
 
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             print(f"    [LOSS_POLICY] Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")

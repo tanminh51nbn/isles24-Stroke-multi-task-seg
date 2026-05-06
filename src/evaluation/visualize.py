@@ -23,7 +23,7 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     train_losses = [h["train_loss"]   for h in history]
     val_losses   = [h["val_loss"]     for h in history]
     dice_lesion  = [h["dice_lesion"]  for h in history]
-    recall_lvo   = [h["recall_lvo"]   for h in history]
+    f1_lvo       = [h["f1_lvo"]/100.0 for h in history] # Đưa về [0,1] để vẽ chung đồ thị
     dice_cow     = [h["dice_cow"]     for h in history]
     composite    = [h["composite"]    for h in history]
 
@@ -35,7 +35,7 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     axes[0].set_title("Loss Curves"); axes[0].legend(); axes[0].grid(True, alpha=0.3)
 
     axes[1].plot(epochs, dice_lesion, color="#3498DB", linewidth=2, label="Dice Lesion")
-    axes[1].plot(epochs, recall_lvo,  color="#E74C3C", linewidth=2, label="Recall LVO",  linestyle="--")
+    axes[1].plot(epochs, f1_lvo,       color="#E74C3C", linewidth=2, label="F1 LVO",  linestyle="--")
     axes[1].plot(epochs, dice_cow,    color="#2ECC71", linewidth=2, label="Dice CoW",    linestyle=":")
     axes[1].set_title("Validation Metrics"); axes[1].legend(); axes[1].set_ylim(0, 1); axes[1].grid(True, alpha=0.3)
 
@@ -87,14 +87,15 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     intersection_l = (pr_lesion_bin * gt_lesion).sum()
     dice_l = (2. * intersection_l) / (pr_lesion_bin.sum() + gt_lesion.sum() + 1e-8)
     
-    # LVO Recall (Instance-wise đơn giản cho visualization)
-    lvo_hit = 1.0 if (gt_lvo.max() > 0.5 and pr_lvo_bin.max() > 0.5) else (0.0 if gt_lvo.max() > 0.5 else 1.0)
+    # F1-LVO đơn giản cho 1 slice
+    lvo_tp = ((pr_lvo_bin * (gt_lvo > 0.1)).sum() > 0)
+    lvo_msg = "LVO: HIT" if lvo_tp else ("LVO: MISS" if gt_lvo.max() > 0.1 else "LVO: N/A")
 
     # 3. Layout 2x4
     fig, axes = plt.subplots(2, 4, figsize=(24, 12))
     plt.subplots_adjust(wspace=0.1, hspace=0.2)
     
-    title = f"Epoch {epoch} | Sample Dice_L: {dice_l:.4f} | LVO_Hit: {int(lvo_hit)}"
+    title = f"Epoch {epoch} | Sample Dice_L: {dice_l:.4f} | {lvo_msg}"
     fig.suptitle(title, fontsize=16, fontweight="bold")
 
     # --- Hàng 1: Tham chiếu & Tổng hợp ---

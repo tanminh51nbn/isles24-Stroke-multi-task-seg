@@ -81,9 +81,10 @@ class Trainer:
     def validate(self, epoch: int) -> dict:
         self.model.eval()
         total_loss = 0.0
-        sum_d_l, sum_r_v, sum_d_c = 0.0, 0.0, 0.0
+        sum_d_l, sum_f1_v, sum_d_c = 0.0, 0.0, 0.0
+        sum_aad, sum_alcd = 0.0, 0.0
         sum_p_v, sum_s_v = 0.0, 0.0
-        n_b, n_v_b = 0, 0
+        n_b = 0
         
         vis_interval = self.config["training"]["logging"].get("visualize_every", 5)
         should_vis = (epoch % vis_interval == 0) and (self.rank == 0)
@@ -96,7 +97,7 @@ class Trainer:
 
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 preds = self.model(inp)
-                losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=-1) # -1 để tắt log thi đua trong val
+                losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=-1)
 
             if not torch.isfinite(losses["total"]): continue
 
@@ -106,10 +107,11 @@ class Trainer:
             
             metrics = compute_all_metrics(preds, lbl, self.metric_weights)
             sum_d_l += metrics["dice_lesion"]
+            sum_f1_v += metrics["f1_lvo"]
             sum_d_c += metrics["dice_cow"]
+            sum_aad += metrics["aad_lesion"]
+            sum_alcd += metrics["alcd_lesion"]
             n_b += 1
-            if metrics["recall_lvo"] >= 0:
-                sum_r_v += metrics["recall_lvo"]; n_v_b += 1
 
             if should_vis and not visualized:
                 vis_dir = os.path.join(self.output_dir, self.config["training"]["checkpoint"]["dir"], "visualizations")
@@ -122,24 +124,20 @@ class Trainer:
                 visualized = True
 
         if dist.is_initialized():
-            sync = torch.tensor([total_loss, sum_d_l, sum_r_v, sum_d_c, sum_p_v, sum_s_v, float(n_b), float(n_v_b)], device=self.device)
+            sync = torch.tensor([total_loss, sum_d_l, sum_f1_v, sum_d_c, sum_aad, sum_alcd, sum_p_v, sum_s_v, float(n_b)], device=self.device)
             dist.all_reduce(sync, op=dist.ReduceOp.SUM)
             v = sync.cpu().numpy()
-            avg_l, ad_l, ar_v, ad_c, ap_v, as_v = v[0]/max(v[6],1), v[1]/max(v[6],1), v[2]/max(v[7],1), v[3]/max(v[6],1), v[4]/max(v[6],1), v[5]/max(v[6],1)
+            avg_l, ad_l, af1_v, ad_c, a_aad, a_alcd, ap_v, as_v = v[0]/max(v[8],1), v[1]/max(v[8],1), v[2]/max(v[8],1), v[3]/max(v[8],1), v[4]/max(v[8],1), v[5]/max(v[8],1), v[6]/max(v[8],1), v[7]/max(v[8],1)
         else:
-            avg_l, ad_l, ar_v, ad_c, ap_v, as_v = total_loss/max(n_b,1), sum_d_l/max(n_b,1), sum_r_v/max(n_v_b,1), sum_d_c/max(n_b,1), sum_p_v/max(n_b,1), sum_s_v/max(n_b,1)
+            avg_l, ad_l, af1_v, ad_c, a_aad, a_alcd, ap_v, as_v = total_loss/max(n_b,1), sum_d_l/max(n_b,1), sum_f1_v/max(n_b,1), sum_d_c/max(n_b,1), sum_aad/max(n_b,1), sum_alcd/max(n_b,1), sum_p_v/max(n_b,1), sum_s_v/max(n_b,1)
 
         w = self.metric_weights
-        comp = (w["dice_lesion_weight"] * ad_l + w["recall_lvo_weight"] * ar_v + w["dice_cow_weight"] * ad_c)
+        comp = (w["dice_lesion_weight"] * ad_l + w["recall_lvo_weight"] * (af1_v/100.0) + w["dice_cow_weight"] * ad_c)
         
-        # Trích xuất p_task từ batch cuối cùng (để vẽ đồ thị)
-        p_l = losses.get("p_lesion", 1.0)
-        p_v = losses.get("p_lvo", 1.0)
-        p_c = losses.get("p_cow", 1.0)
-
         return {
-            "val_loss": avg_l, "dice_lesion": ad_l, "recall_lvo": ar_v, "dice_cow": ad_c, 
-            "composite": comp, "p_lesion": p_l, "p_lvo": p_v, "p_cow": p_c,
+            "val_loss": avg_l, "dice_lesion": ad_l, "f1_lvo": af1_v, "dice_cow": ad_c, 
+            "aad_lesion": a_aad, "alcd_lesion": a_alcd,
+            "composite": comp, "p_lesion": losses.get("p_lesion", 1.0), "p_lvo": ap_v, "p_cow": losses.get("p_cow", 1.0),
             "sigma_lvo": as_v
         }
 
@@ -164,7 +162,8 @@ class Trainer:
             if self.rank == 0:
                 lr = self.optimizer.param_groups[0]['lr']
                 print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR: {lr:.2e} | Comp: {v_m['composite']:.4f}")
-                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} | Recall_LVO: {v_m['recall_lvo']:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
+                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} | F1_LVO: {v_m['f1_lvo']:.2f}% | Dice_CoW: {v_m['dice_cow']:.4f}")
+                print(f"   | [VAL] AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.2f}")
                 print(f"   | [TRN] Loss: {t_m['train_loss']:.4f} | P_V: {v_m['p_lvo']:.2f} | Sig_V: {v_m['sigma_lvo']:.2f}\n{'-'*80}", flush=True)
             self.history.append({**t_m, **v_m, "epoch": epoch + 1})
             if checkpoint and self.rank == 0:

@@ -52,8 +52,8 @@ optimizer:
   type: "adamw"
   lr: 3.0e-4
   weight_decay: 3.0e-2
-  encoder_lr_scale: 0.1
-  eps: 1.0e-7
+  encoder_lr_scale: 0.02 # [FIX] Chỉ dùng 2% LR cho Encoder để tránh nổ LVO
+  eps: 1.0e-8
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
