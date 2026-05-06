@@ -98,62 +98,74 @@ def apply_sampling(
     train_basenames = {os.path.basename(f) for f in train_files}
     df_train = df[df["basename"].isin(train_basenames)].copy()
 
-    # Phân loại
-    lvo_list   = df_train[df_train["has_lvo"] == 1]["basename"].tolist()
-    other_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["basename"].tolist()
-
-    # [FIX 1] Tách neg_list thành 2 nhóm theo has_cow
-    # Nhóm vàng: CoW(+), Lesion(-) → Đây là counter-examples dạy AI "mạch máu lành ≠ tổn thương"
-    # Được giữ 100% không cắt xén, bất kể downsample_neg_ratio là bao nhiêu.
-    if "has_cow" in df_train.columns:
-        neg_with_cow = df_train[
-            (df_train["has_lvo"] == 0) &
-            (df_train["has_lesion"] == 0) &
-            (df_train["has_cow"] == 1)
-        ]["basename"].tolist()
-        neg_plain = df_train[
-            (df_train["has_lvo"] == 0) &
-            (df_train["has_lesion"] == 0) &
-            (df_train["has_cow"] == 0)
-        ]["basename"].tolist()
-    else:
-        # Fallback nếu metadata không có cột has_cow
-        neg_with_cow = []
-        neg_plain = df_train[
-            (df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)
-        ]["basename"].tolist()
-
+    # [FIX] Khởi tạo RNG sớm để dùng cho sampling
     sampling_seed = config["split"].get("seed", 42)
     rng = random.Random(sampling_seed)
 
+    # ─── PHÂN TÁCH LVO THÀNH 4 NHÓM CHIẾN THUẬT ──────────────────────────
+    # [FIX] Theo yêu cầu: Cân bằng nội bộ LVO trước, sau đó mới nhân bản tổng thể
+    lvo_df = df_train[df_train["has_lvo"] == 1]
+    
+    g_lvo_only = lvo_df[(lvo_df["has_lesion"] == 0) & (lvo_df["has_cow"] == 0)]["basename"].tolist()
+    g_lvo_les  = lvo_df[(lvo_df["has_lesion"] == 1) & (lvo_df["has_cow"] == 0)]["basename"].tolist()
+    g_lvo_cow  = lvo_df[(lvo_df["has_lesion"] == 0) & (lvo_df["has_cow"] == 1)]["basename"].tolist()
+    g_lvo_all  = lvo_df[(lvo_df["has_lesion"] == 1) & (lvo_df["has_cow"] == 1)]["basename"].tolist()
+
+    balanced_lvo_base = []
+    # Nhóm 1: Duy nhất LVO (x3)
+    balanced_lvo_base.extend(g_lvo_only * 3)
+    # Nhóm 2: LVO + Lesion (x5)
+    balanced_lvo_base.extend(g_lvo_les * 5)
+    # Nhóm 3: LVO + CoW (x1.5) -> Nhân 1 lần và lấy thêm 50% ngẫu nhiên
+    balanced_lvo_base.extend(g_lvo_cow)
+    if len(g_lvo_cow) > 0:
+        balanced_lvo_base.extend(rng.sample(g_lvo_cow, int(len(g_lvo_cow) * 0.5)))
+    # Nhóm 4: Có cả 3 (x1)
+    balanced_lvo_base.extend(g_lvo_all)
+
+    # --- PHÂN TÁCH CÁC NHÓM CÒN LẠI ---
+    other_list = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]["basename"].tolist()
+
+    if "has_cow" in df_train.columns:
+        neg_with_cow = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0) & (df_train["has_cow"] == 1)]["basename"].tolist()
+        neg_plain    = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0) & (df_train["has_cow"] == 0)]["basename"].tolist()
+    else:
+        neg_with_cow, neg_plain = [], df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["basename"].tolist()
+
     sampled_basenames = []
 
-    # 1. Nhân bản LVO
-    for _ in range(lvo_oversample_factor):
-        sampled_basenames.extend(lvo_list)
+    # 1. Thực hiện "Tổng tấn công LVO" (Nhân bản x6 tập đã cân bằng)
+    final_lvo_factor = sampling_cfg.get("final_lvo_factor", 6)
+    for _ in range(final_lvo_factor):
+        sampled_basenames.extend(balanced_lvo_base)
 
     # 2. Giữ nguyên các ca có Lesion nhưng không LVO
     sampled_basenames.extend(other_list)
 
-    # 3. [FIX 1] Giữ 100% slice CoW(+) Lesion(-) — counter-examples
-    if cow_neg_keepall and neg_with_cow:
+    # 3. Giữ 100% slice CoW(+) Lesion(-) — mỏ neo giải phẫu
+    if cow_neg_keepall:
         sampled_basenames.extend(neg_with_cow)
-        print(f"[Sampling] CoW+ Lesion- (counter-examples): {len(neg_with_cow)} (GIỮ 100%)")
 
-    # 4. Downsample slice não trống hoàn toàn (không CoW, không Lesion, không LVO)
+    # 4. Downsample slice não trống
     n_plain = int(len(neg_plain) * plain_neg_ratio)
     if len(neg_plain) > 0:
         sampled_basenames.extend(rng.sample(neg_plain, min(n_plain, len(neg_plain))))
 
     path_map = {os.path.basename(f): f for f in train_files}
     final_list = [path_map[b] for b in sampled_basenames if b in path_map]
-
     rng.shuffle(final_list)
 
-    print(f"[Sampling] LVO: {len(lvo_list)} -> {len(lvo_list)*lvo_oversample_factor}")
+    print(f"\n[Sampling] CHIẾN THUẬT LVO CÂN BẰNG (Sub-total: {len(balanced_lvo_base)})")
+    print(f"    - Duy nhất LVO: {len(g_lvo_only)} -> {len(g_lvo_only)*3}")
+    print(f"    - LVO + Lesion: {len(g_lvo_les)} -> {len(g_lvo_les)*5}")
+    print(f"    - LVO + CoW:    {len(g_lvo_cow)} -> {int(len(g_lvo_cow)*1.5)}")
+    print(f"    - Có cả 3 nhãn: {len(g_lvo_all)} -> {len(g_lvo_all)}")
+    print(f"    => TỔNG LVO (sau x{final_lvo_factor}): {len(balanced_lvo_base) * final_lvo_factor}")
     print(f"[Sampling] Lesion-only: {len(other_list)}")
     print(f"[Sampling] Background (plain) Downsampled: {len(neg_plain)} -> {n_plain}")
-    print(f"[Sampling] Tổng số file sau khi balance: {len(final_list)}")
+    print(f"[Sampling] Tổng số file Train cuối cùng: {len(final_list)}\n")
+
+    return final_list
 
     return final_list
 
