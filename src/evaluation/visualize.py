@@ -151,7 +151,7 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     patches = [
         mpatches.Patch(color=(0.7, 0, 0), label="Lesion"),
         mpatches.Patch(color=(0, 0.4, 0), label="CoW"),
-        mpatches.Patch(color=(0, 0, 0.9), label="LVO (Heatmap Peak)")
+        mpatches.Patch(color=(0, 0, 0.9), label="LVO")
     ]
     fig.legend(handles=patches, loc="lower center", ncol=3, fontsize=12)
 
