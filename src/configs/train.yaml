@@ -75,7 +75,7 @@ training:
   # Checkpointing
   checkpoint:
     dir: "checkpoints"
-    start_epoch: 25
+    start_epoch: 15
     save_best_overall: true
     save_best_lesion: true
     save_best_lvo: true

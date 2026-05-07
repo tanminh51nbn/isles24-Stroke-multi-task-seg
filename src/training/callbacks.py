@@ -9,7 +9,7 @@ ModelCheckpoint:
     Lưu 3 phiên bản checkpoint cho 3 use-case lâm sàng:
     1. best_overall.pt  → Composite Score cao nhất (mô hình sản xuất)
     2. best_lesion.pt   → Dice Lesion cao nhất (đo thể tích ổ nhồi máu)
-    3. best_lvo.pt      → Recall LVO cao nhất (cấp cứu phát hiện tắc mạch)
+    3. best_lvo.pt      → F1 LVO cao nhất (cấp cứu phát hiện tắc mạch)
 """
 
 import os
@@ -96,7 +96,7 @@ class ModelCheckpoint:
 
         comp    = metrics["composite"]
         lesion  = metrics["dice_lesion"]
-        lvo     = metrics["recall_lvo"]
+        lvo     = metrics["f1_lvo"]
 
         if self.save_overall and comp > self.best_composite:
             self.best_composite = comp
@@ -108,4 +108,4 @@ class ModelCheckpoint:
 
         if self.save_lvo and lvo > self.best_lvo:
             self.best_lvo = lvo
-            _save(os.path.join(self.save_dir, "best_lvo.pt"), f"LVO (recall={lvo:.4f})")
+            _save(os.path.join(self.save_dir, "best_lvo.pt"), f"LVO (f1={lvo:.4f})")

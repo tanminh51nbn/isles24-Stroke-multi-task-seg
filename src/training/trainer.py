@@ -166,8 +166,9 @@ class Trainer:
             t_m = self.train_one_epoch(epoch)
             v_m = self.validate(epoch + 1)
             if self.rank == 0:
-                lr = self.optimizer.param_groups[0]['lr']
-                print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR: {lr:.2e} | Comp: {v_m['composite']:.4f}")
+                lr_enc = self.optimizer.param_groups[0]['lr']
+                lr_dec = self.optimizer.param_groups[1]['lr']
+                print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR (En/De): {lr_enc:.1e}/{lr_dec:.1e} | Comp: {v_m['composite']:.4f}")
                 print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} | F1_LVO: {v_m['f1_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
                 print(f"   | [VAL] Loss: {v_m['val_loss']:.4f} | AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.4f}")
                 print(f"   | [TRA] Loss: {t_m['train_loss']:.4f} | P_LVO: {v_m['p_lvo']:.2f} | Sig_LVO: {v_m['sigma_lvo']:.2f}\n{'-'*80}", flush=True)
