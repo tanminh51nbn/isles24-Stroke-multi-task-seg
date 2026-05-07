@@ -5,7 +5,6 @@ losses.py — Task-specific Loss Functions cho Multi-Task Stroke Segmentation
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 import torch.distributed as dist
 from typing import Tuple
 
@@ -94,23 +93,8 @@ class ModifiedFocalLoss(nn.Module):
         loss = (loss_pos + loss_neg).mean()
         return torch.nan_to_num(loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
 
-# ─── Curriculum LVO Loss ─────────────────────────────────────────────────────
-
-class CurriculumLVOLoss(nn.Module):
-    def __init__(self, config: dict):
-        super().__init__()
-        l_cfg = config["loss"]["lvo"]
-        self.mfl = ModifiedFocalLoss(alpha=l_cfg.get("mfl_alpha", 2.0), beta=l_cfg.get("mfl_beta", 4.0))
-        self.ftl = FocalTverskyLoss(alpha=0.2, beta=0.8, gamma=2.0)
-        curr_cfg = config["training"].get("curriculum_learning", {})
-        self.enabled = curr_cfg.get("enabled", False)
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, epoch: int) -> Tuple[torch.Tensor, float]:
-        if not self.enabled: return self.mfl(logits, targets, sigma=4.0), 1.0
-        if epoch < 6: return self.mfl(logits, targets, sigma=10.0), 1.0
-        elif epoch < 16: return self.mfl(logits, targets, sigma=5.0), 1.5
-        elif epoch < 35: return self.mfl(logits, targets, sigma=2.0), 2.5
-        else: return self.ftl(logits, targets), 5.0 # Chuyển sang pixel-perfect sớm hơn
+# ─── LVO Loss ────────────────────────────────────────────────────────────────
+# Sử dụng Modified Focal Loss để tập trung vào các điểm tắc mạch nhỏ (Keypoints)
 
 # ─── Boundary Losses ──────────────────────────────────────────────────────────
 
@@ -178,6 +162,10 @@ class MultiTaskLoss(nn.Module):
     def __init__(self, config: dict):
         super().__init__()
         l_cfg = config["loss"]
+        self.curr_cfg = config["training"].get("curriculum_learning", {})
+        self.enabled = self.curr_cfg.get("enabled", False)
+        self.dwa_start = self.curr_cfg.get("dwa_start_epoch", 25)
+        self.init_w = self.curr_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
         
         # 1. Lesion Task
         self.lesion_main_loss = FocalTverskyLoss(
@@ -189,7 +177,11 @@ class MultiTaskLoss(nn.Module):
         self.lesion_hd_w = l_cfg["lesion"].get("hd_weight", 0.0)
 
         # 2. LVO Task
-        self.lvo_loss_fn = CurriculumLVOLoss(config)
+        l_v_cfg = l_cfg.get("lvo", {})
+        self.lvo_loss_fn = ModifiedFocalLoss(
+            alpha=l_v_cfg.get("mfl_alpha", 2.0), 
+            beta=l_v_cfg.get("mfl_beta", 4.0)
+        )
 
         # 3. CoW Task
         self.cow_main_loss = FocalTverskyLoss(
@@ -235,35 +227,20 @@ class MultiTaskLoss(nn.Module):
         return (exp_r / (exp_r.sum() + 1e-8)) * 3.0
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
-        p_l, p_v, p_c = 1.0, 1.0, 1.0
         cur_ep = int(epoch)
-        # NEW POLICY: Linear Warmup cho trọng số LVO để tránh sốc Gradient
-        if cur_ep < 10: 
-            # Dựng bản đồ, LVO tăng dần từ 1.0 lên 1.5
-            p_v = 1.0 + (0.5 * cur_ep / 10)
-            p_l, p_c = 1.0, 1.0
-        elif cur_ep < 25:
-            # Giai đoạn tấn công: LVO tăng mạnh
-            p_v = 1.5 + (1.5 * (cur_ep - 10) / 15) # Lên 3.0
-            p_l, p_c = 1.2, 0.1
-        elif cur_ep < 35:
-            # Giai đoạn DWA+ (Cân bằng tự động)
+        # CHIẾN THUẬT TRỌNG SỐ (DWA+ Mechanism)
+        if cur_ep >= self.dwa_start:
             w = self._calculate_dwa(cur_ep).to(targets.device)
             p_l, p_v, p_c = w[0], w[1], w[2]
-            p_v = torch.clamp(p_v * 2.0, max=6.0) # Boost gấp đôi cho LVO từ DWA để chiếm ưu thế
-            p_c = p_c * 0.05
-        else: 
-            # Giai đoạn SÁT THỦ: LVO Thống trị tuyệt đối (The Killer Phase)
-            # Ép mô hình bỏ qua mọi thứ để cứu vãn F1-LVO
-            p_v, p_l, p_c = 10.0, 2.0, 0.01 
+        else:
+            p_l, p_v, p_c = self.init_w['lesion'], self.init_w['lvo'], self.init_w['cow']
 
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             print(f"    [LOSS_POLICY] Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")
 
         # 1. Main Losses
         l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
-        l_v_b, l_v_s = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], cur_ep)
-        l_v_m = l_v_b * l_v_s
+        l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=4.0)
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
         # 2. Additional Task-specific Losses (Boundary & Topology)
@@ -295,8 +272,7 @@ class MultiTaskLoss(nn.Module):
                 t_l = F.interpolate(targets[:, 0:1].float(), (h, w), mode='nearest')
                 la_l = self.lesion_main_loss(a_p[:, 0:1], t_l) * p_l
                 t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
-                la_v_b, _ = self.lvo_loss_fn(a_p[:, 1:2], t_v, cur_ep)
-                la_v = la_v_b * p_v
+                la_v = self.lvo_loss_fn(a_p[:, 1:2], t_v, sigma=4.0) * p_v
                 t_c = F.interpolate(targets[:, 2:3].float(), (h, w), mode='nearest')
                 la_c = self.cow_main_loss(a_p[:, 2:3], t_c) * p_c
                 aux_loss += a_w[i] * (la_l + la_v + la_c)

@@ -64,12 +64,20 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
 
     if save_dir: os.makedirs(save_dir, exist_ok=True)
 
-    # 1. Chuẩn bị dữ liệu (B, C, H, W)
-    def _norm(x):
-        return (x - x.min()) / (x.max() - x.min() + 1e-8)
+    def _norm(img: torch.Tensor) -> np.ndarray:
+        """Chuẩn hóa ảnh về [0, 255] để hiển thị, xử lý clipping cho CTA/Tmax."""
+        arr = img.detach().cpu().numpy().astype(np.float32)
+        # Loại bỏ các giá trị outlier cực đoan
+        p99 = np.percentile(arr, 99.9)
+        arr = np.clip(arr, 0, p99)
+        # Min-max normalization
+        amin, amax = arr.min(), arr.max()
+        if amax > amin:
+            arr = (arr - amin) / (amax - amin)
+        return (arr * 255).astype(np.uint8)
 
-    cta_img  = _norm(sample["input"][6].cpu().numpy()) # CTA lát cắt trung tâm
-    perf_img = _norm(sample["input"][7].cpu().numpy()) # Tmax lát cắt trung tâm (Physiology)
+    cta_img  = _norm(sample["input"][6]) # CTA lát cắt trung tâm
+    perf_img = _norm(sample["input"][7]) # Tmax lát cắt trung tâm (Physiology)
 
     # GT
     gt_lesion = sample["label"][0].cpu().numpy()

@@ -7,8 +7,8 @@ Kiến trúc tổng thể:
     CTA (6ch) → ResNet-50 Encoder → [s1..s5]
     Perfusion (12ch) → DenseNet-121 Encoder → [d1..d5]
         ↓ Concatenate at each skip level
-    UNet Decoder → feature_map (16ch, 256, 256)
-        ↓ 3 Heads
+    UNet Triple Decoders → {f_lesion, f_lvo, f_cow}
+        ↓ 3 Specialized Heads
     {lesion: (1,256,256), lvo: (1,256,256), cow: (1,256,256)}  — raw logits
 """
 
@@ -27,8 +27,8 @@ class DualEncoderUNet(nn.Module):
 
     Thiết kế:
         - 2 Encoder chuyên biệt (CTA + Perfusion) → tận dụng sở trường từng loại ảnh
-        - 1 Decoder chung → học cách kết hợp thông tin đa phương thức
-        - 3 Heads độc lập → multi-task learning
+        - 3 Decoder độc lập (Triple-Head Specialist) → tránh nhiễu đặc trưng giữa các task
+        - 3 Heads độc lập → multi-task learning chuyên sâu
     """
 
     def __init__(self, config: dict):

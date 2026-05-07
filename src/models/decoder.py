@@ -165,8 +165,11 @@ class DecoupledPath(nn.Module):
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
+        
+        # [NEW] Cầu nối tri thức: Tiếp nhận thông tin từ các nhánh khác
+        self.guidance_conv = nn.Conv2d(final_ch, final_ch, kernel_size=1) if task_name != "cow" else None
 
-    def forward(self, x_bottleneck, cta_skips, perf_skips):
+    def forward(self, x_bottleneck, cta_skips, perf_skips, guidance: Optional[torch.Tensor] = None):
         # skips: s1..s5
         s1, s2, s3, s4, _ = cta_skips
         d1, d2, d3, d4, _ = perf_skips
@@ -178,6 +181,14 @@ class DecoupledPath(nn.Module):
 
         x = self.up_final(x)
         x = self.final_conv(x)
+        
+        # Cộng thêm tri thức từ nhánh khác nếu có (Guidance)
+        if guidance is not None and self.guidance_conv is not None:
+            # Nếu guidance có nhiều kênh (ví dụ từ nhiều nhánh), gộp về đúng số kênh final_ch
+            if guidance.shape[1] != x.shape[1]:
+                # Dùng pool hoặc conv 1x1 để khớp kênh
+                pass 
+            x = x + self.guidance_conv(F.interpolate(guidance, size=x.shape[2:], mode='bilinear'))
         
         return x, [aux4, aux3, aux2, aux1]
 
@@ -199,12 +210,13 @@ class MultiHeadDecoder(nn.Module):
             ConvBnGelu(bottleneck_ch, bottleneck_ch),
         )
 
-        # 2. Hai lộ trình tách biệt
+        # 2. Ba lộ trình tách biệt hoàn toàn (Triple-Head Specialist)
         # Skip channels (combined CTA + Perf): s4=2048, s3=1024, s2=512, s1=128
         skips = [2048, 1024, 512, 128]
         
-        self.lvo_path = DecoupledPath(config, "lvo", skips, aux_ch=1)
-        self.lesion_path = DecoupledPath(config, "lesion", skips, aux_ch=2) # 2 kênh: [Lesion, CoW]
+        self.lesion_path = DecoupledPath(config, "lesion", skips, aux_ch=1)
+        self.lvo_path    = DecoupledPath(config, "lvo", skips, aux_ch=1)
+        self.cow_path    = DecoupledPath(config, "cow", skips, aux_ch=1)
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor]):
         s5, d5 = cta_skips[4], perf_skips[4]
@@ -213,35 +225,33 @@ class MultiHeadDecoder(nn.Module):
         x_bottleneck = torch.cat([s5, d5], dim=1)
         x_bottleneck = self.shared_bottleneck(x_bottleneck)
         
-        # 2. LVO Path (Sát thủ điểm tắc)
-        f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips)
-
-        # 3. Lesion & Anatomy Path (Chuyên gia vùng lớn)
-        f_lesion_cow, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips)
-
-        # Trích xuất f_lesion và f_cow từ nhánh 2
-        # (Ở đây ta dùng 1 head chung cho Lesion và CoW để tiết kiệm tài nguyên, 
-        #  hoặc trả về feature map để head.py tách ra sau)
-        # Để thống nhất với MultiTaskHeads cũ, ta trả về feature map shared cho Lesion/CoW
+        # 2. DÒNG CHẢY TRI THỨC (Knowledge Cascade)
+        # Bước 1: Nhánh CoW chạy trước (Xây dựng bản đồ giải phẫu)
+        f_cow, cow_auxs = self.cow_path(x_bottleneck, cta_skips, perf_skips)
         
+        # Bước 2: Nhánh LVO học từ CoW (Tìm điểm tắc trên mạch máu)
+        f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow)
+        
+        # Bước 3: Nhánh Lesion học từ cả hai (Tìm vùng tổn thương dựa trên mạch máu và điểm tắc)
+        # Gộp thông tin từ CoW và LVO để dẫn đường cho Lesion
+        guidance_for_lesion = f_cow + f_lvo 
+        f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lesion)
+
         # Gom nhóm Aux Masks: [32, 64, 128, 256]
         # Mỗi tầng chứa: [Lesion, LVO, CoW]
-        # lesion_auxs[i] có 2 kênh: [0: Lesion, 1: CoW]
-        # lvo_auxs[i] có 1 kênh: [0: LVO]
         aux_masks = []
         for i in range(4):
-            # Cấu trúc kênh: [Lesion, LVO, CoW]
             aux = torch.cat([
-                lesion_auxs[i][:, 0:1], # Lesion
-                lvo_auxs[i],           # LVO
-                lesion_auxs[i][:, 1:2]  # CoW
+                lesion_auxs[i], # Lesion
+                lvo_auxs[i],    # LVO
+                cow_auxs[i]     # CoW
             ], dim=1)
             aux_masks.append(aux)
 
         preds = {
-            "lesion": f_lesion_cow,
+            "lesion": f_lesion,
             "lvo":    f_lvo,
-            "cow":    f_lesion_cow # Dùng chung feature map, head sẽ tự tách
+            "cow":    f_cow
         }
         
-        return preds, aux_masks, {} # Không dùng g_maps cũ
+        return preds, aux_masks, {}

@@ -58,7 +58,7 @@ optimizer:
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
   warmup_epochs: 7
-  hold_epochs: 30 # [NEW] Giữ LR cao xuyên suốt giai đoạn DWA để chuẩn bị cho "Sát thủ"
+  hold_epochs: 5
   min_lr: 5.0e-6
 
 # ── Training ────────────────────────────────────────────────────
@@ -68,14 +68,17 @@ training:
   grad_clip_norm: 1.0
   freeze_encoder_epochs: 15
 
-  # [NEW] Curriculum Learning Schedule cho LVO
-  curriculum_learning:
-    enabled: true
+  # Cơ chế dìu nhau đi (DWA+)
+  dwa_start_epoch: 1
+  initial_weights:
+    lesion: 1.0
+    lvo: 1.0
+    cow: 1.0
 
   # Checkpointing
   checkpoint:
     dir: "checkpoints"
-    start_epoch: 15
+    start_epoch: 10 # Bắt đầu lưu sớm hơn vì không còn freeze
     save_best_overall: true
     save_best_lesion: true
     save_best_lvo: true
