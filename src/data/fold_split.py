@@ -159,9 +159,6 @@ def apply_sampling(
 
     return final_list
 
-    return final_list
-
-
 def build_stratified_kfold_splits(
     file_list: List[str],
     metadata_csv: str,

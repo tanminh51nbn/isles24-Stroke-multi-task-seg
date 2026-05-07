@@ -91,12 +91,12 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict) -> di
     # Composite Score (Giữ nguyên logic cũ để so sánh nội bộ, nhưng in thêm chuẩn ISLES)
     w = weights
     comp = (w["dice_lesion_weight"] * d_lesion + 
-            w["recall_lvo_weight"]  * (f1_lvo/100.0) + 
+            w["f1_lvo_weight"]      * (f1_lvo/100.0) + 
             w["dice_cow_weight"]    * d_cow)
 
     return {
         "dice_lesion": d_lesion,
-        "avd_lesion":  avd_lesion,
+        "aad_lesion":  aad_lesion,
         "alcd_lesion": alcd_lesion,
         "f1_lvo":      f1_lvo,
         "dice_cow":    d_cow,

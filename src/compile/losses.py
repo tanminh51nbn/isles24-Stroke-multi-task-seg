@@ -109,8 +109,8 @@ class CurriculumLVOLoss(nn.Module):
         if not self.enabled: return self.mfl(logits, targets, sigma=4.0), 1.0
         if epoch < 6: return self.mfl(logits, targets, sigma=10.0), 1.0
         elif epoch < 16: return self.mfl(logits, targets, sigma=5.0), 1.5
-        elif epoch < 40: return self.mfl(logits, targets, sigma=3.0), 2.5
-        else: return self.ftl(logits, targets), 5.0
+        elif epoch < 35: return self.mfl(logits, targets, sigma=2.0), 2.5
+        else: return self.ftl(logits, targets), 5.0 # Chuyển sang pixel-perfect sớm hơn
 
 # ─── Boundary Losses ──────────────────────────────────────────────────────────
 
@@ -243,16 +243,19 @@ class MultiTaskLoss(nn.Module):
             p_v = 1.0 + (0.5 * cur_ep / 10)
             p_l, p_c = 1.0, 1.0
         elif cur_ep < 25:
-            # Giai đoạn tấn công: LVO tăng từ 1.5 lên 2.5
-            p_v = 1.5 + (1.0 * (cur_ep - 10) / 15)
-            p_l, p_c = 1.5, 0.1
-        elif cur_ep < 40:
+            # Giai đoạn tấn công: LVO tăng mạnh
+            p_v = 1.5 + (1.5 * (cur_ep - 10) / 15) # Lên 3.0
+            p_l, p_c = 1.2, 0.1
+        elif cur_ep < 35:
+            # Giai đoạn DWA+ (Cân bằng tự động)
             w = self._calculate_dwa(cur_ep).to(targets.device)
             p_l, p_v, p_c = w[0], w[1], w[2]
-            p_v = torch.clamp(p_v, max=2.5) # Giới hạn trần để tránh nổ
-            p_c = p_c * 0.1
+            p_v = torch.clamp(p_v * 2.0, max=6.0) # Boost gấp đôi cho LVO từ DWA để chiếm ưu thế
+            p_c = p_c * 0.05
         else: 
-            p_v, p_l, p_c = 3.0, 2.0, 0.05 # Giai đoạn về đích
+            # Giai đoạn SÁT THỦ: LVO Thống trị tuyệt đối (The Killer Phase)
+            # Ép mô hình bỏ qua mọi thứ để cứu vãn F1-LVO
+            p_v, p_l, p_c = 10.0, 2.0, 0.01 
 
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             print(f"    [LOSS_POLICY] Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")

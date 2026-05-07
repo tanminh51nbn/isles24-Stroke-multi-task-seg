@@ -36,15 +36,15 @@ uncertainty:
     dwa_temperature: 2.0   # [NEW] Điều chỉnh độ gắt của thi đua (Thấp = Gắt, Cao = Ôn hòa)
 
 # ── Composite Validation Score ──────────────────────────────────
-# Score = w1*Dice_Lesion + w2*Recall_LVO + w3*Dice_CoW
-# Dùng Recall cho LVO (chỉ cần detect được, không cần viền chính xác)
+# Score = w1*Dice_Lesion + w2*F1_LVO + w3*Dice_CoW
+# Tập trung vào F1-Score cho LVO để cân bằng giữa Recall và Precision
 composite_score:
-  dice_lesion_weight: 0.45 # Ưu tiên tối đa Lesion
-  recall_lvo_weight: 0.50  # Ưu tiên tối đa LVO
-  dice_cow_weight: 0.05    # CoW chỉ còn là phụ trợ
+  dice_lesion_weight: 0.35 # Giảm để ưu tiên LVO
+  f1_lvo_weight: 0.60      # Ưu tiên tối đa LVO
+  dice_cow_weight: 0.05    # CoW là phụ trợ
   thresholds:
     lesion: 0.45
-    lvo: 0.05 # Hạ ngưỡng để tăng Recall cho LVO
+    lvo: 0.30 # Nâng ngưỡng để AI học cách dự đoán LVO sắc nét, giảm nhiễu
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
@@ -58,7 +58,7 @@ optimizer:
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
   warmup_epochs: 7
-  hold_epochs: 18
+  hold_epochs: 30 # [NEW] Giữ LR cao xuyên suốt giai đoạn DWA để chuẩn bị cho "Sát thủ"
   min_lr: 5.0e-6
 
 # ── Training ────────────────────────────────────────────────────
