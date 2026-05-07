@@ -65,8 +65,11 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     if save_dir: os.makedirs(save_dir, exist_ok=True)
 
     # 1. Chuẩn bị dữ liệu (B, C, H, W)
-    cta_img  = sample["input"][6].cpu().numpy() # Kênh CTA chính
-    perf_img = sample["input"][12].cpu().numpy() # Một kênh Perfusion đại diện (Tmax)
+    def _norm(x):
+        return (x - x.min()) / (x.max() - x.min() + 1e-8)
+
+    cta_img  = _norm(sample["input"][6].cpu().numpy()) # CTA lát cắt trung tâm
+    perf_img = _norm(sample["input"][7].cpu().numpy()) # Tmax lát cắt trung tâm (Physiology)
 
     # GT
     gt_lesion = sample["label"][0].cpu().numpy()
@@ -83,13 +86,21 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     pr_lvo_bin    = (sig_lvo > lvo_t).astype(float)
     pr_cow_bin    = (sig_cow > thresholds.get("cow", 0.5)).astype(float)
 
-    # 2. Tính toán Metric nhanh cho mẫu này (để in tiêu đề)
+    # 2. Tính toán Metric nhanh
     intersection_l = (pr_lesion_bin * gt_lesion).sum()
     dice_l = (2. * intersection_l) / (pr_lesion_bin.sum() + gt_lesion.sum() + 1e-8)
     
-    # F1-LVO đơn giản cho 1 slice
-    lvo_tp = ((pr_lvo_bin * (gt_lvo > 0.1)).sum() > 0)
-    lvo_msg = "LVO: HIT" if lvo_tp else ("LVO: MISS" if gt_lvo.max() > 0.1 else "LVO: N/A")
+    # F1-LVO & Status
+    has_gt_lvo = gt_lvo.max() > 0.1
+    has_pr_lvo = pr_lvo_bin.max() > 0
+    if has_gt_lvo and has_pr_lvo:
+        lvo_msg = "LVO: HIT (Đã bắt)" if (pr_lvo_bin * (gt_lvo > 0.1)).sum() > 0 else "LVO: FALSE ALARM (Nhầm)"
+    elif not has_gt_lvo and has_pr_lvo:
+        lvo_msg = "LVO: FALSE POSITIVE (Báo ảo)"
+    elif has_gt_lvo and not has_pr_lvo:
+        lvo_msg = "LVO: MISS (Bỏ sót)"
+    else:
+        lvo_msg = "LVO: N/A (Sạch)"
 
     # 3. Layout 2x4
     fig, axes = plt.subplots(2, 4, figsize=(24, 12))
@@ -99,18 +110,15 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     fig.suptitle(title, fontsize=16, fontweight="bold")
 
     # --- Hàng 1: Tham chiếu & Tổng hợp ---
-    # [1.1] CTA Anatomy
-    axes[0, 0].imshow(cta_img, cmap="bone"); axes[0, 0].set_title("CTA (Anatomy)"); axes[0, 0].axis("off")
-    # [1.2] Perfusion Tmax
-    axes[0, 1].imshow(perf_img, cmap="viridis"); axes[0, 1].set_title("Perfusion (Physiology)"); axes[0, 1].axis("off")
+    axes[0, 0].imshow(cta_img, cmap="bone"); axes[0, 0].set_title("CTA (Anatomy Map)"); axes[0, 0].axis("off")
+    axes[0, 1].imshow(perf_img, cmap="inferno"); axes[0, 1].set_title("Perfusion (Physiology)"); axes[0, 1].axis("off")
     
     # [1.3] GT Overlay
     axes[0, 2].imshow(cta_img, cmap="bone")
-    # RGB: R=Lesion, G=CoW, B=LVO
     gt_overlay = np.zeros((*gt_lesion.shape, 3))
-    gt_overlay[..., 0] = gt_lesion * 0.7
-    gt_overlay[..., 1] = gt_cow * 0.4
-    gt_overlay[..., 2] = (gt_lvo > 0.5).astype(float) * 0.9
+    gt_overlay[..., 0] = gt_lesion * 0.7  # Đỏ: Lesion
+    gt_overlay[..., 1] = gt_cow * 0.4     # Xanh lá: CoW
+    gt_overlay[..., 2] = (gt_lvo > 0.1).astype(float) * 0.9 # Xanh dương: LVO (Hạ ngưỡng để thấy rõ)
     axes[0, 2].imshow(gt_overlay, alpha=0.5)
     axes[0, 2].set_title("BÁC SĨ (Ground Truth)"); axes[0, 2].axis("off")
 
@@ -124,20 +132,17 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     axes[0, 3].set_title("AI DỰ ĐOÁN (Tổng hợp)"); axes[0, 3].axis("off")
 
     # --- Hàng 2: Chi tiết từng Task ---
-    # [2.1] Lesion Probability
     axes[1, 0].imshow(sig_lesion, cmap="Reds", vmin=0, vmax=1)
     axes[1, 0].set_title("Lesion Probability Map"); axes[1, 0].axis("off")
 
-    # [2.2] LVO Heatmap (Sát thủ soi điểm)
+    # [2.2] LVO Heatmap (Dự đoán)
     axes[1, 1].imshow(cta_img, cmap="bone")
-    axes[1, 1].imshow(sig_lvo, cmap="hot", alpha=0.7, vmin=0, vmax=1)
-    axes[1, 1].set_title("LVO Heatmap (Target)"); axes[1, 1].axis("off")
+    axes[1, 1].imshow(sig_lvo, cmap="jet", alpha=0.6, vmin=0, vmax=1)
+    axes[1, 1].set_title("LVO Heatmap (AI Prediction)"); axes[1, 1].axis("off")
 
-    # [2.3] CoW Anatomy
     axes[1, 2].imshow(sig_cow, cmap="Greens", vmin=0, vmax=1)
     axes[1, 2].set_title("CoW Anatomy Map"); axes[1, 2].axis("off")
 
-    # [2.4] Error Map (Những chỗ AI làm sai)
     error_map = np.abs(pr_lesion_bin - gt_lesion)
     axes[1, 3].imshow(error_map, cmap="magma")
     axes[1, 3].set_title("Lesion Error Map"); axes[1, 3].axis("off")
