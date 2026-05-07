@@ -164,12 +164,6 @@ def apply_sampling(
     final_list = [path_map[b] for b in sampled_basenames if b in path_map]
     rng.shuffle(final_list)
 
-    if epoch % 5 == 0:
-        print(f"\n[Sampling Ep {epoch}] CHIẾN THUẬT XOAY VÒNG TRỤC Z")
-        print(f"    - LVO (Balanced & x{final_lvo_factor}): {len(balanced_lvo_base) * final_lvo_factor}")
-        print(f"    - Lesion-only ({tag}): {len(lesion_subset)} (Giảm 50% áp lực)")
-        print(f"    - Background Downsampled: {n_plain}")
-        print(f"    => Tổng Train: {len(final_list)}\n")
 
     return final_list
 
