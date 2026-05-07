@@ -9,28 +9,28 @@ loss:
     type: "tversky"
     alpha: 0.2
     beta: 0.8
-    weight: 0.45
-    hd_weight: 0.2
+    weight: 0.35
+    hd_weight: 0.25
 
   lvo:
     type: "modified_focal"
     mfl_alpha: 2.0
     mfl_beta: 4.0
-    weight: 0.50
+    weight: 0.5
 
   cow:
     type: "cl_tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.05
-    cl_weight: 0.55
+    weight: 0.15
+    cl_weight: 0.5
     iters: 4
 
 # ── Uncertainty Weighting Settings ──────────────────────────────
 uncertainty:
-    s_min_lvo: 0.1         # [NEW] Ép LVO cực gắt để phá vỡ bám đuổi CoW
-    s_min_lesion: 0.3      # [NEW] Giảm nhẹ sàn để tăng độ nhạy
-    s_min_cow: 0.6         # Giữ nguyên để CoW làm nền móng
+    s_min_lvo: 0.1         # Ưu tiên số 1
+    s_min_lesion: 0.3      # Ưu tiên số 2
+    s_min_cow: 0.5         # Ưu tiên số 3 (Thắt chặt hơn để CoW làm nền móng vững)
     
     # --- DWA+ Configuration ---
     dwa_temperature: 2.0   # [NEW] Điều chỉnh độ gắt của thi đua (Thấp = Gắt, Cao = Ôn hòa)
@@ -39,12 +39,12 @@ uncertainty:
 # Score = w1*Dice_Lesion + w2*F1_LVO + w3*Dice_CoW
 # Tập trung vào F1-Score cho LVO để cân bằng giữa Recall và Precision
 composite_score:
-  dice_lesion_weight: 0.35 # Giảm để ưu tiên LVO
-  f1_lvo_weight: 0.60      # Ưu tiên tối đa LVO
-  dice_cow_weight: 0.05    # CoW là phụ trợ
+  dice_lesion_weight: 0.35
+  f1_lvo_weight: 0.50
+  dice_cow_weight: 0.15
   thresholds:
     lesion: 0.45
-    lvo: 0.30 # Nâng ngưỡng để AI học cách dự đoán LVO sắc nét, giảm nhiễu
+    lvo: 0.2 # Nâng ngưỡng để AI học cách dự đoán LVO sắc nét, giảm nhiễu
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
@@ -71,9 +71,9 @@ training:
   # Cơ chế dìu nhau đi (DWA+)
   dwa_start_epoch: 1
   initial_weights:
-    lesion: 1.0
-    lvo: 1.0
-    cow: 1.0
+    lesion: 0.35
+    lvo: 0.50
+    cow: 0.15
 
   # Checkpointing
   checkpoint:
