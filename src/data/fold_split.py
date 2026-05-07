@@ -115,21 +115,38 @@ def apply_sampling(
     # 2. NHÓM LESION-ONLY: CHIẾN THUẬT XOAY VÒNG CHẴN/LẺ (CYCLIC STRIDE)
     lesion_only_df = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]
     
-    # Chia theo trục Z: Epoch chẵn học slice chẵn, Epoch lẻ học slice lẻ
+    # [FIX] ÉP CỐ ĐỊNH KÍCH THƯỚC TUYỆT ĐỐI ĐỂ TRÁNH LỖI DDP (DistributedSampler)
+    # Chúng ta lấy đúng chính xác 50% tổng số mẫu Lesion-only
+    n_lesion_fixed = len(lesion_only_df) // 2
+    
     is_even_epoch = (epoch % 2 == 0)
     if is_even_epoch:
-        lesion_subset = lesion_only_df[lesion_only_df["slice_idx"] % 2 == 0]["basename"].tolist()
+        pool = lesion_only_df[lesion_only_df["slice_idx"] % 2 == 0]["basename"].tolist()
         tag = "CHẴN (Z)"
     else:
-        lesion_subset = lesion_only_df[lesion_only_df["slice_idx"] % 2 != 0]["basename"].tolist()
+        pool = lesion_only_df[lesion_only_df["slice_idx"] % 2 != 0]["basename"].tolist()
         tag = "LẺ (Z)"
-
-    # 3. NHÓM MỎ NEO GIẢI PHẪU
-    if "has_cow" in df_train.columns:
-        neg_with_cow = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0) & (df_train["has_cow"] == 1)]["basename"].tolist()
-        neg_plain    = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0) & (df_train["has_cow"] == 0)]["basename"].tolist()
+    
+    # Đảm bảo lấy đúng n_lesion_fixed (nếu thiếu thì lấy lặp lại - hiếm khi xảy ra)
+    if len(pool) > 0:
+        lesion_subset = rng.choices(pool, k=n_lesion_fixed)
     else:
-        neg_with_cow, neg_plain = [], df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0)]["basename"].tolist()
+        lesion_subset = []
+
+    # 3. NHÓM MỎ NEO GIẢI PHẪU (Cố định 100% slice có CoW nhưng không có bệnh)
+    neg_with_cow_pool = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0) & (df_train.get("has_cow", 0) == 1)]["basename"].tolist()
+    # Giữ nguyên kích thước này vì nó không đổi theo Epoch
+    neg_with_cow = neg_with_cow_pool
+
+    # [FIX] Cố định số lượng ảnh nền não hoàn toàn trống
+    neg_plain_pool = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0) & (df_train.get("has_cow", 0) == 0)]["basename"].tolist()
+    plain_neg_ratio = sampling_cfg.get("plain_neg_ratio", 0.3)
+    n_plain_fixed = int(len(neg_plain_pool) * plain_neg_ratio)
+    
+    if len(neg_plain_pool) > 0:
+        neg_plain = rng.choices(neg_plain_pool, k=n_plain_fixed)
+    else:
+        neg_plain = []
 
     sampled_basenames = []
     final_lvo_factor = sampling_cfg.get("final_lvo_factor", 6)
@@ -141,10 +158,7 @@ def apply_sampling(
     if sampling_cfg.get("cow_neg_keepall", True):
         sampled_basenames.extend(neg_with_cow)
 
-    plain_neg_ratio = sampling_cfg.get("plain_neg_ratio", 0.3)
-    n_plain = int(len(neg_plain) * plain_neg_ratio)
-    if len(neg_plain) > 0:
-        sampled_basenames.extend(rng.sample(neg_plain, min(n_plain, len(neg_plain))))
+    sampled_basenames.extend(neg_plain)
 
     path_map = {os.path.basename(f): f for f in train_files}
     final_list = [path_map[b] for b in sampled_basenames if b in path_map]
