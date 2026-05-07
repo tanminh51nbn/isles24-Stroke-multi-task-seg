@@ -71,8 +71,11 @@ def build_dataloaders(
             seed=split_cfg["seed"],
         )
 
-    # Thực hiện Smart Sampling (chỉ áp dụng cho tập train)
-    train_files = apply_sampling(train_files, config)
+    # Lưu lại danh sách gốc trước khi sampling để dùng cho Cyclic Stride
+    train_files_original = list(train_files)
+    
+    # Thực hiện Smart Sampling (khởi tạo cho Epoch 0)
+    train_files = apply_sampling(train_files, config, epoch=0)
 
     # Build Dataset
     train_dataset = ISLES24Dataset(train_files, transform=build_train_transforms(config))
@@ -93,7 +96,7 @@ def build_dataloaders(
         train_dataset,
         batch_size=dl_cfg["batch_size"],
         sampler=train_sampler,
-        shuffle=(train_sampler is None),  # Shuffle nếu không dùng DDP sampler
+        shuffle=(train_sampler is None),
         num_workers=dl_cfg["num_workers"],
         pin_memory=dl_cfg["pin_memory"],
         persistent_workers=dl_cfg.get("persistent_workers", True),
@@ -113,6 +116,6 @@ def build_dataloaders(
     )
 
     if rank == 0:
-        print(f"[DataLoader] Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
+        print(f"[DataLoader] Train: {len(train_loader)} batches | Val: {len(val_loader)} batches")
 
-    return train_loader, val_loader
+    return train_loader, val_loader, train_files_original

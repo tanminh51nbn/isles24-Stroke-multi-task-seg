@@ -12,10 +12,12 @@ import math
 
 from compile.metrics import compute_all_metrics
 from evaluation.visualize import overlay_predictions
+from data.fold_split import apply_sampling
 
 class Trainer:
-    def __init__(self, model, train_loader: DataLoader, val_loader: DataLoader, loss_fn, optimizer, scheduler, config: dict, device: torch.device, rank: int = 0):
+    def __init__(self, model, train_loader: DataLoader, val_loader: DataLoader, train_files_original, loss_fn, optimizer, scheduler, config: dict, device: torch.device, rank: int = 0):
         self.model, self.train_loader, self.val_loader = model, train_loader, val_loader
+        self.train_files_original = train_files_original
         self.loss_fn, self.optimizer, self.scheduler = loss_fn, optimizer, scheduler
         self.config, self.device, self.rank = config, device, rank
         self.output_dir = config.get("output_dir", "outputs")
@@ -155,6 +157,10 @@ class Trainer:
         raw = self.model.module if hasattr(self.model, "module") else self.model
         raw.freeze_encoders()
         for epoch in range(start_epoch, self.epochs):
+            # [CYCLIC STRIDE] Cập nhật danh sách file huấn luyện cho Epoch mới
+            new_train_list = apply_sampling(self.train_files_original, self.config, epoch=epoch)
+            self.train_loader.dataset.file_list = new_train_list
+            
             if epoch == self.freeze_enc_epochs: raw.unfreeze_encoders()
             if hasattr(self.train_loader.sampler, "set_epoch"): self.train_loader.sampler.set_epoch(epoch)
             t_m = self.train_one_epoch(epoch)

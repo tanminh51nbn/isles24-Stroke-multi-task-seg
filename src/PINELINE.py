@@ -107,7 +107,7 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         print("=" * 60)
 
     # ── DataLoader ────────────────────────────────────────────────
-    train_loader, val_loader = build_dataloaders(
+    train_loader, val_loader, train_files_original = build_dataloaders(
         config=config,
         dataset_dir=args.dataset_dir,
         rank=rank,
@@ -147,6 +147,7 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
+        train_files_original=train_files_original,
         loss_fn=loss_fn,
         optimizer=optimizer,
         scheduler=scheduler,
@@ -184,8 +185,9 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         print(f" FOLD {fold_idx} COMPLETE — BEST (From Epoch {start_eval}+)")
         print(f"  Epoch:       {best['epoch']}")
         print(f"  Dice Lesion: {best['dice_lesion']:.4f}")
-        print(f"  Recall LVO:  {best['recall_lvo']:.4f}")
+        print(f"  F1 LVO:      {best['f1_lvo']:.2f}%")
         print(f"  Dice CoW:    {best['dice_cow']:.4f}")
+        print(f"  AAD (Area):  {best['aad_lesion']:.2f}%")
         print(f"  Composite:   {best['composite']:.4f}")
         print(f"{'='*60}")
 
@@ -285,12 +287,12 @@ def main():
         print(f"{'='*60}")
         for r in fold_results:
             print(f"  Fold {r['fold']}: Dice_L={r['dice_lesion']:.4f}  "
-                  f"Recall_LVO={r['recall_lvo']:.4f}  "
+                  f"F1_LVO={r['f1_lvo']:.2f}%  "
                   f"Dice_C={r['dice_cow']:.4f}  "
                   f"Composite={r['composite']:.4f}")
         print(f"{'─'*60}")
         print(f"  Mean:   Dice_L={summary_df['dice_lesion'].mean():.4f}  "
-              f"Recall_LVO={summary_df['recall_lvo'].mean():.4f}  "
+              f"F1_LVO={summary_df['f1_lvo'].mean():.2f}%  "
               f"Dice_C={summary_df['dice_cow'].mean():.4f}  "
               f"Composite={summary_df['composite'].mean():.4f}")
         print(f"  Std:    Dice_L={summary_df['dice_lesion'].std():.4f}  "
