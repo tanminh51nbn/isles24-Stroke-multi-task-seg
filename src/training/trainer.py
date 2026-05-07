@@ -134,7 +134,7 @@ class Trainer:
             avg_l, ad_l, af1_v, ad_c, a_aad, a_alcd, ap_v, as_v = total_loss/max(n_b,1), sum_d_l/max(n_b,1), sum_f1_v/max(n_b,1), sum_d_c/max(n_b,1), sum_aad/max(n_b,1), sum_alcd/max(n_b,1), sum_p_v/max(n_b,1), sum_s_v/max(n_b,1)
 
         w = self.metric_weights
-        comp = (w["dice_lesion_weight"] * ad_l + w["recall_lvo_weight"] * (af1_v/100.0) + w["dice_cow_weight"] * ad_c)
+        comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * (af1_v/100.0) + w["dice_cow_weight"] * ad_c)
         
         return {
             "val_loss": avg_l, "dice_lesion": ad_l, "f1_lvo": af1_v, "dice_cow": ad_c, 

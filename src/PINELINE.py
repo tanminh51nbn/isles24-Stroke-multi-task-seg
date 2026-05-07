@@ -296,7 +296,7 @@ def main():
               f"Dice_C={summary_df['dice_cow'].mean():.4f}  "
               f"Composite={summary_df['composite'].mean():.4f}")
         print(f"  Std:    Dice_L={summary_df['dice_lesion'].std():.4f}  "
-              f"Recall_LVO={summary_df['recall_lvo'].std():.4f}  "
+              f"F1_LVO={summary_df['f1_lvo'].std():.2f}%  "
               f"Dice_C={summary_df['dice_cow'].std():.4f}  "
               f"Composite={summary_df['composite'].std():.4f}")
         print(f"{'='*60}")
