@@ -23,13 +23,28 @@ def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0
 
 
 def aad_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
-    """Average Area Difference (%) — Sai lệch diện tích trên từng lát cắt 2D"""
+    """
+    Average Area Difference (%) — Tính trung bình sai lệch diện tích trên từng lát cắt.
+    Giúp theo dõi độ chính xác về kích thước vùng tổn thương ổn định hơn.
+    """
     preds = (torch.sigmoid(logits) > threshold).float()
-    area_p = preds.sum().item()
-    area_g = targets.sum().item()
-    if area_g == 0:
-        return 100.0 if area_p > 0 else 0.0
-    return abs(area_p - area_g) / area_g * 100.0
+    
+    # Tính diện tích (số pixel) trên từng lát cắt: (B, 1, H, W) -> (B)
+    area_p = preds.view(preds.size(0), -1).sum(dim=1)
+    area_g = targets.view(targets.size(0), -1).sum(dim=1)
+    
+    diff_percentages = []
+    for p, g in zip(area_p, area_g):
+        p_val, g_val = p.item(), g.item()
+        if g_val == 0:
+            # Nếu thực tế không có tổn thương, dự đoán có (FP) tính là 100% lỗi
+            diff_percentages.append(1.0 if p_val > 0 else 0.0)
+        else:
+            # Tính sai lệch tỉ lệ, giới hạn ở mức 5.0 (500%) để tránh nhiễu epoch đầu làm vọt chỉ số
+            diff = abs(p_val - g_val) / g_val
+            diff_percentages.append(min(diff, 5.0))
+            
+    return (sum(diff_percentages) / len(diff_percentages)) * 100.0
 
 
 def f1_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:

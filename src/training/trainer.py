@@ -139,7 +139,10 @@ class Trainer:
         return {
             "val_loss": avg_l, "dice_lesion": ad_l, "f1_lvo": af1_v, "dice_cow": ad_c, 
             "aad_lesion": a_aad, "alcd_lesion": a_alcd,
-            "composite": comp, "p_lesion": losses.get("p_lesion", 1.0), "p_lvo": ap_v, "p_cow": losses.get("p_cow", 1.0),
+            "composite": comp, 
+            "p_lesion": float(losses.get("p_lesion", 1.0)), 
+            "p_lvo": ap_v, 
+            "p_cow": float(losses.get("p_cow", 1.0)),
             "sigma_lvo": as_v
         }
 

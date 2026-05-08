@@ -19,6 +19,8 @@ Cách dùng trên Kaggle:
 """
 
 import os
+# [OPTIMIZE] Tránh phân mảnh bộ nhớ trên card T4
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import sys
 import argparse
 import yaml

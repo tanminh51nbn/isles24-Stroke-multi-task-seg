@@ -105,12 +105,44 @@ class AuxHead(nn.Module):
     def forward(self, x): return self.conv(x)
 
 
+class FeatureFusionBlock(nn.Module):
+    """
+    [NEW] Đồng bộ hóa ngữ nghĩa (Semantic Synchronization):
+    Đưa đặc trưng từ 2 Encoder về cùng một không gian biểu diễn và dùng 
+    Channel-Attention để mô hình tự học trọng số giữa CTA (Cấu trúc) và Perfusion (Tưới máu).
+    """
+    def __init__(self, in_ch: int):
+        super().__init__()
+        # Giả định cta_ch == perf_ch == in_ch // 2
+        half_ch = in_ch // 2
+        self.conv_cta = ConvBnGelu1x1(half_ch, half_ch)
+        self.conv_perf = ConvBnGelu1x1(half_ch, half_ch)
+        
+        # Squeeze-and-Excitation để học trọng số kênh
+        self.se = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_ch, in_ch // 8, kernel_size=1),
+            nn.GELU(),
+            nn.Conv2d(in_ch // 8, in_ch, kernel_size=1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, cta, perf):
+        cta = self.conv_cta(cta)
+        perf = self.conv_perf(perf)
+        fused = torch.cat([cta, perf], dim=1)
+        return fused * self.se(fused)
+
+
 class DecoderBlock(nn.Module):
     def __init__(self, in_ch: int, skip_ch: int, out_ch: int, attention_type: Optional[str] = "dual", use_aux: bool = True, task_name: str = "shared", aux_ch: int = 1):
         super().__init__()
         self.attention_type = attention_type
         self.use_aux = use_aux
         self.aux_ch = aux_ch
+        
+        # Module Fusion để đồng bộ CTA và Perfusion
+        self.fusion = FeatureFusionBlock(skip_ch)
         
         self.conv1 = ConvBnGelu1x1(in_ch + skip_ch + aux_ch, out_ch)
         self.conv2 = ConvBnGelu(out_ch, out_ch)
@@ -131,7 +163,9 @@ class DecoderBlock(nn.Module):
         else:
             prev_mask = F.interpolate(prev_mask, size=(x_up.shape[2], x_up.shape[3]), mode="bilinear", align_corners=False)
         
-        skip = torch.cat([skip_cta, skip_perf], dim=1)
+        # [UPGRADE] Đồng bộ hóa ngữ nghĩa trước khi Attention
+        skip = self.fusion(skip_cta, skip_perf)
+        
         if self.attention_type == "ag":
             skip = self.ag(g=x_up, x=skip)
         elif self.attention_type == "dual":

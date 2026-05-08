@@ -50,37 +50,34 @@ class SliceAttention(nn.Module):
     Learnable Slice Attention (Dual Pooling): 
     Kết hợp Global Average Pooling (Context) và Global Max Pooling (Saliency) 
     để mô hình tự học cách nhấn mạnh các lát cắt quan trọng.
+    Sử dụng cơ chế Concat thay vì Add để bảo toàn đặc trưng đa dạng.
     """
     def __init__(self, in_channels: int):
         super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
         
-        # Shared MLP giữa Avg và Max
         self.fc = nn.Sequential(
-            nn.Linear(in_channels, in_channels // 2 + 1),
+            nn.Linear(in_channels * 2, in_channels),
             nn.GELU(),
-            nn.Linear(in_channels // 2 + 1, in_channels)
+            nn.Linear(in_channels, in_channels)
         )
-        # Note: Nếu muốn dùng Concat (thông minh hơn), đổi nn.Linear(in_channels*2, ...) 
-        # và sửa logic trong forward()
-
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         b, c, _, _ = x.size()
         
-        # Branch 1: Avg
+        # Branch 1: Avg (Contextual info)
         avg_out = self.avg_pool(x).view(b, c)
-        avg_out = self.fc(avg_out)
         
-        # Branch 2: Max
+        # Branch 2: Max (Saliency/LVO info)
         max_out = self.max_pool(x).view(b, c)
-        max_out = self.fc(max_out)
         
-        # Combine (Dùng Add cho Baseline)
-        # Để dùng Concat: combined = torch.cat([avg_out, max_out], dim=1) -> out = fc(combined)
-        out = self.sigmoid(avg_out + max_out).view(b, c, 1, 1)
+        # Combine via Concatenation
+        combined = torch.cat([avg_out, max_out], dim=1)
+        out = self.fc(combined)
+        
+        out = self.sigmoid(out).view(b, c, 1, 1)
         
         return x * out.expand_as(x)
 
