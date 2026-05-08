@@ -15,15 +15,15 @@ from torch.optim import AdamW
 
 def build_optimizer(model, loss_fn, config: dict) -> AdamW:
     """
-    Xây dựng AdamW với 2 param groups (Differential LR) và Uncertainty Weights.
+    Xây dựng AdamW với Differential Learning Rate cho Encoder và Decoder.
 
     Args:
         model:   DualEncoderUNet instance
-        loss_fn: MultiTaskLoss instance chứa Uncertainty weights
+        loss_fn: MultiTaskLoss instance
         config:  Dict đọc từ train.yaml
 
     Returns:
-        AdamW optimizer với 3 lr groups
+        AdamW optimizer với 2 lr groups
     """
     opt_cfg = config["optimizer"]
     base_lr  = float(opt_cfg["lr"])
@@ -35,15 +35,6 @@ def build_optimizer(model, loss_fn, config: dict) -> AdamW:
         encoder_lr=enc_lr,
         decoder_lr=base_lr,
     )
-
-    # Thêm tham số Uncertainty Weighting (log_vars) vào optimizer
-    if hasattr(loss_fn, "parameters") and len(list(loss_fn.parameters())) > 0:
-        param_groups.append({
-            "params": list(loss_fn.parameters()),
-            "lr": base_lr * 5.0, # Uncertainty cần hội tụ nhanh hơn một chút
-            "name": "uncertainty_weights",
-            "weight_decay": 0.0 # Không áp dụng weight decay cho tham số này
-        })
 
     optimizer = AdamW(param_groups, weight_decay=wd, eps=eps)
 

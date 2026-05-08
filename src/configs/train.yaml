@@ -26,15 +26,6 @@ loss:
     cl_weight: 0.5
     iters: 4
 
-# ── Uncertainty Weighting Settings ──────────────────────────────
-uncertainty:
-    s_min_lvo: 0.1         # Ưu tiên số 1
-    s_min_lesion: 0.3      # Ưu tiên số 2
-    s_min_cow: 0.5         # Ưu tiên số 3 (Thắt chặt hơn để CoW làm nền móng vững)
-    
-    # --- DWA+ Configuration ---
-    dwa_temperature: 2.0   # [NEW] Điều chỉnh độ gắt của thi đua (Thấp = Gắt, Cao = Ôn hòa)
-
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*F1_LVO + w3*Dice_CoW
 # Tập trung vào F1-Score cho LVO để cân bằng giữa Recall và Precision
@@ -69,7 +60,10 @@ training:
   freeze_encoder_epochs: 20
 
   # Cơ chế dìu nhau đi (DWA+)
-  dwa_start_epoch: 1
+  dwa_start_epoch: 8      # [NEW] Kích hoạt sau Warmup để tránh nhiễu
+  dwa_temperature: 2.0
+  dwa_ema_alpha: 0.2      # [NEW] EMA smoothing cho Loss (0.2 = ~5 epoch)
+  dwa_momentum: 0.5       # [NEW] Momentum cho trọng số (chống nhảy vọt)
   initial_weights:
     lesion: 0.35
     lvo: 0.50

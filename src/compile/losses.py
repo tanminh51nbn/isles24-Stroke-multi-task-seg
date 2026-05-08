@@ -192,39 +192,60 @@ class MultiTaskLoss(nn.Module):
         self.cow_cl_loss = SoftCLDiceLoss(iters=l_cfg["cow"].get("iters", 3))
         self.cow_cl_w = l_cfg["cow"].get("cl_weight", 0.0)
         
-        self.log_vars = nn.ParameterDict({
-            'lesion': nn.Parameter(torch.tensor(0.5)),
-            'lvo': nn.Parameter(torch.tensor(0.5)),
-            'cow': nn.Parameter(torch.tensor(0.5))
-        })
+        # [STABLE DWA+ Parameters]
+        self.register_buffer('ema_loss', torch.ones(3))
+        self.register_buffer('prev_ema_loss', torch.ones(3))
+        self.register_buffer('current_weights', torch.ones(3))
         
-        self.register_buffer('prev_loss', torch.ones(3))
-        self.register_buffer('prev_loss_2', torch.ones(3))
+        # Load hyperparams từ config
+        t_cfg = config.get("training", {})
+        self.temp = t_cfg.get("dwa_temperature", 2.0)
+        self.alpha = t_cfg.get("dwa_ema_alpha", 0.2)   # EMA smoothing factor
+        self.beta = t_cfg.get("dwa_momentum", 0.5)    # Weight momentum factor
         
-        u_cfg = config.get("uncertainty", {})
-        self.temp = u_cfg.get("dwa_temperature", 2.0)
-        self.s_min_lvo = u_cfg.get("s_min_lvo", 0.1)
-        self.s_min_lesion = u_cfg.get("s_min_lesion", 0.3)
-        self.s_min_cow = u_cfg.get("s_min_cow", 0.6)
+        # Gán trọng số ban đầu vào current_weights
+        with torch.no_grad():
+            self.current_weights[0] = self.init_w['lesion']
+            self.current_weights[1] = self.init_w['lvo']
+            self.current_weights[2] = self.init_w['cow']
         
         self.running_loss = [0.0, 0.0, 0.0]
         self.running_counts = 0
 
     def update_epoch_stats(self):
+        """Cập nhật EMA Loss sau mỗi Epoch để làm mịn biến động"""
         if self.running_counts > 0:
-            avg_loss = torch.tensor([l/self.running_counts for l in self.running_loss], device=self.prev_loss.device)
+            # 1. Tính loss trung bình thực tế của epoch vừa qua
+            curr_avg = torch.tensor([l/self.running_counts for l in self.running_loss], device=self.ema_loss.device)
             if dist.is_initialized():
-                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-                avg_loss = avg_loss / dist.get_world_size()
-            self.prev_loss_2.copy_(self.prev_loss)
-            self.prev_loss.copy_(avg_loss)
+                dist.all_reduce(curr_avg, op=dist.ReduceOp.SUM)
+                curr_avg = curr_avg / dist.get_world_size()
+            
+            # 2. Cập nhật EMA Loss: L_ema = alpha * L_curr + (1 - alpha) * L_ema_old
+            self.prev_ema_loss.copy_(self.ema_loss)
+            self.ema_loss.copy_(self.alpha * curr_avg + (1.0 - self.alpha) * self.ema_loss)
+            
+            # Reset bộ đếm batch
             self.running_loss, self.running_counts = [0.0, 0.0, 0.0], 0
 
     def _calculate_dwa(self, epoch):
-        if epoch < 2: return torch.ones(3, device=self.prev_loss.device)
-        r = self.prev_loss / (self.prev_loss_2 + 1e-8)
+        """Tính toán trọng số dựa trên xu hướng EMA và áp dụng Momentum"""
+        if epoch < self.dwa_start + 1: 
+            return self.current_weights
+            
+        # 1. Tính tỉ số tiến bộ dựa trên EMA (Tránh shock)
+        r = self.ema_loss / (self.prev_ema_loss + 1e-8)
+        
+        # 2. Tính toán trọng số thô qua Softmax
         exp_r = torch.exp((r - torch.max(r)) / self.temp)
-        return (exp_r / (exp_r.sum() + 1e-8)) * 3.0
+        new_weights = (exp_r / (exp_r.sum() + 1e-8)) * 3.0
+        
+        # 3. Áp dụng Momentum: W_final = beta * W_old + (1 - beta) * W_new
+        # Giúp trọng số dịch chuyển mượt mà qua các epoch
+        updated_weights = self.beta * self.current_weights + (1.0 - self.beta) * new_weights
+        self.current_weights.copy_(updated_weights)
+        
+        return self.current_weights
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
         cur_ep = int(epoch)
@@ -244,19 +265,14 @@ class MultiTaskLoss(nn.Module):
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
         # 2. Additional Task-specific Losses (Boundary & Topology)
-        # Lesion SDF (từ kênh 3 của target)
         l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4]) * self.lesion_hd_w
-        # CoW clDice
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) * self.cow_cl_w
 
-        # 3. Uncertainty Weighting
-        s_l = torch.clamp(self.log_vars['lesion'], min=self.s_min_lesion, max=10.0)
-        s_v = torch.clamp(self.log_vars['lvo'], min=self.s_min_lvo, max=10.0)
-        s_c = torch.clamp(self.log_vars['cow'], min=self.s_min_cow, max=10.0)
-
-        loss_l = (torch.exp(-s_l) * (l_l_m + l_l_hd) + s_l) * p_l
-        loss_v = (torch.exp(-s_v) * l_v_m + s_v) * p_v
-        loss_c = (torch.exp(-s_c) * (l_c_m + l_c_cl) + s_c) * p_c
+        # 3. Final Task Weighting (Pure DWA+)
+        loss_l = (l_l_m + l_l_hd) * p_l
+        loss_v = l_v_m * p_v
+        loss_c = (l_c_m + l_c_cl) * p_c
+        
         main_loss = loss_l + loss_v + loss_c
 
         with torch.no_grad():
@@ -280,11 +296,10 @@ class MultiTaskLoss(nn.Module):
         total = main_loss + aux_loss
         return {
             'total': total, 'main': main_loss, 'aux': aux_loss,
-            'l_lesion': loss_l.item(), 'l_lvo': loss_v.item(), 'l_cow': loss_c.item(),
+            'l_lesion': loss_l.item() if isinstance(loss_l, torch.Tensor) else loss_l, 
+            'l_lvo': loss_v.item() if isinstance(loss_v, torch.Tensor) else loss_v, 
+            'l_cow': loss_c.item() if isinstance(loss_c, torch.Tensor) else loss_c,
             'p_lesion': p_l if isinstance(p_l, (float, int)) else p_l.item(),
             'p_lvo': p_v if isinstance(p_v, (float, int)) else p_v.item(),
-            'p_cow': p_c if isinstance(p_c, (float, int)) else p_c.item(),
-            'sigma_lesion': torch.exp(s_l * 0.5).item(),
-            'sigma_lvo': torch.exp(s_v * 0.5).item(),
-            'sigma_cow': torch.exp(s_c * 0.5).item()
+            'p_cow': p_c if isinstance(p_c, (float, int)) else p_c.item()
         }

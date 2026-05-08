@@ -105,7 +105,6 @@ class Trainer:
 
             total_loss += losses["total"].item()
             sum_p_v += losses.get("p_lvo", 1.0)
-            sum_s_v += losses.get("sigma_lvo", 1.0)
             
             metrics = compute_all_metrics(preds, lbl, self.metric_weights)
             sum_d_l += metrics["dice_lesion"]
@@ -126,12 +125,12 @@ class Trainer:
                 visualized = True
 
         if dist.is_initialized():
-            sync = torch.tensor([total_loss, sum_d_l, sum_f1_v, sum_d_c, sum_aad, sum_alcd, sum_p_v, sum_s_v, float(n_b)], device=self.device)
+            sync = torch.tensor([total_loss, sum_d_l, sum_f1_v, sum_d_c, sum_aad, sum_alcd, sum_p_v, float(n_b)], device=self.device)
             dist.all_reduce(sync, op=dist.ReduceOp.SUM)
             v = sync.cpu().numpy()
-            avg_l, ad_l, af1_v, ad_c, a_aad, a_alcd, ap_v, as_v = v[0]/max(v[8],1), v[1]/max(v[8],1), v[2]/max(v[8],1), v[3]/max(v[8],1), v[4]/max(v[8],1), v[5]/max(v[8],1), v[6]/max(v[8],1), v[7]/max(v[8],1)
+            avg_l, ad_l, af1_v, ad_c, a_aad, a_alcd, ap_v = v[0]/max(v[7],1), v[1]/max(v[7],1), v[2]/max(v[7],1), v[3]/max(v[7],1), v[4]/max(v[7],1), v[5]/max(v[7],1), v[6]/max(v[7],1)
         else:
-            avg_l, ad_l, af1_v, ad_c, a_aad, a_alcd, ap_v, as_v = total_loss/max(n_b,1), sum_d_l/max(n_b,1), sum_f1_v/max(n_b,1), sum_d_c/max(n_b,1), sum_aad/max(n_b,1), sum_alcd/max(n_b,1), sum_p_v/max(n_b,1), sum_s_v/max(n_b,1)
+            avg_l, ad_l, af1_v, ad_c, a_aad, a_alcd, ap_v = total_loss/max(n_b,1), sum_d_l/max(n_b,1), sum_f1_v/max(n_b,1), sum_d_c/max(n_b,1), sum_aad/max(n_b,1), sum_alcd/max(n_b,1), sum_p_v/max(n_b,1)
 
         w = self.metric_weights
         comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * (af1_v/100.0) + w["dice_cow_weight"] * ad_c)
@@ -142,8 +141,7 @@ class Trainer:
             "composite": comp, 
             "p_lesion": float(losses.get("p_lesion", 1.0)), 
             "p_lvo": ap_v, 
-            "p_cow": float(losses.get("p_cow", 1.0)),
-            "sigma_lvo": as_v
+            "p_cow": float(losses.get("p_cow", 1.0))
         }
 
     def load_checkpoint(self, path: str):
@@ -174,7 +172,7 @@ class Trainer:
                 print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR (En/De): {lr_enc:.1e}/{lr_dec:.1e} | Comp: {v_m['composite']:.4f}")
                 print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} | F1_LVO: {v_m['f1_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
                 print(f"   | [VAL] Loss: {v_m['val_loss']:.4f} | AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.4f}")
-                print(f"   | [TRA] Loss: {t_m['train_loss']:.4f} | P_LVO: {v_m['p_lvo']:.2f} | Sig_LVO: {v_m['sigma_lvo']:.2f}\n{'-'*80}", flush=True)
+                print(f"   | [TRA] Loss: {t_m['train_loss']:.4f} | P_LVO: {v_m['p_lvo']:.2f}\n{'-'*80}", flush=True)
             self.history.append({**t_m, **v_m, "epoch": epoch + 1})
             if checkpoint and self.rank == 0:
                 if (epoch + 1) >= self.config["training"]["checkpoint"].get("start_epoch", 1):
