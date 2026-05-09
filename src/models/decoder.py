@@ -187,17 +187,18 @@ class DecoupledPath(nn.Module):
     """
     Một nhánh Decoder chuyên biệt đi từ level 4 đến level 1.
     """
-    def __init__(self, config: dict, task_name: str, skip_channels: List[int], aux_ch: int = 1):
+    def __init__(self, config: dict, task_name: str, skip_channels: List[int], aux_ch: int = 1, active_aux_levels: List[bool] = [True, True, True, True]):
         super().__init__()
+        self.active_aux_levels = active_aux_levels
         dec_ch = config["decoder"]["out_channels"]
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
         # skip_channels: [s4, s3, s2, s1] -> [2048, 1024, 512, 128]
-        self.dec4 = DecoderBlock(1024, skip_channels[0], dec_ch[0], attn_type, use_aux=True, task_name=task_name, aux_ch=aux_ch)
-        self.dec3 = DecoderBlock(dec_ch[0], skip_channels[1], dec_ch[1], attn_type, use_aux=True, task_name=task_name, aux_ch=aux_ch)
-        self.dec2 = DecoderBlock(dec_ch[1], skip_channels[2], dec_ch[2], attn_type, use_aux=True, task_name=task_name, aux_ch=aux_ch)
-        self.dec1 = DecoderBlock(dec_ch[2], skip_channels[3], dec_ch[3], attn_type, use_aux=True, task_name=task_name, aux_ch=aux_ch)
+        self.dec4 = DecoderBlock(1024, skip_channels[0], dec_ch[0], attn_type, use_aux=active_aux_levels[0], task_name=task_name, aux_ch=aux_ch)
+        self.dec3 = DecoderBlock(dec_ch[0], skip_channels[1], dec_ch[1], attn_type, use_aux=active_aux_levels[1], task_name=task_name, aux_ch=aux_ch)
+        self.dec2 = DecoderBlock(dec_ch[1], skip_channels[2], dec_ch[2], attn_type, use_aux=active_aux_levels[2], task_name=task_name, aux_ch=aux_ch)
+        self.dec1 = DecoderBlock(dec_ch[2], skip_channels[3], dec_ch[3], attn_type, use_aux=active_aux_levels[3], task_name=task_name, aux_ch=aux_ch)
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
@@ -250,9 +251,10 @@ class MultiHeadDecoder(nn.Module):
         # Skip channels (combined CTA + Perf): s4=2048, s3=1024, s2=512, s1=128
         skips = [2048, 1024, 512, 128]
         
-        self.lesion_path = DecoupledPath(config, "lesion", skips, aux_ch=1)
-        self.lvo_path    = DecoupledPath(config, "lvo", skips, aux_ch=1)
-        self.cow_path    = DecoupledPath(config, "cow", skips, aux_ch=1)
+        # [FIX] Cấu hình AUX: LVO tắt 2 tầng sâu (16x16, 32x32) để giảm nhiễu
+        self.lesion_path = DecoupledPath(config, "lesion", skips, aux_ch=1, active_aux_levels=[True, True, True, True])
+        self.lvo_path    = DecoupledPath(config, "lvo", skips, aux_ch=1, active_aux_levels=[False, False, True, True])
+        self.cow_path    = DecoupledPath(config, "cow", skips, aux_ch=1, active_aux_levels=[True, True, True, True])
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor]):
         s5, d5 = cta_skips[4], perf_skips[4]
@@ -273,16 +275,12 @@ class MultiHeadDecoder(nn.Module):
         guidance_for_lesion = f_cow + f_lvo 
         f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lesion)
 
-        # Gom nhóm Aux Masks: [32, 64, 128, 256]
-        # Mỗi tầng chứa: [Lesion, LVO, CoW]
-        aux_masks = []
-        for i in range(4):
-            aux = torch.cat([
-                lesion_auxs[i], # Lesion
-                lvo_auxs[i],    # LVO
-                cow_auxs[i]     # CoW
-            ], dim=1)
-            aux_masks.append(aux)
+        # Trả về Dictionary AUX để losses.py xử lý chọn lọc
+        aux_masks = {
+            "lesion": lesion_auxs,
+            "lvo":    lvo_auxs,
+            "cow":    cow_auxs
+        }
 
         preds = {
             "lesion": f_lesion,

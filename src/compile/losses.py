@@ -280,18 +280,27 @@ class MultiTaskLoss(nn.Module):
             self.running_counts+=1
 
         aux_loss = 0.0
-        if "aux_masks" in preds and preds["aux_masks"] is not None:
-            a_w = [0.05, 0.075, 0.125, 0.25]
-            for i, a_p in enumerate(preds["aux_masks"]):
-                if a_p is None or i >= len(a_w): continue
-                h, w = a_p.shape[2], a_p.shape[3]
-                t_l = F.interpolate(targets[:, 0:1].float(), (h, w), mode='nearest')
-                la_l = self.lesion_main_loss(a_p[:, 0:1], t_l) * p_l
-                t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
-                la_v = self.lvo_loss_fn(a_p[:, 1:2], t_v, sigma=4.0) * p_v
-                t_c = F.interpolate(targets[:, 2:3].float(), (h, w), mode='nearest')
-                la_c = self.cow_main_loss(a_p[:, 2:3], t_c) * p_c
-                aux_loss += a_w[i] * (la_l + la_v + la_c)
+        # 2. Auxiliary Losses (Multi-Level)
+        aux_dict = preds.get("aux_masks", {})
+        
+        # Duyệt qua từng task trong dictionary AUX
+        for task_key, aux_list in aux_dict.items():
+            for a_p in aux_list:
+                if a_p is None: continue # Bỏ qua các tầng bị tắt (như LVO 16x16, 32x32)
+                
+                h, w = a_p.shape[2:]
+                
+                if task_key == "lesion":
+                    t_l = F.interpolate(targets[:, 0:1].float(), (h, w), mode='nearest')
+                    aux_loss += self.lesion_main_loss(a_p, t_l) * p_l * 0.5
+                
+                elif task_key == "lvo":
+                    t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
+                    aux_loss += self.lvo_loss_fn(a_p, t_v, sigma=4.0) * p_v * 0.5
+                    
+                elif task_key == "cow":
+                    t_c = F.interpolate(targets[:, 2:3].float(), (h, w), mode='nearest')
+                    aux_loss += self.cow_main_loss(a_p, t_c) * p_c * 0.5
 
         total = main_loss + aux_loss
         return {
