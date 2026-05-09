@@ -78,19 +78,27 @@ class ModifiedFocalLoss(nn.Module):
     def forward(self, logits: torch.Tensor, targets: torch.Tensor, sigma: float = 0.0) -> torch.Tensor:
         pred = torch.sigmoid(logits.float()).clamp(min=self.eps, max=1.0 - self.eps)
         heatmap_gt = self._apply_gaussian_blur(targets, sigma) if sigma > 0 else targets
+        
         pos_mask = (heatmap_gt == 1.0).float()
         neg_mask = 1.0 - pos_mask
+        
+        # 1. Tính toán loss thô từng pixel
         pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred)
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
-        num_pos = pos_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
-
-        # [FIX] Tách biệt cách tính để tránh khuếch đại nhiễu nền (Background Noise)
-        # loss_pos: Chia cho số lượng điểm dương để đảm bảo tín hiệu điểm tắc đủ mạnh
-        loss_pos = pos_loss.sum(dim=(1, 2, 3)) / num_pos
-        # loss_neg: Dùng mean để tránh việc sum của 65k pixels bị chia cho 1 (gây nổ Gradient)
-        loss_neg = neg_loss.mean(dim=(1, 2, 3))
         
-        loss = (loss_pos + loss_neg).mean()
+        # 2. Xử lý Positive: Chia cho số lượng điểm dương (thường rất ít)
+        num_pos = pos_mask.sum().clamp(min=1.0)
+        loss_pos = pos_loss.sum() / num_pos
+        
+        # 3. Top-K Hard Negative Mining
+        k_pixels = 2048 # Khoảng 3% diện tích ảnh 256x256
+        neg_loss_flat = neg_loss.view(-1)
+        
+        # Lấy Top-K giá trị loss cao nhất
+        topk_loss, _ = torch.topk(neg_loss_flat, k=min(k_pixels, neg_loss_flat.size(0)))
+        loss_neg = topk_loss.mean()
+        
+        loss = loss_pos + loss_neg
         return torch.nan_to_num(loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
 
 # ─── LVO Loss ────────────────────────────────────────────────────────────────
@@ -265,13 +273,14 @@ class MultiTaskLoss(nn.Module):
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
         # 2. Additional Task-specific Losses (Boundary & Topology)
-        l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4]) * self.lesion_hd_w
-        l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) * self.cow_cl_w
+        l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4])
+        l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3])
 
-        # 3. Final Task Weighting (Pure DWA+)
-        loss_l = (l_l_m + l_l_hd) * p_l
+        # 3. Final Task Weighting (Weighted Average + DWA+)
+        # [FORMULA UPDATE]: Sử dụng Weighted Average (1-w)*Main + w*Aux để cân bằng Scale
+        loss_l = ((1.0 - self.lesion_hd_w) * l_l_m + self.lesion_hd_w * l_l_hd) * p_l
         loss_v = l_v_m * p_v
-        loss_c = (l_c_m + l_c_cl) * p_c
+        loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
         
         main_loss = loss_l + loss_v + loss_c
 
