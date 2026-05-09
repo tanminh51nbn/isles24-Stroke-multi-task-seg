@@ -71,9 +71,30 @@ def run_compare_mode(args, model, train_cfg, device):
     names = ["overall", "lesion", "lvo"]
     fig, axes = plt.subplots(1, 4, figsize=(20, 5))
     
-    # Cột 1: Ảnh gốc
-    axes[0].imshow(sample["input"][6], cmap='bone') # CTA trung tâm (Vibrant)
-    axes[0].set_title(f"Original\n{os.path.basename(random_file)}")
+    # Helper chuẩn hóa nhanh
+    def _norm(img):
+        arr = img.cpu().numpy() if torch.is_tensor(img) else img
+        p99 = np.percentile(arr, 99.9)
+        arr = np.clip(arr, 0, p99)
+        amin, amax = arr.min(), arr.max()
+        if amax > amin: arr = (arr - amin) / (amax - amin)
+        return (arr * 255).astype(np.uint8)
+
+    # Cột 1: Ảnh gốc + Ground Truth
+    bg_img = _norm(sample["input"][0:6].mean(dim=0)) # CTA Anatomy Map
+    axes[0].imshow(bg_img, cmap='bone')
+    
+    # Đè Ground Truth lên (nếu có)
+    gt = sample["label"].cpu().numpy()
+    if gt.max() > 0:
+        ov = np.zeros((*gt[0].shape, 4))
+        ov[..., 0] = gt[0] * 0.7  # Lesion: Đỏ
+        ov[..., 1] = gt[2] * 0.4  # CoW: Xanh lá
+        ov[..., 2] = (gt[1] > 0.1).astype(float) * 0.9 # LVO: Xanh dương
+        ov[..., 3] = (gt.max(axis=0) > 0.1) * 0.5
+        axes[0].imshow(ov)
+        
+    axes[0].set_title(f"Original (w/ GT)\n{os.path.basename(random_file)}")
     
     for i, name in enumerate(names):
         ckpt_path = os.path.join(args.checkpoint_dir, f"best_{name}.pt")
@@ -81,7 +102,7 @@ def run_compare_mode(args, model, train_cfg, device):
             model = load_model_from_ckpt(model, ckpt_path, device)
             with torch.no_grad():
                 preds = model(inp)
-                axes[i+1].imshow(sample["input"][6], cmap='bone')
+                axes[i+1].imshow(bg_img, cmap='bone')
                 
                 if name == "lvo":
                     # Hiển thị LVO dạng Heatmap rực rỡ (colormap hot)

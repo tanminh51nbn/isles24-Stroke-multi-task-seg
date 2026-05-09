@@ -76,8 +76,9 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
             arr = (arr - amin) / (amax - amin)
         return (arr * 255).astype(np.uint8)
 
-    cta_img  = _norm(sample["input"][6]) # CTA lát cắt trung tâm
-    perf_img = _norm(sample["input"][7]) # Tmax lát cắt trung tâm (Physiology)
+    # Lấy trung bình các kênh để hiển thị cấu trúc đầy đủ nhất
+    cta_img  = _norm(sample["input"][0:6].mean(dim=0))  # Mean của 6 kênh CTA
+    perf_img = _norm(sample["input"][6:18].mean(dim=0)) # Mean của 12 kênh Perfusion
 
     # GT
     gt_lesion = sample["label"][0].cpu().numpy()
