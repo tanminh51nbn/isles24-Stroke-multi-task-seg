@@ -61,7 +61,7 @@ training:
 
   # Cơ chế dìu nhau đi (DWA+)
   dwa_start_epoch: 8      # [NEW] Kích hoạt sau Warmup để tránh nhiễu
-  dwa_temperature: 2.0
+  dwa_temperature: 1.0
   dwa_ema_alpha: 0.2      # [NEW] EMA smoothing cho Loss (0.2 = ~5 epoch)
   dwa_momentum: 0.5       # [NEW] Momentum cho trọng số (chống nhảy vọt)
   initial_weights:

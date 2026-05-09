@@ -140,6 +140,7 @@ class DecoderBlock(nn.Module):
         self.attention_type = attention_type
         self.use_aux = use_aux
         self.aux_ch = aux_ch
+        self.task_name = task_name
         
         # Module Fusion để đồng bộ CTA và Perfusion
         self.fusion = FeatureFusionBlock(skip_ch)
@@ -157,13 +158,14 @@ class DecoderBlock(nn.Module):
             self.aux_head = AuxHead(out_ch, task_name, out_ch=aux_ch)
 
     def forward(self, x: torch.Tensor, skip_cta: torch.Tensor, skip_perf: torch.Tensor, prev_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        interp_mode = "nearest" if self.task_name == "lvo" else "bilinear"
+        
         x_up = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
         if prev_mask is None:
             prev_mask = torch.zeros((x_up.shape[0], self.aux_ch, x_up.shape[2], x_up.shape[3]), device=x.device)
         else:
-            prev_mask = F.interpolate(prev_mask, size=(x_up.shape[2], x_up.shape[3]), mode="bilinear", align_corners=False)
+            prev_mask = F.interpolate(prev_mask, size=(x_up.shape[2], x_up.shape[3]), mode=interp_mode, align_corners=(False if interp_mode == "bilinear" else None))
         
-        # [UPGRADE] Đồng bộ hóa ngữ nghĩa trước khi Attention
         skip = self.fusion(skip_cta, skip_perf)
         
         if self.attention_type == "ag":
