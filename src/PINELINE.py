@@ -194,11 +194,13 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         print(f"{'='*60}")
 
     if rank == 0:
-        # Lưu kết quả tốt nhất vào file để PINELINE.py có thể đọc được (vì mp.spawn không return)
+        # [FIX] Ép kiểu NumPy/Tensor về Python chuẩn để lưu JSON thành công
+        best_serializable = {k: (v.item() if hasattr(v, 'item') else v) for k, v in best.items()}
+        
         import json
         res_path = os.path.join(fold_output_dir, "best_result.json")
         with open(res_path, "w") as f:
-            json.dump(best, f)
+            json.dump(best_serializable, f)
         best_result = best
     else:
         best_result = None
