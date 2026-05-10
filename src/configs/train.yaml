@@ -30,9 +30,9 @@ loss:
 # Score = w1*Dice_Lesion + w2*F1_LVO + w3*Dice_CoW
 # Tập trung vào F1-Score cho LVO để cân bằng giữa Recall và Precision
 composite_score:
-  dice_lesion_weight: 0.35
+  dice_lesion_weight: 0.4
   f1_lvo_weight: 0.50
-  dice_cow_weight: 0.15
+  dice_cow_weight: 0.1
   thresholds:
     lesion: 0.45
     lvo: 0.2 # Nâng ngưỡng để AI học cách dự đoán LVO sắc nét, giảm nhiễu
