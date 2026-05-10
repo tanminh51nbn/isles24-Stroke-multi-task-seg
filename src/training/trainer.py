@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from typing import Optional
 import math
 
-from compile.metrics import compute_all_metrics
+from compile.metrics import compute_all_metrics, finalize_lvo_f1
 from evaluation.visualize import overlay_predictions
 from data.fold_split import apply_sampling
 
@@ -83,10 +83,13 @@ class Trainer:
     def validate(self, epoch: int) -> dict:
         self.model.eval()
         total_loss = 0.0
-        sum_d_l, sum_f1_v, sum_d_c = 0.0, 0.0, 0.0
+        sum_d_l, sum_d_c = 0.0, 0.0
         sum_aad, sum_alcd = 0.0, 0.0
-        sum_p_v, sum_s_v = 0.0, 0.0
+        sum_p_v = 0.0
         n_b = 0
+        
+        # [FIX] Global LVO stats: gom TP/FP/FN trên toàn Val set thay vì per-batch avg
+        lvo_stats = {"tp": 0, "fp": 0, "fn": 0}
         
         vis_interval = self.config["training"]["logging"].get("visualize_every", 5)
         should_vis = (epoch % vis_interval == 0) and (self.rank == 0)
@@ -106,11 +109,11 @@ class Trainer:
             total_loss += losses["total"].item()
             sum_p_v += losses.get("p_lvo", 1.0)
             
-            metrics = compute_all_metrics(preds, lbl, self.metric_weights)
-            sum_d_l += metrics["dice_lesion"]
-            sum_f1_v += metrics["f1_lvo"]
-            sum_d_c += metrics["dice_cow"]
-            sum_aad += metrics["aad_lesion"]
+            # Truyền lvo_stats vào để gom TP/FP/FN toàn cục
+            metrics = compute_all_metrics(preds, lbl, self.metric_weights, lvo_stats=lvo_stats)
+            sum_d_l  += metrics["dice_lesion"]
+            sum_d_c  += metrics["dice_cow"]
+            sum_aad  += metrics["aad_lesion"]
             sum_alcd += metrics["alcd_lesion"]
             n_b += 1
 
@@ -124,13 +127,31 @@ class Trainer:
                 )
                 visualized = True
 
+        # [FIX] Đồng bộ TP/FP/FN qua DDP trước khi tính F1
         if dist.is_initialized():
-            sync = torch.tensor([total_loss, sum_d_l, sum_f1_v, sum_d_c, sum_aad, sum_alcd, sum_p_v, float(n_b)], device=self.device)
+            lvo_tensor = torch.tensor(
+                [lvo_stats["tp"], lvo_stats["fp"], lvo_stats["fn"]], 
+                dtype=torch.float32, device=self.device
+            )
+            dist.all_reduce(lvo_tensor, op=dist.ReduceOp.SUM)
+            lvo_stats = {"tp": int(lvo_tensor[0].item()), "fp": int(lvo_tensor[1].item()), "fn": int(lvo_tensor[2].item())}
+            
+            sync = torch.tensor([total_loss, sum_d_l, sum_d_c, sum_aad, sum_alcd, sum_p_v, float(n_b)], device=self.device)
             dist.all_reduce(sync, op=dist.ReduceOp.SUM)
             v = sync.cpu().numpy()
-            avg_l, ad_l, af1_v, ad_c, a_aad, a_alcd, ap_v = v[0]/max(v[7],1), v[1]/max(v[7],1), v[2]/max(v[7],1), v[3]/max(v[7],1), v[4]/max(v[7],1), v[5]/max(v[7],1), v[6]/max(v[7],1)
+            avg_l, ad_l, ad_c, a_aad, a_alcd, ap_v = v[0]/max(v[6],1), v[1]/max(v[6],1), v[2]/max(v[6],1), v[3]/max(v[6],1), v[4]/max(v[6],1), v[5]/max(v[6],1)
         else:
-            avg_l, ad_l, af1_v, ad_c, a_aad, a_alcd, ap_v = total_loss/max(n_b,1), sum_d_l/max(n_b,1), sum_f1_v/max(n_b,1), sum_d_c/max(n_b,1), sum_aad/max(n_b,1), sum_alcd/max(n_b,1), sum_p_v/max(n_b,1)
+            avg_l = total_loss/max(n_b,1)
+            ad_l  = sum_d_l/max(n_b,1)
+            ad_c  = sum_d_c/max(n_b,1)
+            a_aad = sum_aad/max(n_b,1)
+            a_alcd = sum_alcd/max(n_b,1)
+            ap_v  = sum_p_v/max(n_b,1)
+
+        # Tính F1 Global một lần duy nhất sau khi đã gom toàn bộ Val set
+        af1_v = finalize_lvo_f1(lvo_stats)
+        if self.rank == 0:
+            print(f"    [LVO_GLOBAL] TP={lvo_stats['tp']} FP={lvo_stats['fp']} FN={lvo_stats['fn']} => F1={af1_v:.2f}%")
 
         w = self.metric_weights
         comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * (af1_v/100.0) + w["dice_cow_weight"] * ad_c)
