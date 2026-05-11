@@ -86,19 +86,14 @@ class ModifiedFocalLoss(nn.Module):
         pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred)
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
         
-        # 2. Xử lý Positive: Chia cho số lượng điểm dương (thường rất ít)
-        num_pos = pos_mask.sum().clamp(min=1.0)
-        loss_pos = pos_loss.sum() / num_pos
-        
-        # 3. Top-K Hard Negative Mining
-        k_pixels = 2048 # Khoảng 3% diện tích ảnh 256x256
-        neg_loss_flat = neg_loss.view(-1)
-        
-        # Lấy Top-K giá trị loss cao nhất
-        topk_loss, _ = torch.topk(neg_loss_flat, k=min(k_pixels, neg_loss_flat.size(0)))
-        loss_neg = topk_loss.mean()
-        
-        loss = loss_pos + loss_neg
+        # 2. Positive & Negative Loss — công thức gốc CenterNet (Law & Deng, 2019)
+        # Tổng cả hai nhánh chia chung cho num_pos để scale đồng nhất.
+        # Modified Focal Loss đã là "soft miner" tự nhiên qua (1-heatmap)^beta * pred^alpha,
+        # không cần Top-K — Top-K chỉ khiến 99%+ pixel âm tính mất gradient (FP không bị phạt).
+        num_pos   = pos_mask.sum().clamp(min=1.0)
+        loss_pos  = pos_loss.sum()
+        loss_neg  = neg_loss.sum()
+        loss = (loss_pos + loss_neg) / num_pos
         return torch.nan_to_num(loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
 
 # ─── LVO Loss ────────────────────────────────────────────────────────────────
@@ -169,11 +164,11 @@ class SoftCLDiceLoss(nn.Module):
 class MultiTaskLoss(nn.Module):
     def __init__(self, config: dict):
         super().__init__()
-        l_cfg = config["loss"]
-        self.curr_cfg = config["training"].get("curriculum_learning", {})
-        self.enabled = self.curr_cfg.get("enabled", False)
-        self.dwa_start = self.curr_cfg.get("dwa_start_epoch", 25)
-        self.init_w = self.curr_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
+        l_cfg  = config["loss"]
+        t_cfg  = config.get("training", {})
+        # [FIX Bug2] Đọc đúng từ key 'training', không phải 'curriculum_learning' (key không tồn tại)
+        self.dwa_start = t_cfg.get("dwa_start_epoch", 25)
+        self.init_w    = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
         
         # 1. Lesion Task
         self.lesion_main_loss = FocalTverskyLoss(
@@ -205,11 +200,10 @@ class MultiTaskLoss(nn.Module):
         self.register_buffer('prev_ema_loss', torch.ones(3))
         self.register_buffer('current_weights', torch.ones(3))
         
-        # Load hyperparams từ config
-        t_cfg = config.get("training", {})
-        self.temp = t_cfg.get("dwa_temperature", 2.0)
+        # Load hyperparams từ config (t_cfg đã khai báo ở trên, tránh khai báo lại)
+        self.temp  = t_cfg.get("dwa_temperature", 2.0)
         self.alpha = t_cfg.get("dwa_ema_alpha", 0.2)   # EMA smoothing factor
-        self.beta = t_cfg.get("dwa_momentum", 0.5)    # Weight momentum factor
+        self.beta  = t_cfg.get("dwa_momentum", 0.5)    # Weight momentum factor
         
         # Gán trọng số ban đầu vào current_weights
         with torch.no_grad():
@@ -220,8 +214,12 @@ class MultiTaskLoss(nn.Module):
         self.running_loss = [0.0, 0.0, 0.0]
         self.running_counts = 0
 
-    def update_epoch_stats(self):
-        """Cập nhật EMA Loss sau mỗi Epoch để làm mịn biến động"""
+    def update_epoch_stats(self, epoch: int):
+        """Cập nhật EMA Loss sau mỗi Epoch, sau đó refresh DWA weights 1 lần.
+        
+        [FIX Bug3] Nhận epoch làm tham số để _refresh_dwa_weights biết khi nào kích hoạt.
+        Tách hoàn toàn việc tính trọng số khỏi forward() — đảm bảo nhất quán DDP.
+        """
         if self.running_counts > 0:
             # 1. Tính loss trung bình thực tế của epoch vừa qua
             curr_avg = torch.tensor([l/self.running_counts for l in self.running_loss], device=self.ema_loss.device)
@@ -236,33 +234,38 @@ class MultiTaskLoss(nn.Module):
             # Reset bộ đếm batch
             self.running_loss, self.running_counts = [0.0, 0.0, 0.0], 0
 
-    def _calculate_dwa(self, epoch):
-        """Tính toán trọng số dựa trên xu hướng EMA và áp dụng Momentum"""
-        if epoch < self.dwa_start + 1: 
-            return self.current_weights
-            
-        # 1. Tính tỉ số tiến bộ dựa trên EMA (Tránh shock)
+        # 3. Refresh DWA weights 1 lần/epoch (sau khi EMA đã được cập nhật)
+        self._refresh_dwa_weights(epoch)
+
+    def _refresh_dwa_weights(self, epoch: int):
+        """Cập nhật current_weights theo DWA — chỉ gọi 1 lần/epoch từ update_epoch_stats().
+
+        [FIX Bug3] Tách hoàn toàn khỏi forward() để:
+        - Tránh ghi đè state n_batches lần/epoch (sai momentum).
+        - Đảm bảo 2 GPU DDP dùng cùng trọng số (current_weights là buffer, không all_reduce
+          trong forward, nhưng nhất quán vì chỉ update 1 lần sau all_reduce EMA).
+        """
+        if epoch < self.dwa_start + 1:
+            return  # Giữ nguyên init_w cho đến khi đủ epoch
+
+        # 1. Tỉ số tiến bộ: r > 1 = task đang giảm chậm hơn epoch trước
         r = self.ema_loss / (self.prev_ema_loss + 1e-8)
-        
-        # 2. Tính toán trọng số thô qua Softmax
+
+        # 2. Softmax với temperature → phân phối trọng số (tổng = 3.0)
         exp_r = torch.exp((r - torch.max(r)) / self.temp)
         new_weights = (exp_r / (exp_r.sum() + 1e-8)) * 3.0
-        
-        # 3. Áp dụng Momentum: W_final = beta * W_old + (1 - beta) * W_new
-        # Giúp trọng số dịch chuyển mượt mà qua các epoch
+
+        # 3. Momentum: dịch chuyển mượt mà, chống nhảy vọt
         updated_weights = self.beta * self.current_weights + (1.0 - self.beta) * new_weights
         self.current_weights.copy_(updated_weights)
-        
-        return self.current_weights
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
         cur_ep = int(epoch)
-        # CHIẾN THUẬT TRỌNG SỐ (DWA+ Mechanism)
-        if cur_ep >= self.dwa_start:
-            w = self._calculate_dwa(cur_ep).to(targets.device)
-            p_l, p_v, p_c = w[0], w[1], w[2]
-        else:
-            p_l, p_v, p_c = self.init_w['lesion'], self.init_w['lvo'], self.init_w['cow']
+        # [FIX Bug3] Chỉ ĐỌC current_weights — không tính lại DWA mỗi batch.
+        # Trước dwa_start: current_weights = init_w (set trong __init__).
+        # Sau dwa_start:  current_weights được _refresh_dwa_weights() cập nhật 1 lần/epoch.
+        w = self.current_weights.to(targets.device)
+        p_l, p_v, p_c = w[0], w[1], w[2]
 
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             print(f"    [LOSS_POLICY] Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")

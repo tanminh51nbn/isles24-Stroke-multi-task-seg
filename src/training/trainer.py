@@ -201,5 +201,5 @@ class Trainer:
             if early_stopping and (epoch + 1) >= self.config["training"]["early_stopping"].get("start_epoch", 1):
                 if early_stopping(v_m["composite"]): break
             self.scheduler.step()
-            if hasattr(self.loss_fn, "update_epoch_stats"): self.loss_fn.update_epoch_stats()
+            if hasattr(self.loss_fn, "update_epoch_stats"): self.loss_fn.update_epoch_stats(epoch)
         return self.history
