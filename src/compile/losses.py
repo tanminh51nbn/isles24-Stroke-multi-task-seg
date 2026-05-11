@@ -166,7 +166,6 @@ class MultiTaskLoss(nn.Module):
         super().__init__()
         l_cfg  = config["loss"]
         t_cfg  = config.get("training", {})
-        # [FIX Bug2] Đọc đúng từ key 'training', không phải 'curriculum_learning' (key không tồn tại)
         self.dwa_start = t_cfg.get("dwa_start_epoch", 25)
         self.init_w    = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
         
