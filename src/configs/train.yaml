@@ -69,6 +69,19 @@ training:
     lvo: 0.50
     cow: 0.15
 
+  # Performance Gap Weighting (thay thế DWA+)
+  # Điều chỉnh trọng số task theo khoảng cách tới target metric,
+  # không phải tốc độ thay đổi loss — tránh failure mode "đầu hàng task khó".
+  pgw:
+    start_epoch: 5          # Kích hoạt sau warmup
+    temperature: 0.5        # Softmax temp (đặt nhỏ → phân hóa mạnh hơn)
+    momentum: 0.3           # Momentum (đặt nhỏ → phản ứng nhanh hơn DWA+)
+    w_min: 0.1              # Trọng số sàn mỗi task (CoW không bị bỏ qua hoàn toàn)
+    performance_targets:    # Mục tiêu hiệu suất cần đạt được
+      lesion: 0.85          # Dice Score
+      lvo:    0.50          # F1 Score (slice-level, ð [0,1])
+      cow:    0.90          # Dice Score
+
   # Checkpointing
   checkpoint:
     dir: "checkpoints"

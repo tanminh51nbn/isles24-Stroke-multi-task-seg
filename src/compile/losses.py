@@ -166,9 +166,8 @@ class MultiTaskLoss(nn.Module):
         super().__init__()
         l_cfg  = config["loss"]
         t_cfg  = config.get("training", {})
-        self.dwa_start = t_cfg.get("dwa_start_epoch", 25)
-        self.init_w    = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
-        
+        self.init_w = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
+
         # 1. Lesion Task
         self.lesion_main_loss = FocalTverskyLoss(
             alpha=l_cfg["lesion"].get("alpha", 0.7),
@@ -181,7 +180,7 @@ class MultiTaskLoss(nn.Module):
         # 2. LVO Task
         l_v_cfg = l_cfg.get("lvo", {})
         self.lvo_loss_fn = ModifiedFocalLoss(
-            alpha=l_v_cfg.get("mfl_alpha", 2.0), 
+            alpha=l_v_cfg.get("mfl_alpha", 2.0),
             beta=l_v_cfg.get("mfl_beta", 4.0)
         )
 
@@ -193,81 +192,94 @@ class MultiTaskLoss(nn.Module):
         )
         self.cow_cl_loss = SoftCLDiceLoss(iters=l_cfg["cow"].get("iters", 3))
         self.cow_cl_w = l_cfg["cow"].get("cl_weight", 0.0)
-        
-        # [STABLE DWA+ Parameters]
-        self.register_buffer('ema_loss', torch.ones(3))
-        self.register_buffer('prev_ema_loss', torch.ones(3))
-        self.register_buffer('current_weights', torch.ones(3))
-        
-        # Load hyperparams từ config (t_cfg đã khai báo ở trên, tránh khai báo lại)
-        self.temp  = t_cfg.get("dwa_temperature", 2.0)
-        self.alpha = t_cfg.get("dwa_ema_alpha", 0.2)   # EMA smoothing factor
-        self.beta  = t_cfg.get("dwa_momentum", 0.5)    # Weight momentum factor
-        
-        # Gán trọng số ban đầu vào current_weights
-        with torch.no_grad():
-            self.current_weights[0] = self.init_w['lesion']
-            self.current_weights[1] = self.init_w['lvo']
-            self.current_weights[2] = self.init_w['cow']
-        
-        self.running_loss = [0.0, 0.0, 0.0]
-        self.running_counts = 0
 
-    def update_epoch_stats(self, epoch: int):
-        """Cập nhật EMA Loss sau mỗi Epoch, sau đó refresh DWA weights 1 lần.
-        
-        [FIX Bug3] Nhận epoch làm tham số để _refresh_dwa_weights biết khi nào kích hoạt.
-        Tách hoàn toàn việc tính trọng số khỏi forward() — đảm bảo nhất quán DDP.
+        # ── Performance Gap Weighting (PGW) ────────────────────────────────────
+        # Thay thế DWA+: điều chỉnh trọng số dựa trên khoảng cách đến target metric,
+        # không phải tốc độ thay đổi loss — tránh failure mode "đầu hàng task khó".
+        pgw_cfg = t_cfg.get("pgw", {})
+        perf_tgt = pgw_cfg.get("performance_targets", {})
+        self.perf_targets = torch.tensor([
+            perf_tgt.get("lesion", 0.85),
+            perf_tgt.get("lvo",    0.50),
+            perf_tgt.get("cow",    0.90),
+        ])
+        self.pgw_temperature  = pgw_cfg.get("temperature", 0.5)
+        self.pgw_momentum     = pgw_cfg.get("momentum",    0.3)
+        self.pgw_w_min        = pgw_cfg.get("w_min",       0.1)
+        self.pgw_start_epoch  = pgw_cfg.get("start_epoch", 5)
+        self.n_tasks          = 3
+
+        # current_weights: khởi tạo từ initial_weights trong config
+        self.register_buffer('current_weights', torch.tensor([
+            self.init_w['lesion'],
+            self.init_w['lvo'],
+            self.init_w['cow'],
+        ]))
+        # Buffer lưu epoch cuối cùng được cập nhật (để biết PGW đã kích hoạt chưa)
+        self.register_buffer('_pgw_epoch', torch.tensor(-1, dtype=torch.long))
+
+    def update_weights_from_metrics(self, val_metrics: dict, epoch: int):
+        """Cập nhật current_weights theo Performance Gap Weighting (PGW).
+
+        Gọi 1 lần/epoch từ trainer.py (rank 0) SAU KHI validate() xong.
+        current_weights được cập nhật in-place → forward() chỉ đọc, không tính lại.
+
+        Nguyên lý:
+            gap_i = max(0, target_i - current_i)   # Khoảng cách còn lại đến mục tiêu
+            w_i   = softmax(gap / T) * N            # Task kém nhất → weight cao nhất
+            Sau clamp(w_min) → renormalize sum=N    # Giữ gradient scale ổn định
         """
-        if self.running_counts > 0:
-            # 1. Tính loss trung bình thực tế của epoch vừa qua
-            curr_avg = torch.tensor([l/self.running_counts for l in self.running_loss], device=self.ema_loss.device)
-            if dist.is_initialized():
-                dist.all_reduce(curr_avg, op=dist.ReduceOp.SUM)
-                curr_avg = curr_avg / dist.get_world_size()
-            
-            # 2. Cập nhật EMA Loss: L_ema = alpha * L_curr + (1 - alpha) * L_ema_old
-            self.prev_ema_loss.copy_(self.ema_loss)
-            self.ema_loss.copy_(self.alpha * curr_avg + (1.0 - self.alpha) * self.ema_loss)
-            
-            # Reset bộ đếm batch
-            self.running_loss, self.running_counts = [0.0, 0.0, 0.0], 0
+        if epoch < self.pgw_start_epoch:
+            return  # Giữ initial_weights trong giai đoạn warmup
 
-        # 3. Refresh DWA weights 1 lần/epoch (sau khi EMA đã được cập nhật)
-        self._refresh_dwa_weights(epoch)
+        current = torch.tensor([
+            val_metrics.get("dice_lesion", 0.0),
+            val_metrics.get("f1_lvo",    0.0) / 100.0,  # F1 → [0,1]
+            val_metrics.get("dice_cow",  0.0),
+        ], device=self.current_weights.device)
 
-    def _refresh_dwa_weights(self, epoch: int):
-        """Cập nhật current_weights theo DWA — chỉ gọi 1 lần/epoch từ update_epoch_stats().
+        target = self.perf_targets.to(current.device)
+        gap = torch.clamp(target - current, min=0.0)  # Chỉ tính gap âm (chưa đạt)
 
-        [FIX Bug3] Tách hoàn toàn khỏi forward() để:
-        - Tránh ghi đè state n_batches lần/epoch (sai momentum).
-        - Đảm bảo 2 GPU DDP dùng cùng trọng số (current_weights là buffer, không all_reduce
-          trong forward, nhưng nhất quán vì chỉ update 1 lần sau all_reduce EMA).
-        """
-        if epoch < self.dwa_start + 1:
-            return  # Giữ nguyên init_w cho đến khi đủ epoch
+        if gap.sum() < 1e-6:
+            # Tất cả task đã vượt target → dùng lại initial_weights (không có task nào cần ưu tiên đặc biệt)
+            init = torch.tensor(
+                [self.init_w['lesion'], self.init_w['lvo'], self.init_w['cow']],
+                device=self.current_weights.device
+            )
+            self.current_weights.copy_(init)
+            print(f"    [PGW] Tất cả task đạt target → reset về initial_weights")
+            return
 
-        # 1. Tỉ số tiến bộ: r > 1 = task đang giảm chậm hơn epoch trước
-        r = self.ema_loss / (self.prev_ema_loss + 1e-8)
+        # Softmax với temperature để chuyển gap thành phân phối trọng số
+        exp_gap    = torch.exp(gap / self.pgw_temperature)
+        raw_w      = (exp_gap / exp_gap.sum()) * self.n_tasks
 
-        # 2. Softmax với temperature → phân phối trọng số (tổng = 3.0)
-        exp_r = torch.exp((r - torch.max(r)) / self.temp)
-        new_weights = (exp_r / (exp_r.sum() + 1e-8)) * 3.0
+        # Momentum: tránh nhảy vọt giữa các epoch
+        blended_w  = self.pgw_momentum * self.current_weights + (1.0 - self.pgw_momentum) * raw_w
 
-        # 3. Momentum: dịch chuyển mượt mà, chống nhảy vọt
-        updated_weights = self.beta * self.current_weights + (1.0 - self.beta) * new_weights
-        self.current_weights.copy_(updated_weights)
+        # Clamp w_min: không task nào bị drop về 0 (CoW hỗ trợ decoder LVO)
+        clamped_w  = torch.clamp(blended_w, min=self.pgw_w_min)
+
+        # Renormalize: giữ tổng = N để gradient scale không trôi qua các epoch
+        final_w    = clamped_w * (self.n_tasks / clamped_w.sum())
+        self.current_weights.copy_(final_w)
+        self._pgw_epoch.fill_(epoch)
+
+        print(f"    [PGW] Ep {epoch}: Gap L={gap[0]:.3f} V={gap[1]:.3f} C={gap[2]:.3f} "
+              f"→ W: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f}")
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
         cur_ep = int(epoch)
-        # [FIX Bug3] Chỉ ĐỌC current_weights — không tính lại DWA mỗi batch.
-        # Trước dwa_start: current_weights = init_w (set trong __init__).
-        # Sau dwa_start:  current_weights được _refresh_dwa_weights() cập nhật 1 lần/epoch.
+        # Chỉ ĐỌC current_weights — được PGW cập nhật 1 lần/epoch từ update_weights_from_metrics().
+        # Trước pgw_start_epoch: current_weights = initial_weights (set trong __init__).
         w = self.current_weights.to(targets.device)
         p_l, p_v, p_c = w[0], w[1], w[2]
 
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
-            print(f"    [LOSS_POLICY] Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")
+            pgw_active = self._pgw_epoch.item() >= 0
+            tag = "[PGW]" if pgw_active else "[INIT]"
+            print(f"    [LOSS_POLICY]{tag} Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")
 
         # 1. Main Losses
         l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
@@ -286,9 +298,7 @@ class MultiTaskLoss(nn.Module):
         
         main_loss = loss_l + loss_v + loss_c
 
-        with torch.no_grad():
-            self.running_loss[0]+=l_l_m.item(); self.running_loss[1]+=l_v_m.item(); self.running_loss[2]+=l_c_m.item()
-            self.running_counts+=1
+        # (running_loss không còn dùng cho DWA — giữ lại để debug nếu cần)
 
         aux_loss = 0.0
         # 2. Auxiliary Losses (Multi-Level)

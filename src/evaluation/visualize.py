@@ -56,9 +56,46 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     plt.close()
 
 
+# ─── Smart Sample Selection ───────────────────────────────────────────────────
+
+def select_best_sample(candidates: list) -> dict:
+    """Chọn sample tốt nhất trong danh sách ứng viên để visualize.
+
+    Ưu tiên (giảm dần):
+        1. Có cả LVO và Lesion — đủ điều kiện so sánh đa chiều
+        2. Chỉ có LVO  — mục tiêu quan trọng nhất cần quan sát
+        3. Chỉ có Lesion
+        4. Không có nhãn nào (fallback)
+
+    Args:
+        candidates: List[dict], mỗi phần tử là
+            {"input": Tensor, "label": Tensor, "pred": dict, "path": str}
+    Returns:
+        candidate tốt nhất, hoặc None nếu danh sách rỗng
+    """
+    if not candidates:
+        return None
+
+    def score(c: dict) -> int:
+        lbl = c["label"]
+        has_lvo    = lbl[1].max().item() > 0.1
+        has_lesion = lbl[0].max().item() > 0.5
+        if has_lvo and has_lesion: return 3
+        if has_lvo:                return 2
+        if has_lesion:             return 1
+        return 0
+
+    best = max(candidates, key=score)
+    best_score = score(best)
+    label_desc = {3: "LVO+Lesion", 2: "LVO only", 1: "Lesion only", 0: "No label"}
+    print(f"    [VIS] Selected sample: {label_desc.get(best_score, '?')} — {best.get('path', '')}")
+    return best
+
+
 # ─── Prediction Overlay (Dashboard v4) ───────────────────────────────────────
 
 def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optional[str] = None, thresholds: dict = None, show: bool = False):
+
     if thresholds is None:
         thresholds = {"lesion": 0.45, "lvo": 0.05, "cow": 0.5}
 

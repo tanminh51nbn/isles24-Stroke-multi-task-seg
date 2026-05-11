@@ -10,9 +10,10 @@ from torch.utils.data import DataLoader
 from typing import Optional
 import math
 
-from compile.metrics import compute_all_metrics, finalize_lvo_f1
-from evaluation.visualize import overlay_predictions
+from compile.metrics import compute_all_metrics, finalize_lvo_f1, accumulate_patient_lvo_stats, finalize_patient_lvo_acc
+from evaluation.visualize import overlay_predictions, select_best_sample
 from data.fold_split import apply_sampling
+import os
 
 class Trainer:
     def __init__(self, model, train_loader: DataLoader, val_loader: DataLoader, train_files_original, loss_fn, optimizer, scheduler, config: dict, device: torch.device, rank: int = 0):
@@ -90,10 +91,12 @@ class Trainer:
         
         # [FIX] Global LVO stats: gom TP/FP/FN trên toàn Val set thay vì per-batch avg
         lvo_stats = {"tp": 0, "fp": 0, "fn": 0}
+        # Patient-level LVO stats (chỉ để log, không ảnh hưởng training)
+        patient_stats = {}
         
         vis_interval = self.config["training"]["logging"].get("visualize_every", 5)
         should_vis = (epoch % vis_interval == 0) and (self.rank == 0)
-        visualized = False
+        vis_candidates = []  # Thu thập ứng viên từ toàn bộ val loop
 
         for batch_idx, batch in enumerate(self.val_loader):
             inp = batch["input"].to(self.device, non_blocking=True)
@@ -117,15 +120,23 @@ class Trainer:
             sum_alcd += metrics["alcd_lesion"]
             n_b += 1
 
-            if should_vis and not visualized:
-                vis_dir = os.path.join(self.output_dir, self.config["training"]["checkpoint"]["dir"], "visualizations")
-                os.makedirs(vis_dir, exist_ok=True)
-                overlay_predictions(
-                    sample={"input": inp[0], "label": lbl[0], "path": batch["path"][0]},
-                    preds={k: v[0:1] for k, v in preds.items() if isinstance(v, torch.Tensor)},
-                    epoch=epoch, save_dir=vis_dir, thresholds=self.metric_weights.get("thresholds", {})
+            # Gom patient-level stats (chỉ rank 0)
+            if self.rank == 0:
+                paths = batch.get("path", [""] * inp.shape[0])
+                accumulate_patient_lvo_stats(
+                    preds["lvo"], lbl[:, 1:2], paths, patient_stats,
+                    threshold=self.metric_weights.get("thresholds", {}).get("lvo", 0.2)
                 )
-                visualized = True
+
+            # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)
+            if should_vis and self.rank == 0:
+                for i in range(inp.shape[0]):
+                    vis_candidates.append({
+                        "input": inp[i].cpu(),
+                        "label": lbl[i].cpu(),
+                        "pred":  {k: v[i:i+1].cpu() for k, v in preds.items() if isinstance(v, torch.Tensor)},
+                        "path":  batch.get("path", [""] * inp.shape[0])[i],
+                    })
 
         # [FIX] Đồng bộ TP/FP/FN qua DDP trước khi tính F1
         if dist.is_initialized():
@@ -152,6 +163,24 @@ class Trainer:
         af1_v = finalize_lvo_f1(lvo_stats)
         if self.rank == 0:
             print(f"    [LVO_GLOBAL] TP={lvo_stats['tp']} FP={lvo_stats['fp']} FN={lvo_stats['fn']} => F1={af1_v:.2f}%")
+            # Log patient-level accuracy
+            pat = finalize_patient_lvo_acc(
+                patient_stats,
+                threshold=self.metric_weights.get("thresholds", {}).get("lvo", 0.2)
+            )
+            print(f"    [LVO_PATIENT] Đúng: {pat['tp']+pat['tn']}/{pat['n']} bệnh nhân "
+                  f"({pat['accuracy']*100:.1f}%)  TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']}")
+            # Visualize sample tốt nhất (sau khi đã dưắt toàn bộ val loop)
+            if should_vis and vis_candidates:
+                best = select_best_sample(vis_candidates)
+                if best is not None:
+                    vis_dir = os.path.join(self.output_dir, self.config["training"]["checkpoint"]["dir"], "visualizations")
+                    os.makedirs(vis_dir, exist_ok=True)
+                    overlay_predictions(
+                        sample={"input": best["input"], "label": best["label"], "path": best["path"]},
+                        preds=best["pred"],
+                        epoch=epoch, save_dir=vis_dir, thresholds=self.metric_weights.get("thresholds", {})
+                    )
 
         w = self.metric_weights
         comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * (af1_v/100.0) + w["dice_cow_weight"] * ad_c)
@@ -201,5 +230,6 @@ class Trainer:
             if early_stopping and (epoch + 1) >= self.config["training"]["early_stopping"].get("start_epoch", 1):
                 if early_stopping(v_m["composite"]): break
             self.scheduler.step()
-            if hasattr(self.loss_fn, "update_epoch_stats"): self.loss_fn.update_epoch_stats(epoch)
+            if hasattr(self.loss_fn, "update_weights_from_metrics") and self.rank == 0:
+                self.loss_fn.update_weights_from_metrics(v_m, epoch)
         return self.history

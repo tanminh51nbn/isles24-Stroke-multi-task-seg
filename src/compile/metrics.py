@@ -8,6 +8,7 @@ Hệ quy chiếu chung với các đội vô địch:
     4. ALCD ↓     : Chênh lệch số lượng ổ tổn thương (Absolute Lesion Count Difference)
 """
 
+import os
 import torch
 import numpy as np
 from scipy.ndimage import label
@@ -92,6 +93,59 @@ def alcd_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0
         _, n_g = label(gt[i, 0])
         total_diff += abs(n_p - n_g)
     return total_diff / preds.shape[0]
+
+
+def accumulate_patient_lvo_stats(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    paths: list,
+    patient_stats: dict,
+    threshold: float = 0.5
+) -> None:
+    """Gom dự đoán LVO theo bệnh nhân (patient-level) từ batch.
+
+    Mỗi bệnh nhân được định danh bằng patient_id trích từ path.
+    patient_stats: dict, cập nhật in-place. Structure:
+        {patient_id: {"has_gt": bool, "max_pred": float}}
+    """
+    preds_prob = torch.sigmoid(logits).float().cpu()
+    gt_bin     = (targets > 0.1).float().cpu()
+
+    for i, path in enumerate(paths):
+        # Trích patient_id: thường là 2 thành phần đầu tiên của tên file
+        # Ví dụ: "sub-r001s001_ses-0001_slice012.npy" → "sub-r001s001"
+        fname   = os.path.basename(path).replace(".npy", "")
+        pid     = "_".join(fname.split("_")[:1])  # Lấy phần đầu trước dấu _
+
+        has_gt   = gt_bin[i, 0].max().item() > 0
+        max_pred = preds_prob[i, 0].max().item()
+
+        if pid not in patient_stats:
+            patient_stats[pid] = {"has_gt": has_gt, "max_pred": max_pred}
+        else:
+            # Một bệnh nhân có nhiều lát cắt: cập nhật max prediction
+            patient_stats[pid]["has_gt"]   = patient_stats[pid]["has_gt"] or has_gt
+            patient_stats[pid]["max_pred"] = max(
+                patient_stats[pid]["max_pred"], max_pred
+            )
+
+
+def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dict:
+    """Tính Accuracy, TP, FP, FN của LVO detection ở mức bệnh nhân.
+
+    Một bệnh nhân dương tính LVO nếu max_pred trên tất cả lát cắt > threshold.
+    Returns: {"accuracy": float, "tp": int, "fp": int, "fn": int, "tn": int, "n": int}
+    """
+    tp = fp = fn = tn = 0
+    for stats in patient_stats.values():
+        pred_pos = stats["max_pred"] > threshold
+        if stats["has_gt"] and pred_pos:     tp += 1
+        elif stats["has_gt"] and not pred_pos: fn += 1
+        elif not stats["has_gt"] and pred_pos: fp += 1
+        else:                                  tn += 1
+    n   = tp + fp + fn + tn
+    acc = (tp + tn) / max(n, 1)
+    return {"accuracy": acc, "tp": tp, "fp": fp, "fn": fn, "tn": tn, "n": n}
 
 
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None) -> dict:
