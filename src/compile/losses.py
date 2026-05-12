@@ -89,14 +89,17 @@ class ModifiedFocalLoss(nn.Module):
         pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred)
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
         
-        # 2. Positive & Negative Loss — công thức gốc CenterNet (Law & Deng, 2019)
-        num_pos  = pos_mask.sum().clamp(min=1.0)
+        # 2. Positive & Negative Loss
+        # [FIX T3.1] Không chia cho num_pos nữa vì số lượng pixel LVO biến động quá lớn (0 -> 50).
+        # Chia cho (batch_size * 10.0) để giữ loss và gradient scale ổn định, công bằng cho mọi batch.
         loss_pos = pos_loss.sum()
         loss_neg = neg_loss.sum()
-        loss = (loss_pos + loss_neg) / num_pos
+        batch_size = max(1.0, float(logits.size(0)))
+        loss = (loss_pos + loss_neg) / (batch_size * 10.0)
         
         if debug:
-            print(f"      [MFL_DEBUG] num_pos={int(pos_mask.sum().item())} "
+            num_pos_val = int(pos_mask.sum().item())
+            print(f"      [MFL_DEBUG] num_pos={num_pos_val} "
                   f"pos_loss={loss_pos.item():.4f} neg_loss={loss_neg.item():.4f} "
                   f"total={loss.item():.4f}")
 

@@ -224,15 +224,9 @@ class DecoupledPath(nn.Module):
         if guidance is not None and self.guidance_conv is not None:
             g = self.guidance_conv(F.interpolate(guidance, size=x.shape[2:], mode='bilinear', align_corners=False))
 
-            if self.task_name == "lvo" and epoch >= 20:
-                # [T2.2] Territory-Aware Attention: CoW map làm spatial gate cho LVO.
-                # Chỉ kích hoạt từ epoch 20 (khi CoW đã ổn định ~0.9 Dice) để tránh noise.
-                vessel_prob = torch.sigmoid(g)
-                vessel_mask = F.max_pool2d(vessel_prob, kernel_size=15, stride=1, padding=7)
-                x = x * (0.3 + 0.7 * vessel_mask)
-            else:
-                # Nhánh Lesion hoặc LVO (giai đoạn đầu): dùng additive guidance
-                x = x + g
+            # [FIX T3.2] Gỡ bỏ Spatial Gating (Masking) vì gây sốc gradient ở epoch 20 (Train Loss vọt lên 60).
+            # Quay lại dùng Additive Guidance an toàn, SE Block (ChannelAttention) trong heads.py sẽ tự lo việc lọc nhiễu.
+            x = x + g
 
         return x, [aux4, aux3, aux2, aux1]
 
