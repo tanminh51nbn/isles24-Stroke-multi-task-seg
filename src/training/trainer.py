@@ -66,6 +66,16 @@ class Trainer:
                         elif "cow" in n.lower(): gn["c"] += val
                 print(f"    [GRAD_DEBUG] B{batch_idx} Norms: LVO={gn['v']:.4f}, Lesion={gn['l']:.4f}, CoW={gn['c']:.4f}")
 
+            # [FIX 1.3] Per-task gradient clip cho LVO HEAD trước global clip.
+            # LVO gradient spike 200-986 trong log trước gây LVO head "reset" định kỳ.
+            # Clip LVO params riêng → rồi mới global clip toàn model.
+            raw = self.model.module if hasattr(self.model, "module") else self.model
+            lvo_params = [p for n, p in raw.named_parameters()
+                          if "lvo" in n.lower() and p.grad is not None]
+            if lvo_params:
+                lvo_norm = nn.utils.clip_grad_norm_(lvo_params, max_norm=10.0)
+                if lvo_norm > 50.0 and self.rank == 0:
+                    print(f"    [WARN] LVO grad spike: {lvo_norm:.1f} → clipped to 10.0")
             nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
             self.scaler.step(self.optimizer)
             self.scaler.update()

@@ -257,23 +257,46 @@ class MultiTaskLoss(nn.Module):
             print(f"    [PGW] Tất cả task đạt target → reset về initial_weights")
             return
 
-        # Softmax với temperature để chuyển gap thành phân phối trọng số
-        exp_gap    = torch.exp(gap / self.pgw_temperature)
-        raw_w      = (exp_gap / exp_gap.sum()) * self.n_tasks
+        # [FIX 1.2] Tách task ĐÃ đạt target (gap≈0) và CHƯA đạt.
+        # Task đã đạt → giữ cố định ở w_min, KHÔNG tham gia softmax.
+        # Ngăn CoW nhận weight 0.57 khi gap_C≈0.
+        active_mask = gap > 1e-3
+        n_active   = int(active_mask.sum().item())
+        n_inactive = self.n_tasks - n_active
 
-        # Momentum: tránh nhảy vọt giữa các epoch
-        blended_w  = self.pgw_momentum * self.current_weights + (1.0 - self.pgw_momentum) * raw_w
+        if n_active == 0:
+            init = torch.tensor(
+                [self.init_w['lesion'], self.init_w['lvo'], self.init_w['cow']],
+                device=self.current_weights.device
+            )
+            self.current_weights.copy_(init)
+            return
 
-        # Clamp w_min: không task nào bị drop về 0 (CoW hỗ trợ decoder LVO)
-        clamped_w  = torch.clamp(blended_w, min=self.pgw_w_min)
+        # Softmax chỉ trên active tasks; budget = N - n_inactive * w_min
+        weight_budget = self.n_tasks - n_inactive * self.pgw_w_min
+        active_gap    = gap * active_mask.float()
+        exp_gap       = torch.exp(active_gap / self.pgw_temperature) * active_mask.float()
+        raw_w = torch.where(
+            active_mask,
+            (exp_gap / (exp_gap.sum() + 1e-8)) * weight_budget,
+            torch.full_like(gap, self.pgw_w_min)
+        )
 
-        # Renormalize: giữ tổng = N để gradient scale không trôi qua các epoch
-        final_w    = clamped_w * (self.n_tasks / clamped_w.sum())
+        # Momentum + clamp + renormalize
+        blended_w = self.pgw_momentum * self.current_weights + (1.0 - self.pgw_momentum) * raw_w
+        clamped_w = torch.clamp(blended_w, min=self.pgw_w_min)
+        final_w   = clamped_w * (self.n_tasks / clamped_w.sum())
         self.current_weights.copy_(final_w)
         self._pgw_epoch.fill_(epoch)
 
+        fixed_tag = "".join([
+            "L" if not active_mask[0] else "",
+            "V" if not active_mask[1] else "",
+            "C" if not active_mask[2] else "",
+        ]) or "none"
         print(f"    [PGW] Ep {epoch}: Gap L={gap[0]:.3f} V={gap[1]:.3f} C={gap[2]:.3f} "
-              f"→ W: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f}")
+              f"→ W: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f} "
+              f"[fixed@w_min: {fixed_tag}]")
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
         cur_ep = int(epoch)
