@@ -9,18 +9,6 @@ Mỗi Head tự học reweight các kênh feature map:
     - Lesion Head: Học giảm kênh mạch máu, tăng kênh Tmax/thiếu máu
     - CoW Head:    Học tăng kênh CTA cản quang (mạch máu sáng)
     - LVO Head:    Học tập trung vào kênh điểm tắc nghến
-"""
-heads.py — Multi-Task Segmentation Heads
-
-3 heads độc lập (Lesion, LVO, CoW), mỗi head là:
-    [SE Block] → Conv3x3 → BN → ReLU → SpatialDropout2d → Conv1x1 → Raw Logit
-
-[FIX 2] Thêm ChannelAttention (SE Block) trước mỗi Head.
-Mỗi Head tự học reweight các kênh feature map:
-    - Lesion Head: Học giảm kênh mạch máu, tăng kênh Tmax/thiếu máu
-    - CoW Head:    Học tăng kênh CTA cản quang (mạch máu sáng)
-    - LVO Head:    Học tập trung vào kênh điểm tắc nghến
-
 Output là raw logits (KHÔNG sigmoid).
 BCEWithLogitsLoss và FocalTversky tự tích hợp sigmoid để đảm bảo
 numerical stability (tránh log(0)).
