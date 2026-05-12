@@ -75,11 +75,14 @@ class ModifiedFocalLoss(nn.Module):
         peaks = blurred.view(blurred.size(0), -1).max(dim=1)[0].view(-1, 1, 1, 1)
         return blurred / peaks.clamp(min=1e-6)
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, sigma: float = 0.0) -> torch.Tensor:
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, sigma: float = 0.0, debug: bool = False) -> torch.Tensor:
         pred = torch.sigmoid(logits.float()).clamp(min=self.eps, max=1.0 - self.eps)
         heatmap_gt = self._apply_gaussian_blur(targets, sigma) if sigma > 0 else targets
         
-        pos_mask = (heatmap_gt == 1.0).float()
+        # [FIX 1.1] Dùng >= 0.99 thay vì == 1.0 để tránh floating point miss.
+        # Sau Gaussian blur, peak / peak = 1.0 nhưng float32 có thể trả về 0.9999998.
+        # Khi pos_mask rỗng: num_pos=0 → clamp(1) → model chỉ học neg_loss → LVO collapse.
+        pos_mask = (heatmap_gt >= 0.99).float()
         neg_mask = 1.0 - pos_mask
         
         # 1. Tính toán loss thô từng pixel
@@ -87,13 +90,16 @@ class ModifiedFocalLoss(nn.Module):
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
         
         # 2. Positive & Negative Loss — công thức gốc CenterNet (Law & Deng, 2019)
-        # Tổng cả hai nhánh chia chung cho num_pos để scale đồng nhất.
-        # Modified Focal Loss đã là "soft miner" tự nhiên qua (1-heatmap)^beta * pred^alpha,
-        # không cần Top-K — Top-K chỉ khiến 99%+ pixel âm tính mất gradient (FP không bị phạt).
-        num_pos   = pos_mask.sum().clamp(min=1.0)
-        loss_pos  = pos_loss.sum()
-        loss_neg  = neg_loss.sum()
+        num_pos  = pos_mask.sum().clamp(min=1.0)
+        loss_pos = pos_loss.sum()
+        loss_neg = neg_loss.sum()
         loss = (loss_pos + loss_neg) / num_pos
+        
+        if debug:
+            print(f"      [MFL_DEBUG] num_pos={int(pos_mask.sum().item())} "
+                  f"pos_loss={loss_pos.item():.4f} neg_loss={loss_neg.item():.4f} "
+                  f"total={loss.item():.4f}")
+
         return torch.nan_to_num(loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
 
 # ─── LVO Loss ────────────────────────────────────────────────────────────────
@@ -282,8 +288,9 @@ class MultiTaskLoss(nn.Module):
             print(f"    [LOSS_POLICY]{tag} Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")
 
         # 1. Main Losses
+        _debug_lvo = (kwargs.get('batch_idx', -1) == 0) and (not dist.is_initialized() or dist.get_rank() == 0)
         l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
-        l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=4.0)
+        l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=4.0, debug=_debug_lvo)
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
         # 2. Additional Task-specific Losses (Boundary & Topology)
