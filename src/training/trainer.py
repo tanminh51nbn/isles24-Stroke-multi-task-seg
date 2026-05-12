@@ -37,6 +37,7 @@ class Trainer:
     def train_one_epoch(self, epoch: int) -> dict:
         self.model.train()
         total_loss, n_batches, nan_batches = 0.0, 0, 0
+        max_lvo_spike = 0.0  # [FIX 1.3] Track spike lớn nhất, log 1 lần / epoch
         print(f"\nStarting Epoch {epoch + 1}:")
         
         for batch_idx, batch in enumerate(self.train_loader):
@@ -74,8 +75,9 @@ class Trainer:
                           if "lvo" in n.lower() and p.grad is not None]
             if lvo_params:
                 lvo_norm = nn.utils.clip_grad_norm_(lvo_params, max_norm=10.0)
-                if lvo_norm > 50.0 and self.rank == 0:
-                    print(f"    [WARN] LVO grad spike: {lvo_norm:.1f} → clipped to 10.0")
+                lvo_val = lvo_norm.item() if torch.is_tensor(lvo_norm) else float(lvo_norm)
+                if lvo_val > max_lvo_spike:
+                    max_lvo_spike = lvo_val
             nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -83,6 +85,11 @@ class Trainer:
             total_loss += losses["total"].item()
             n_batches += 1
 
+        # [FIX 1.3] Log spike LVO 1 lần / epoch (chỉ khi > 100 — spike thực sự nguy hiểm)
+        if self.rank == 0 and max_lvo_spike > 100.0:
+            import math
+            spike_str = "inf" if math.isinf(max_lvo_spike) else f"{max_lvo_spike:.1f}"
+            print(f"    [WARN] LVO max grad spike: {spike_str} → clipped to 10.0")
         avg_loss = total_loss / max(n_batches, 1)
         if dist.is_initialized():
             sync = torch.tensor([total_loss, float(n_batches)], device=self.device)
