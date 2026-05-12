@@ -7,8 +7,8 @@
 loss:
   lesion:
     type: "tversky"
-    alpha: 0.3
-    beta: 0.7
+    alpha: 0.4          # [T2.3] Tăng FP penalty: 0.3 → 0.4
+    beta: 0.6           # [T2.3] Giảm FN weight: 0.7 → 0.6
     weight: 0.35
     hd_weight: 0.25
 
@@ -17,6 +17,9 @@ loss:
     mfl_alpha: 2.0
     mfl_beta: 4.0
     weight: 0.5
+    # [T2.1] LVO Binary Classification Branch
+    lvo_cls_weight: 0.3       # Tỷ lệ BCE classification trong tổng LVO loss
+    lvo_cls_pos_weight: 5.0   # Penalty FN (bù imbalance: ~80% slice không có LVO)
 
   cow:
     type: "cl_tversky"
@@ -35,7 +38,7 @@ composite_score:
   dice_cow_weight: 0.1
   thresholds:
     lesion: 0.45
-    lvo: 0.2 # Nâng ngưỡng để AI học cách dự đoán LVO sắc nét, giảm nhiễu
+    lvo: 0.15   # [T2.1] Hạ ngưỡng LVO: 0.2→0.15 — nhạy hơn sau khi có cls branch guide
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
@@ -54,9 +57,9 @@ scheduler:
 
 # ── Training ────────────────────────────────────────────────────
 training:
-  epochs: 100 # Nâng lên 100 để lộ trình Curriculum có đủ thời gian tinh chỉnh
+  epochs: 100
   amp: true
-  grad_clip_norm: 1.0
+  grad_clip_norm: 2.0   # [T2] Tăng 1.0→2.0: effective LVO clip 0.87→1.74 — LVO có đủ gradient space
   freeze_encoder_epochs: 20
 
   # Cơ chế dìu nhau đi (DWA+)

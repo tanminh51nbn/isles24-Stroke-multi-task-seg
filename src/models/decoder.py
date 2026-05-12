@@ -190,6 +190,7 @@ class DecoupledPath(nn.Module):
     def __init__(self, config: dict, task_name: str, skip_channels: List[int], aux_ch: int = 1, active_aux_levels: List[bool] = [True, True, True, True]):
         super().__init__()
         self.active_aux_levels = active_aux_levels
+        self.task_name = task_name
         dec_ch = config["decoder"]["out_channels"]
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
@@ -206,7 +207,7 @@ class DecoupledPath(nn.Module):
         # [NEW] Cầu nối tri thức: Tiếp nhận thông tin từ các nhánh khác
         self.guidance_conv = nn.Conv2d(final_ch, final_ch, kernel_size=1) if task_name != "cow" else None
 
-    def forward(self, x_bottleneck, cta_skips, perf_skips, guidance: Optional[torch.Tensor] = None):
+    def forward(self, x_bottleneck, cta_skips, perf_skips, guidance: Optional[torch.Tensor] = None, epoch: int = 0):
         # skips: s1..s5
         s1, s2, s3, s4, _ = cta_skips
         d1, d2, d3, d4, _ = perf_skips
@@ -221,12 +222,18 @@ class DecoupledPath(nn.Module):
         
         # Cộng thêm tri thức từ nhánh khác nếu có (Guidance)
         if guidance is not None and self.guidance_conv is not None:
-            # Nếu guidance có nhiều kênh (ví dụ từ nhiều nhánh), gộp về đúng số kênh final_ch
-            if guidance.shape[1] != x.shape[1]:
-                # Dùng pool hoặc conv 1x1 để khớp kênh
-                pass 
-            x = x + self.guidance_conv(F.interpolate(guidance, size=x.shape[2:], mode='bilinear'))
-        
+            g = self.guidance_conv(F.interpolate(guidance, size=x.shape[2:], mode='bilinear', align_corners=False))
+
+            if self.task_name == "lvo" and epoch >= 20:
+                # [T2.2] Territory-Aware Attention: CoW map làm spatial gate cho LVO.
+                # Chỉ kích hoạt từ epoch 20 (khi CoW đã ổn định ~0.9 Dice) để tránh noise.
+                vessel_prob = torch.sigmoid(g)
+                vessel_mask = F.max_pool2d(vessel_prob, kernel_size=15, stride=1, padding=7)
+                x = x * (0.3 + 0.7 * vessel_mask)
+            else:
+                # Nhánh Lesion hoặc LVO (giai đoạn đầu): dùng additive guidance
+                x = x + g
+
         return x, [aux4, aux3, aux2, aux1]
 
 
@@ -256,7 +263,7 @@ class MultiHeadDecoder(nn.Module):
         self.lvo_path    = DecoupledPath(config, "lvo", skips, aux_ch=1, active_aux_levels=[False, False, True, True])
         self.cow_path    = DecoupledPath(config, "cow", skips, aux_ch=1, active_aux_levels=[True, True, True, True])
 
-    def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor]):
+    def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor], epoch: int = 0):
         s5, d5 = cta_skips[4], perf_skips[4]
 
         # 1. Shared Bottleneck
@@ -265,15 +272,15 @@ class MultiHeadDecoder(nn.Module):
         
         # 2. DÒNG CHẢY TRI THỨC (Knowledge Cascade)
         # Bước 1: Nhánh CoW chạy trước (Xây dựng bản đồ giải phẫu)
-        f_cow, cow_auxs = self.cow_path(x_bottleneck, cta_skips, perf_skips)
+        f_cow, cow_auxs = self.cow_path(x_bottleneck, cta_skips, perf_skips, epoch=epoch)
         
         # Bước 2: Nhánh LVO học từ CoW (Tìm điểm tắc trên mạch máu)
-        f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow)
+        f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow, epoch=epoch)
         
         # Bước 3: Nhánh Lesion học từ cả hai (Tìm vùng tổn thương dựa trên mạch máu và điểm tắc)
         # Gộp thông tin từ CoW và LVO để dẫn đường cho Lesion
         guidance_for_lesion = f_cow + f_lvo 
-        f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lesion)
+        f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lesion, epoch=epoch)
 
         # Trả về Dictionary AUX để losses.py xử lý chọn lọc
         aux_masks = {

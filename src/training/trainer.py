@@ -47,7 +47,7 @@ class Trainer:
 
             self.optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
-                preds = self.model(inp)
+                preds = self.model(inp, epoch=epoch)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
 
             if not torch.isfinite(losses["total"]):
@@ -115,13 +115,13 @@ class Trainer:
         should_vis = (epoch % vis_interval == 0) and (self.rank == 0)
         vis_candidates = []  # Thu thập ứng viên từ toàn bộ val loop
 
-        for batch_idx, batch in enumerate(self.val_loader):
+        for batch in self.val_loader:
             inp = batch["input"].to(self.device, non_blocking=True)
             lbl = batch["label"].to(self.device, non_blocking=True)
             if not torch.isfinite(inp).all(): continue
 
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
-                preds = self.model(inp)
+                preds = self.model(inp, epoch=epoch)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=-1)
 
             if not torch.isfinite(losses["total"]): continue

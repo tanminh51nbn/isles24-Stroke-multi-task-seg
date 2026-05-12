@@ -189,6 +189,12 @@ class MultiTaskLoss(nn.Module):
             alpha=l_v_cfg.get("mfl_alpha", 2.0),
             beta=l_v_cfg.get("mfl_beta", 4.0)
         )
+        # [T2.1] LVO Binary Classification Loss
+        lvo_cls_pos_w = l_v_cfg.get("lvo_cls_pos_weight", 5.0)
+        self.lvo_cls_loss_fn = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor([lvo_cls_pos_w])
+        )
+        self.lvo_cls_w = l_v_cfg.get("lvo_cls_weight", 0.3)  # Tỷ lệ cls trong tổng LVO loss
 
         # 3. CoW Task
         self.cow_main_loss = FocalTverskyLoss(
@@ -316,16 +322,33 @@ class MultiTaskLoss(nn.Module):
         l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=4.0, debug=_debug_lvo)
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
+        # [T2.1] LVO Binary Classification Loss
+        # has_lvo = 1 nếu slice này có bất kỳ pixel LVO GT nào (global max > 0)
+        has_lvo = (targets[:, 1:2].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
+        lvo_cls_logit = preds.get('lvo_cls', None)
+        if lvo_cls_logit is not None:
+            lvo_cls_logit_flat = lvo_cls_logit.view(-1)  # (B,)
+            pos_w = self.lvo_cls_loss_fn.pos_weight.to(targets.device)
+            l_v_cls = nn.functional.binary_cross_entropy_with_logits(
+                lvo_cls_logit_flat, has_lvo,
+                pos_weight=pos_w
+            )
+            l_v_m = (1.0 - self.lvo_cls_w) * l_v_m + self.lvo_cls_w * l_v_cls
+
         # 2. Additional Task-specific Losses (Boundary & Topology)
         l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4])
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3])
 
-        # 3. Final Task Weighting (Weighted Average + DWA+)
-        # [FORMULA UPDATE]: Sử dụng Weighted Average (1-w)*Main + w*Aux để cân bằng Scale
-        loss_l = ((1.0 - self.lesion_hd_w) * l_l_m + self.lesion_hd_w * l_l_hd) * p_l
+        # [T2.3] Asymmetric FP penalty nhỏ cho Lesion (phạt nặng pixel FP confident)
+        probs_l = torch.sigmoid(preds['lesion'].float())
+        afl_fp = -(1 - targets[:, 0:1]) * torch.pow(probs_l, 2.0) * torch.log(1 - probs_l + 1e-6)
+        l_l_afl = 0.1 * afl_fp.mean()
+
+        # 3. Final Task Weighting
+        loss_l = ((1.0 - self.lesion_hd_w) * l_l_m + self.lesion_hd_w * l_l_hd) * p_l + l_l_afl
         loss_v = l_v_m * p_v
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
-        
+
         main_loss = loss_l + loss_v + loss_c
 
         # (running_loss không còn dùng cho DWA — giữ lại để debug nếu cần)

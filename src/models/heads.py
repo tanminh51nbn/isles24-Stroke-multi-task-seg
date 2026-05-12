@@ -9,6 +9,17 @@ Mỗi Head tự học reweight các kênh feature map:
     - Lesion Head: Học giảm kênh mạch máu, tăng kênh Tmax/thiếu máu
     - CoW Head:    Học tăng kênh CTA cản quang (mạch máu sáng)
     - LVO Head:    Học tập trung vào kênh điểm tắc nghến
+"""
+heads.py — Multi-Task Segmentation Heads
+
+3 heads độc lập (Lesion, LVO, CoW), mỗi head là:
+    [SE Block] → Conv3x3 → BN → ReLU → SpatialDropout2d → Conv1x1 → Raw Logit
+
+[FIX 2] Thêm ChannelAttention (SE Block) trước mỗi Head.
+Mỗi Head tự học reweight các kênh feature map:
+    - Lesion Head: Học giảm kênh mạch máu, tăng kênh Tmax/thiếu máu
+    - CoW Head:    Học tăng kênh CTA cản quang (mạch máu sáng)
+    - LVO Head:    Học tập trung vào kênh điểm tắc nghến
 
 Output là raw logits (KHÔNG sigmoid).
 BCEWithLogitsLoss và FocalTversky tự tích hợp sigmoid để đảm bảo
@@ -46,6 +57,30 @@ class ChannelAttention(nn.Module):
         # w: (B, C) → reshape → (B, C, 1, 1)
         w = self.fc(x).view(x.shape[0], x.shape[1], 1, 1)
         return x * w  # Scale channel-wise
+
+
+# [T2.1] LVO Binary Classification Branch
+# Cho model học task dễ hơn trước: "có LVO không?" (binary)
+# Signal này dày đặc hơn heatmap loss (BCE trên 1 scalar, không phụ thuộc num_pos)
+class LVOClassificationHead(nn.Module):
+    """Global Average Pooling → FC → sigmoid → scalar per batch item."""
+    def __init__(self, in_ch: int):
+        super().__init__()
+        mid_ch = max(16, in_ch // 4)
+        self.cls = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),   # (B, C, 1, 1)
+            nn.Flatten(),              # (B, C)
+            nn.Linear(in_ch, mid_ch),
+            nn.GELU(),
+            nn.Dropout(p=0.3),
+            nn.Linear(mid_ch, 1),     # (B, 1)
+        )
+        # Bias init: pi=0.20 → bias = -log((1-0.2)/0.2) = -1.386
+        # Những slide có LVO chiếm ~20% tổng số slice
+        nn.init.constant_(self.cls[-1].bias, -1.386)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.cls(x)  # (B, 1) raw logit
 
 
 class ResidualBlock(nn.Module):
@@ -100,14 +135,13 @@ class MultiTaskHeads(nn.Module):
         self.lvo_head    = SegmentationHead(in_ch, out_ch=1, dropout=dropout)
         self.cow_head    = SegmentationHead(in_ch, out_ch=1, dropout=dropout)
 
+        # [T2.1] LVO Classification Head (binary: có LVO hay không)
+        self.lvo_cls_head = LVOClassificationHead(in_ch)
+
         # [QUAN TRỌNG] Bias Initialization (Chống sụp đổ màn hình)
-        # Ép các Head khởi tạo dự đoán nghiêng về nền (Background = 0) thay vì 50/50.
-        # Nếu không có cái này, ở Epoch 1 mô hình sẽ có xu hướng đoán 1 tràn lan (Màn hình xanh CoW).
-        # Công thức: bias = -log((1 - pi) / pi)
-        
-        # 1. LVO (Rất hiếm, Heatmap): pi = 0.01 => bias = -4.595
-        # Dập tắt "Quả bom LVO Loss = 1500" ngay từ Batch 1.
-        nn.init.constant_(self.lvo_head.conv_out.bias, -4.595)
+        # 1. LVO: [T2] Đổi bias -4.595 → -2.0: σ(-2.0)=0.12
+        # Bias cũ (σ=0.01) quá conservative, model không tỉnh nổi sau 70 epoch
+        nn.init.constant_(self.lvo_head.conv_out.bias, -2.0)
         
         # 2. CoW (Hiếm, mạch mảnh): pi = 0.01 => bias = -4.595
         # Ngăn chặn hoàn toàn hiện tượng "Màn hình xanh lá" (đoán toàn bộ ảnh là mạch máu)
@@ -122,10 +156,12 @@ class MultiTaskHeads(nn.Module):
             features: Dictionary chứa feature maps từ MultiHeadDecoder
                       {"lesion": Tensor, "lvo": Tensor, "cow": Tensor}
         Returns:
-            Dictionary chứa predicted masks/logits
+            Dictionary chứa predicted masks/logits + lvo_cls scalar
         """
+        f_lvo = features["lvo"]
         return {
-            "lesion": self.lesion_head(features["lesion"]),
-            "lvo":    self.lvo_head(features["lvo"]),
-            "cow":    self.cow_head(features["cow"]),
+            "lesion":  self.lesion_head(features["lesion"]),
+            "lvo":     self.lvo_head(f_lvo),
+            "cow":     self.cow_head(features["cow"]),
+            "lvo_cls": self.lvo_cls_head(f_lvo),  # [T2.1] (B, 1) binary cls logit
         }

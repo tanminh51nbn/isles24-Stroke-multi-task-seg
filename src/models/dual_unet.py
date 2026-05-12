@@ -67,10 +67,11 @@ class DualEncoderUNet(nn.Module):
 
     # ── Forward ──────────────────────────────────────────────────────────────
 
-    def forward(self, x: torch.Tensor) -> dict:
+    def forward(self, x: torch.Tensor, epoch: int = 0) -> dict:
         """
         Args:
             x: Tensor (B, 18, H, W)
+            epoch: Epoch hiện tại (để điều khiển gating)
         Returns:
             dict: {
                 'lesion': Tensor, 'lvo': Tensor, 'cow': Tensor,
@@ -86,7 +87,7 @@ class DualEncoderUNet(nn.Module):
         perf_skips = self.perf_encoder(perf_input)
 
         # Decode với Iterative Feedback
-        features, aux_masks, g_maps = self.decoder(cta_skips, perf_skips)
+        features, aux_masks, g_maps = self.decoder(cta_skips, perf_skips, epoch=epoch)
 
         # Multi-task output (Main heads)
         out = self.heads(features)
