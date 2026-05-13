@@ -90,18 +90,23 @@ class ModifiedFocalLoss(nn.Module):
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
         
         # 2. Positive & Negative Loss
-        # [FIX T3.1] Không chia cho num_pos nữa vì số lượng pixel LVO biến động quá lớn (0 -> 50).
-        # Chia cho (batch_size * 10.0) để giữ loss và gradient scale ổn định, công bằng cho mọi batch.
-        loss_pos = pos_loss.sum()
+        # [FIX T4] Phục sinh MFL theo cơ chế "Cân bằng lực" (Force Balancing).
+        # - Nhân 20x cho pos_loss để bù đắp sự chênh lệch diện tích (64px vs 1.000.000px).
+        # - Chia cho num_objects (số lát có bệnh) để tập trung gradient vào đúng mục tiêu.
+        # - Chia cho 400.0 để đưa giá trị Loss về vùng an toàn (~10.0), tránh gây cháy gradient.
+        loss_pos = pos_loss.sum() * 20.0
         loss_neg = neg_loss.sum()
-        batch_size = max(1.0, float(logits.size(0)))
-        loss = (loss_pos + loss_neg) / (batch_size * 10.0)
+        
+        # Đếm số lượng lát cắt (slice) có chứa LVO trong batch hiện tại
+        num_objects = (targets.amax(dim=(1, 2, 3)) > 0).sum().clamp(min=1.0)
+        
+        loss = (loss_pos + loss_neg) / (num_objects * 400.0)
         
         if debug:
             num_pos_val = int(pos_mask.sum().item())
-            print(f"      [MFL_DEBUG] num_pos={num_pos_val} "
-                  f"pos_loss={loss_pos.item():.4f} neg_loss={loss_neg.item():.4f} "
-                  f"total={loss.item():.4f}")
+            num_obj_val = int(num_objects.item())
+            print(f"      [MFL_DEBUG] objs={num_obj_val} pos_raw={loss_pos.item()/20:.2f} "
+                  f"neg_raw={loss_neg.item():.2f} total={loss.item():.4f}")
 
         return torch.nan_to_num(loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
 
