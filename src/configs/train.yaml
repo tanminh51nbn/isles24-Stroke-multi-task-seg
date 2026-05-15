@@ -18,7 +18,7 @@ loss:
     mfl_beta: 4.0
     weight: 0.5
     # [T2.1] LVO Binary Classification Branch
-    lvo_cls_weight: 0.3       # Tỷ lệ BCE classification trong tổng LVO loss
+    lvo_cls_weight: 0.5       # Tỷ lệ BCE classification trong tổng LVO loss
     lvo_cls_pos_weight: 5.0   # Penalty FN (bù imbalance: ~80% slice không có LVO)
 
   cow:

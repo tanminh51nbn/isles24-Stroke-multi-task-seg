@@ -172,7 +172,6 @@ class ResNet50Encoder(nn.Module):
 
 
 # ─── DenseNet-121 Encoder (Nhánh Perfusion — 12 kênh) ───────────────────────
-
 class DenseNet121Encoder(nn.Module):
     """
     DenseNet-121 encoder trích xuất 5 cấp skip features cho UNet decoder.

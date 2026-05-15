@@ -77,36 +77,39 @@ class ModifiedFocalLoss(nn.Module):
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor, sigma: float = 0.0, debug: bool = False) -> torch.Tensor:
         pred = torch.sigmoid(logits.float()).clamp(min=self.eps, max=1.0 - self.eps)
-        heatmap_gt = self._apply_gaussian_blur(targets, sigma) if sigma > 0 else targets
         
-        # [FIX 1.1] Dùng >= 0.99 thay vì == 1.0 để tránh floating point miss.
-        # Sau Gaussian blur, peak / peak = 1.0 nhưng float32 có thể trả về 0.9999998.
-        # Khi pos_mask rỗng: num_pos=0 → clamp(1) → model chỉ học neg_loss → LVO collapse.
-        pos_mask = (heatmap_gt >= 0.99).float()
+        # 1. Vùng Đỏ (Nhãn gốc) và Vùng Nền (Tất cả còn lại)
+        # Sử dụng nguyên gốc targets thay vì đỉnh của heatmap
+        pos_mask = (targets >= 0.5).float()
         neg_mask = 1.0 - pos_mask
         
-        # 1. Tính toán loss thô từng pixel
+        # 2. Bản đồ Không gian (Heatmap lan tỏa)
+        heatmap_gt = self._apply_gaussian_blur(targets, sigma) if sigma > 0 else targets
+        
+        # 3. Tính Lực Thưởng và Lực Phạt
+        # Lực phạt (neg_loss) bị triệt tiêu bằng (1 - heatmap_gt)^beta khi tiến gần Vùng Đỏ
         pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred)
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
         
-        # 2. Positive & Negative Loss
-        # [FIX T4] Phục sinh MFL theo cơ chế "Cân bằng lực" (Force Balancing).
-        # - Nhân 20x cho pos_loss để bù đắp sự chênh lệch diện tích (64px vs 1.000.000px).
-        # - Chia cho num_objects (số lát có bệnh) để tập trung gradient vào đúng mục tiêu.
-        # - Chia cho 400.0 để đưa giá trị Loss về vùng an toàn (~10.0), tránh gây cháy gradient.
-        loss_pos = pos_loss.sum() * 20.0
+        # 4. Đòn bẩy chống khôn lỏi (Dynamic Force Balancing)
+        num_pos = pos_mask.sum().clamp(min=1.0)
+        num_neg = neg_mask.sum().clamp(min=1.0)
+        
+        # Tỷ lệ diện tích Nền / LVO (Giới hạn max=1000 để tránh nổ gradient khi LVO quá bé)
+        weight_pos = (num_neg / num_pos).clamp(max=1000.0)
+        
+        # Bơm sức mạnh cho Vùng Đỏ bằng đòn bẩy
+        loss_pos = pos_loss.sum() * weight_pos
         loss_neg = neg_loss.sum()
         
-        # Đếm số lượng lát cắt (slice) có chứa LVO trong batch hiện tại
-        num_objects = (targets.amax(dim=(1, 2, 3)) > 0).sum().clamp(min=1.0)
-        
-        loss = (loss_pos + loss_neg) / (num_objects * 400.0)
+        # Chia trung bình có trọng số để loss scale ổn định [0, 1]
+        loss = (loss_pos + loss_neg) / (num_neg + num_pos * weight_pos)
         
         if debug:
             num_pos_val = int(pos_mask.sum().item())
-            num_obj_val = int(num_objects.item())
-            print(f"      [MFL_DEBUG] objs={num_obj_val} pos_raw={loss_pos.item()/20:.2f} "
-                  f"neg_raw={loss_neg.item():.2f} total={loss.item():.4f}")
+            weight_val = weight_pos.item()
+            print(f"      [MFL_DEBUG] pos_px={num_pos_val} weight_pos={weight_val:.1f} "
+                  f"pos_loss={loss_pos.item():.2f} neg_loss={loss_neg.item():.2f} total={loss.item():.4f}")
 
         return torch.nan_to_num(loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
 
