@@ -187,7 +187,7 @@ class DecoupledPath(nn.Module):
     """
     Một nhánh Decoder chuyên biệt đi từ level 4 đến level 1.
     """
-    def __init__(self, config: dict, task_name: str, skip_channels: List[int], aux_ch: int = 1, active_aux_levels: List[bool] = [True, True, True, True]):
+    def __init__(self, config: dict, task_name: str, skip_channels: List[int], aux_ch: int = 1, active_aux_levels: List[bool] = [True, True, True, True], guidance_ch: int = 0):
         super().__init__()
         self.active_aux_levels = active_aux_levels
         self.task_name = task_name
@@ -204,8 +204,15 @@ class DecoupledPath(nn.Module):
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
         
-        # [NEW] Cầu nối tri thức: Tiếp nhận thông tin từ các nhánh khác
-        self.guidance_conv = nn.Conv2d(final_ch, final_ch, kernel_size=1) if task_name != "cow" else None
+        # [NEW] Cầu nối tri thức: Tiếp nhận thông tin từ các nhánh khác bằng Concatenation
+        if guidance_ch > 0:
+            self.guidance_fusion = nn.Sequential(
+                nn.Conv2d(final_ch + guidance_ch, final_ch, kernel_size=1),
+                nn.BatchNorm2d(final_ch),
+                nn.GELU()
+            )
+        else:
+            self.guidance_fusion = None
 
     def forward(self, x_bottleneck, cta_skips, perf_skips, guidance: Optional[torch.Tensor] = None, epoch: int = 0):
         # skips: s1..s5
@@ -220,13 +227,10 @@ class DecoupledPath(nn.Module):
         x = self.up_final(x)
         x = self.final_conv(x)
         
-        # Cộng thêm tri thức từ nhánh khác nếu có (Guidance)
-        if guidance is not None and self.guidance_conv is not None:
-            g = self.guidance_conv(F.interpolate(guidance, size=x.shape[2:], mode='bilinear', align_corners=False))
-
-            # [FIX T3.2] Gỡ bỏ Spatial Gating (Masking) vì gây sốc gradient ở epoch 20 (Train Loss vọt lên 60).
-            # Quay lại dùng Additive Guidance an toàn, SE Block (ChannelAttention) trong heads.py sẽ tự lo việc lọc nhiễu.
-            x = x + g
+        # Ghép nối không gian (Concatenation) tri thức từ nhánh khác nếu có (Guidance)
+        if guidance is not None and self.guidance_fusion is not None:
+            g_interp = F.interpolate(guidance, size=x.shape[2:], mode='bilinear', align_corners=False)
+            x = self.guidance_fusion(torch.cat([x, g_interp], dim=1))
 
         return x, [aux4, aux3, aux2, aux1]
 
@@ -253,9 +257,9 @@ class MultiHeadDecoder(nn.Module):
         skips = [2048, 1024, 512, 128]
         
         # [FIX] Cấu hình AUX: LVO tắt 2 tầng sâu (16x16, 32x32) để giảm nhiễu
-        self.lesion_path = DecoupledPath(config, "lesion", skips, aux_ch=1, active_aux_levels=[True, True, True, True])
-        self.lvo_path    = DecoupledPath(config, "lvo", skips, aux_ch=1, active_aux_levels=[False, False, True, True])
-        self.cow_path    = DecoupledPath(config, "cow", skips, aux_ch=1, active_aux_levels=[True, True, True, True])
+        self.cow_path    = DecoupledPath(config, "cow", skips, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=0)
+        self.lvo_path    = DecoupledPath(config, "lvo", skips, aux_ch=1, active_aux_levels=[False, False, True, True], guidance_ch=16)
+        self.lesion_path = DecoupledPath(config, "lesion", skips, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=32)
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor], epoch: int = 0):
         s5, d5 = cta_skips[4], perf_skips[4]
@@ -272,8 +276,8 @@ class MultiHeadDecoder(nn.Module):
         f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow, epoch=epoch)
         
         # Bước 3: Nhánh Lesion học từ cả hai (Tìm vùng tổn thương dựa trên mạch máu và điểm tắc)
-        # Gộp thông tin từ CoW và LVO để dẫn đường cho Lesion
-        guidance_for_lesion = f_cow + f_lvo 
+        # Ghép nối (Concatenate) thông tin từ CoW và LVO để dẫn đường cho Lesion
+        guidance_for_lesion = torch.cat([f_cow, f_lvo], dim=1)
         f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lesion, epoch=epoch)
 
         # Trả về Dictionary AUX để losses.py xử lý chọn lọc
