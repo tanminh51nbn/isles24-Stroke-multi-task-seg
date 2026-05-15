@@ -330,7 +330,7 @@ class MultiTaskLoss(nn.Module):
         # 1. Main Losses
         _debug_lvo = (kwargs.get('batch_idx', -1) == 0) and (not dist.is_initialized() or dist.get_rank() == 0)
         l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
-        l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=4.0, debug=_debug_lvo)
+        l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=2.0, debug=_debug_lvo)
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
         # [T2.1] LVO Binary Classification Loss
