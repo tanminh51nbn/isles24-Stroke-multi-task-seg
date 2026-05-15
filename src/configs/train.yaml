@@ -46,7 +46,7 @@ optimizer:
   type: "adamw"
   lr: 3.0e-4
   weight_decay: 3.0e-2
-  encoder_lr_scale: 0.02 # [FIX] Chỉ dùng 2% LR cho Encoder để tránh nổ LVO
+  encoder_lr_scale: 0.1 # [FIX] Nâng LR Encoder lên 10% sau khi đã ổn định LVO
   eps: 1.0e-8
 
 # ── LR Scheduler ────────────────────────────────────────────────
@@ -81,7 +81,7 @@ training:
     momentum: 0.3           # Momentum (đặt nhỏ → phản ứng nhanh hơn DWA+)
     w_min: 0.1              # Trọng số sàn mỗi task (CoW không bị bỏ qua hoàn toàn)
     performance_targets:    # Mục tiêu hiệu suất cần đạt được
-      lesion: 0.85          # Dice Score
+      lesion: 0.75          # Dice Score
       lvo:    0.50          # F1 Score (slice-level, ð [0,1])
       cow:    0.90          # Dice Score
 
