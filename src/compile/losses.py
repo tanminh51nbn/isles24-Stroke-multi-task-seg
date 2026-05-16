@@ -405,7 +405,10 @@ class MultiTaskLoss(nn.Module):
                 
                 elif task_key == "lvo":
                     t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
-                    aux_loss += self.lvo_loss_fn(a_p, t_v, sigma=4.0) * p_v * 0.5
+                    if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
+                        aux_loss += self.lvo_loss_fn(a_p, t_v, sigma=4.0) * p_v * 0.5
+                    else:
+                        aux_loss += self.lvo_loss_fn(a_p, t_v) * p_v * 0.5
                     
                 elif task_key == "cow":
                     t_c = F.interpolate(targets[:, 2:3].float(), (h, w), mode='nearest')
