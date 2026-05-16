@@ -88,8 +88,9 @@ class ModifiedFocalLoss(nn.Module):
         
         # 3. Tính Lực Thưởng và Lực Phạt
         # Lực phạt (neg_loss) bị triệt tiêu bằng (1 - heatmap_gt)^beta khi tiến gần Vùng Đỏ
-        pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred)
-        neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred)
+        # [FIX NaN] Thêm self.eps để tránh log(0) gây ra NaN/Inf
+        pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred + self.eps)
+        neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred + self.eps)
         
         # 4. Đòn bẩy chống khôn lỏi (Dynamic Force Balancing)
         num_pos = pos_mask.sum().clamp(min=1.0)
@@ -292,7 +293,9 @@ class MultiTaskLoss(nn.Module):
         # Softmax chỉ trên active tasks; budget = N - n_inactive * w_min
         weight_budget = self.n_tasks - n_inactive * self.pgw_w_min
         active_gap    = gap * active_mask.float()
-        exp_gap       = torch.exp(active_gap / self.pgw_temperature) * active_mask.float()
+        # [FIX NaN] Subtract max before exp (Softmax stability trick) để tránh nổ Inf khi gap lớn hoặc temp nhỏ
+        max_gap       = torch.max(active_gap) if n_active > 0 else 0.0
+        exp_gap       = torch.exp((active_gap - max_gap) / self.pgw_temperature) * active_mask.float()
         raw_w = torch.where(
             active_mask,
             (exp_gap / (exp_gap.sum() + 1e-8)) * weight_budget,
