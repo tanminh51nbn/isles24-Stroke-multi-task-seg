@@ -98,7 +98,7 @@ class ModifiedFocalLoss(nn.Module):
         
         # [FIX] Trừng phạt thiết quân luật: Giảm giới hạn max từ 1000 xuống 50
         # Mục đích: Không cho mô hình "vẽ bừa" để đổi lấy điểm TP nữa.
-        weight_pos = (num_neg / num_pos).clamp(max=100.0)
+        weight_pos = (num_neg / num_pos).clamp(max=50.0)
         
         # Bơm sức mạnh cho Vùng Đỏ bằng đòn bẩy
         loss_pos = pos_loss.sum() * weight_pos
@@ -336,7 +336,7 @@ class MultiTaskLoss(nn.Module):
         _debug_lvo = (kwargs.get('batch_idx', -1) == 0) and (not dist.is_initialized() or dist.get_rank() == 0)
         l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
         
-        dynamic_sigma = max(1.5, 6.0 * (0.92 ** cur_ep))
+        dynamic_sigma = max(1.5, 5.0 * (0.92 ** cur_ep))
         if _debug_lvo:
             print(f"      [LVO_CURRICULUM] Epoch {cur_ep}: Sigma = {dynamic_sigma:.2f}")
             

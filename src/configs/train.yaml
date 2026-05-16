@@ -7,16 +7,16 @@
 loss:
   lesion:
     type: "tversky"
-    alpha: 0.4          # [T2.3] Tăng FP penalty: 0.3 → 0.4
-    beta: 0.6           # [T2.3] Giảm FN weight: 0.7 → 0.6
-    weight: 0.35
-    hd_weight: 0.25
+    alpha: 0.3
+    beta: 0.7
+    weight: 0.43
+    hd_weight: 0.1
 
   lvo:
     type: "modified_focal"
-    mfl_alpha: 2.0
-    mfl_beta: 4.0
-    weight: 0.5
+    mfl_alpha: 2.2
+    mfl_beta: 3.0
+    weight: 0.43
     # [T2.1] LVO Binary Classification Branch
     lvo_cls_weight: 0.5       # Tỷ lệ BCE classification trong tổng LVO loss
     lvo_cls_pos_weight: 5.0   # Penalty FN (bù imbalance: ~80% slice không có LVO)
@@ -25,7 +25,7 @@ loss:
     type: "cl_tversky"
     alpha: 0.5
     beta: 0.5
-    weight: 0.15
+    weight: 0.14
     cl_weight: 0.5
     iters: 4
 
@@ -33,8 +33,8 @@ loss:
 # Score = w1*Dice_Lesion + w2*F1_LVO + w3*Dice_CoW
 # Tập trung vào F1-Score cho LVO để cân bằng giữa Recall và Precision
 composite_score:
-  dice_lesion_weight: 0.4
-  f1_lvo_weight: 0.50
+  dice_lesion_weight: 0.45
+  f1_lvo_weight: 0.45
   dice_cow_weight: 0.1
   thresholds:
     lesion: 0.45
@@ -47,7 +47,7 @@ optimizer:
   lr: 3.0e-4
   weight_decay: 3.0e-2
   encoder_lr_scale: 0.1 # [FIX] Nâng LR Encoder lên 10% sau khi đã ổn định LVO
-  eps: 1.0e-8
+  eps: 1.0e-7
 
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
@@ -81,9 +81,9 @@ training:
     momentum: 0.3           # Momentum (đặt nhỏ → phản ứng nhanh hơn DWA+)
     w_min: 0.1              # Trọng số sàn mỗi task (CoW không bị bỏ qua hoàn toàn)
     performance_targets:    # Mục tiêu hiệu suất cần đạt được
-      lesion: 0.75          # Dice Score
+      lesion: 0.8          # Dice Score
       lvo:    0.50          # F1 Score (slice-level, ð [0,1])
-      cow:    0.90          # Dice Score
+      cow:    0.88          # Dice Score
 
   # Checkpointing
   checkpoint:
