@@ -98,7 +98,7 @@ class ModifiedFocalLoss(nn.Module):
         
         # [FIX] Trừng phạt thiết quân luật: Giảm giới hạn max từ 1000 xuống 50
         # Mục đích: Không cho mô hình "vẽ bừa" để đổi lấy điểm TP nữa.
-        weight_pos = (num_neg / num_pos).clamp(max=50.0)
+        weight_pos = (num_neg / num_pos).clamp(max=100.0)
         
         # Bơm sức mạnh cho Vùng Đỏ bằng đòn bẩy
         loss_pos = pos_loss.sum() * weight_pos
