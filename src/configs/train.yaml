@@ -13,9 +13,10 @@ loss:
     hd_weight: 0.1
 
   lvo:
-    type: "modified_focal"
-    mfl_alpha: 2.2
-    mfl_beta: 3.0
+    type: "focal_tversky"
+    alpha: 0.7
+    beta: 0.3
+    gamma: 2.0
     weight: 0.43
     # [T2.1] LVO Binary Classification Branch
     lvo_cls_weight: 0.5       # Tỷ lệ BCE classification trong tổng LVO loss

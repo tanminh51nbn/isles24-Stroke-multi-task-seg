@@ -52,6 +52,21 @@ class FocalTverskyLoss(nn.Module):
         error = (1.0 - tversky_index).clamp(min=1e-6, max=1.0)
         return torch.pow(error, self.gamma).mean()
 
+def apply_gaussian_blur(mask: torch.Tensor, sigma: float) -> torch.Tensor:
+    if sigma <= 0: return mask
+    kernel_size = int(sigma * 4)
+    if kernel_size % 2 == 0: kernel_size += 1
+    x = torch.arange(kernel_size).float() - (kernel_size - 1) / 2
+    kernel_1d = torch.exp(-x.pow(2) / (2 * sigma**2))
+    kernel_1d = kernel_1d / kernel_1d.sum()
+    kernel_2d = kernel_1d.view(1, 1, -1, 1) * kernel_1d.view(1, 1, 1, -1)
+    kernel_2d = kernel_2d.to(mask.device)
+    padding = kernel_size // 2
+    blurred = F.conv2d(mask, kernel_2d, padding=padding)
+    peaks = blurred.view(blurred.size(0), -1).max(dim=1)[0].view(-1, 1, 1, 1)
+    blurred = blurred / peaks.clamp(min=1e-6)
+    return torch.max(mask, blurred)
+
 # ─── Modified Focal Loss ──────────────────────────────────────────────────────
 
 class ModifiedFocalLoss(nn.Module):
@@ -60,20 +75,6 @@ class ModifiedFocalLoss(nn.Module):
         self.alpha = alpha
         self.beta  = beta
         self.eps   = eps
-
-    def _apply_gaussian_blur(self, mask: torch.Tensor, sigma: float) -> torch.Tensor:
-        if sigma <= 0: return mask
-        kernel_size = int(sigma * 4)
-        if kernel_size % 2 == 0: kernel_size += 1
-        x = torch.arange(kernel_size).float() - (kernel_size - 1) / 2
-        kernel_1d = torch.exp(-x.pow(2) / (2 * sigma**2))
-        kernel_1d = kernel_1d / kernel_1d.sum()
-        kernel_2d = kernel_1d.view(1, 1, -1, 1) * kernel_1d.view(1, 1, 1, -1)
-        kernel_2d = kernel_2d.to(mask.device)
-        padding = kernel_size // 2
-        blurred = F.conv2d(mask, kernel_2d, padding=padding)
-        peaks = blurred.view(blurred.size(0), -1).max(dim=1)[0].view(-1, 1, 1, 1)
-        return blurred / peaks.clamp(min=1e-6)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor, sigma: float = 0.0, debug: bool = False) -> torch.Tensor:
         pred = torch.sigmoid(logits.float()).clamp(min=self.eps, max=1.0 - self.eps)
@@ -84,7 +85,7 @@ class ModifiedFocalLoss(nn.Module):
         neg_mask = 1.0 - pos_mask
         
         # 2. Bản đồ Không gian (Heatmap lan tỏa)
-        heatmap_gt = self._apply_gaussian_blur(targets, sigma) if sigma > 0 else targets
+        heatmap_gt = apply_gaussian_blur(targets, sigma) if sigma > 0 else targets
         
         # 3. Tính Lực Thưởng và Lực Phạt
         # Lực phạt (neg_loss) bị triệt tiêu bằng (1 - heatmap_gt)^beta khi tiến gần Vùng Đỏ
@@ -198,10 +199,18 @@ class MultiTaskLoss(nn.Module):
 
         # 2. LVO Task
         l_v_cfg = l_cfg.get("lvo", {})
-        self.lvo_loss_fn = ModifiedFocalLoss(
-            alpha=l_v_cfg.get("mfl_alpha", 2.0),
-            beta=l_v_cfg.get("mfl_beta", 4.0)
-        )
+        lvo_type = l_v_cfg.get("type", "modified_focal")
+        if lvo_type == "focal_tversky":
+            self.lvo_loss_fn = FocalTverskyLoss(
+                alpha=l_v_cfg.get("alpha", 0.7),
+                beta=l_v_cfg.get("beta", 0.3),
+                gamma=l_v_cfg.get("gamma", 2.0)
+            )
+        else:
+            self.lvo_loss_fn = ModifiedFocalLoss(
+                alpha=l_v_cfg.get("mfl_alpha", 2.0),
+                beta=l_v_cfg.get("mfl_beta", 4.0)
+            )
         # [T2.1] LVO Binary Classification Loss
         # [FIX] Hạ pos_weight từ 5.0 xuống 1.5 để dập tắt ảo giác (giảm >1200 FPs)
         lvo_cls_pos_w = l_v_cfg.get("lvo_cls_pos_weight", 1.5)
@@ -316,9 +325,9 @@ class MultiTaskLoss(nn.Module):
             "V" if not active_mask[1] else "",
             "C" if not active_mask[2] else "",
         ]) or "none"
-        print(f"    [PGW] Ep {epoch}: Gap L={gap[0]:.3f} V={gap[1]:.3f} C={gap[2]:.3f} "
-              f"→ W: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f} "
-              f"[fixed@w_min: {fixed_tag}]")
+        print(f"    [PGW]: Gap L={gap[0]:.3f} V={gap[1]:.3f} C={gap[2]:.3f} "
+              f"→ Weights: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f} "
+              f"(fixed: {fixed_tag})")
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
         cur_ep = int(epoch)
@@ -327,20 +336,25 @@ class MultiTaskLoss(nn.Module):
         w = self.current_weights.to(targets.device)
         p_l, p_v, p_c = w[0], w[1], w[2]
 
+        dynamic_sigma = max(1.5, 5.0 * (0.92 ** cur_ep))
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             pgw_active = self._pgw_epoch.item() >= 0
             tag = "[PGW]" if pgw_active else "[INIT]"
-            print(f"    [LOSS_POLICY]{tag} Ep {cur_ep}: CoW={p_c:.2f}, LVO={p_v:.2f}, Lesion={p_l:.2f}")
+            print(f"    {tag}: Weights [Lesion={p_l:.2f}, LVO={p_v:.2f}, CoW={p_c:.2f}] | Sigma={dynamic_sigma:.2f}")
 
         # 1. Main Losses
         _debug_lvo = (kwargs.get('batch_idx', -1) == 0) and (not dist.is_initialized() or dist.get_rank() == 0)
         l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
         
-        dynamic_sigma = max(1.5, 5.0 * (0.92 ** cur_ep))
-        if _debug_lvo:
-            print(f"      [LVO_CURRICULUM] Epoch {cur_ep}: Sigma = {dynamic_sigma:.2f}")
-            
-        l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=dynamic_sigma, debug=_debug_lvo)
+        if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
+            l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=dynamic_sigma, debug=_debug_lvo)
+        else:
+            # Focal Tversky Loss on Heatmap
+            heatmap_gt = apply_gaussian_blur(targets[:, 1:2], dynamic_sigma) if dynamic_sigma > 0 else targets[:, 1:2]
+            l_v_m = self.lvo_loss_fn(preds['lvo'], heatmap_gt)
+            if _debug_lvo:
+                num_pos = (targets[:, 1:2] > 0.5).sum().item()
+                print(f"      [LVO_DEBUG] PosPixels: {int(num_pos)} | FTL_Loss: {l_v_m.item():.4f}")
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
         # [T2.1] LVO Binary Classification Loss
