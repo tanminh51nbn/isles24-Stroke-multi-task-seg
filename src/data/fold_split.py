@@ -112,26 +112,24 @@ def apply_sampling(
         balanced_lvo_base.extend(rng.sample(g_lvo_cow, int(len(g_lvo_cow) * 0.5)))
     balanced_lvo_base.extend(g_lvo_all)
 
-    # 2. NHÓM LESION-ONLY: CHIẾN THUẬT XOAY VÒNG CHẴN/LẺ (CYCLIC STRIDE)
-    lesion_only_df = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1)]
-    
-    # [FIX] ÉP CỐ ĐỊNH KÍCH THƯỚC TUYỆT ĐỐI ĐỂ TRÁNH LỖI DDP (DistributedSampler)
-    # Chúng ta lấy đúng chính xác 50% tổng số mẫu Lesion-only
-    n_lesion_fixed = len(lesion_only_df) // 2
+    # 2. NHÓM LESION: CHIẾN THUẬT PHÂN TÁCH (Dòng 5 & 6 trong bảng)
+    # 2.1 Lesion-only (Không LVO, Không CoW) -> Luân phiên 50%
+    lesion_pure_df = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train.get("has_cow", 0) == 0)]
+    n_pure_fixed = len(lesion_pure_df) // 2
     
     is_even_epoch = (epoch % 2 == 0)
     if is_even_epoch:
-        pool = lesion_only_df[lesion_only_df["slice_idx"] % 2 == 0]["basename"].tolist()
-        tag = "CHẴN (Z)"
+        pool = lesion_pure_df[lesion_pure_df["slice_idx"] % 2 == 0]["basename"].tolist()
     else:
-        pool = lesion_only_df[lesion_only_df["slice_idx"] % 2 != 0]["basename"].tolist()
-        tag = "LẺ (Z)"
+        pool = lesion_pure_df[lesion_pure_df["slice_idx"] % 2 != 0]["basename"].tolist()
     
-    # Đảm bảo lấy đúng n_lesion_fixed (nếu thiếu thì lấy lặp lại - hiếm khi xảy ra)
     if len(pool) > 0:
-        lesion_subset = rng.choices(pool, k=n_lesion_fixed)
+        lesion_pure_subset = rng.choices(pool, k=n_pure_fixed)
     else:
-        lesion_subset = []
+        lesion_pure_subset = []
+
+    # 2.2 Lesion + CoW (Có cả 2 nhưng không LVO) -> Giữ nguyên 100%
+    lesion_cow_subset = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train.get("has_cow", 0) == 1)]["basename"].tolist()
 
     # 3. NHÓM MỎ NEO GIẢI PHẪU (Cố định 100% slice có CoW nhưng không có bệnh)
     neg_with_cow_pool = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0) & (df_train.get("has_cow", 0) == 1)]["basename"].tolist()
@@ -153,7 +151,8 @@ def apply_sampling(
     for _ in range(final_lvo_factor):
         sampled_basenames.extend(balanced_lvo_base)
     
-    sampled_basenames.extend(lesion_subset)
+    sampled_basenames.extend(lesion_pure_subset)
+    sampled_basenames.extend(lesion_cow_subset)
     
     if sampling_cfg.get("cow_neg_keepall", True):
         sampled_basenames.extend(neg_with_cow)
