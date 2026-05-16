@@ -96,8 +96,9 @@ class ModifiedFocalLoss(nn.Module):
         num_pos = pos_mask.sum().clamp(min=1.0)
         num_neg = neg_mask.sum().clamp(min=1.0)
         
-        # Tỷ lệ diện tích Nền / LVO (Giới hạn max=1000 để tránh nổ gradient khi LVO quá bé)
-        weight_pos = (num_neg / num_pos).clamp(max=1000.0)
+        # [FIX] Trừng phạt thiết quân luật: Giảm giới hạn max từ 1000 xuống 50
+        # Mục đích: Không cho mô hình "vẽ bừa" để đổi lấy điểm TP nữa.
+        weight_pos = (num_neg / num_pos).clamp(max=50.0)
         
         # Bơm sức mạnh cho Vùng Đỏ bằng đòn bẩy
         loss_pos = pos_loss.sum() * weight_pos
@@ -202,7 +203,8 @@ class MultiTaskLoss(nn.Module):
             beta=l_v_cfg.get("mfl_beta", 4.0)
         )
         # [T2.1] LVO Binary Classification Loss
-        lvo_cls_pos_w = l_v_cfg.get("lvo_cls_pos_weight", 5.0)
+        # [FIX] Hạ pos_weight từ 5.0 xuống 1.5 để dập tắt ảo giác (giảm >1200 FPs)
+        lvo_cls_pos_w = l_v_cfg.get("lvo_cls_pos_weight", 1.5)
         self.lvo_cls_loss_fn = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([lvo_cls_pos_w])
         )

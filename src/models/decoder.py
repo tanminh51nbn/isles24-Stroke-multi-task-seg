@@ -258,8 +258,9 @@ class MultiHeadDecoder(nn.Module):
         
         # [FIX] Cấu hình AUX: LVO tắt 2 tầng sâu (16x16, 32x32) để giảm nhiễu
         self.cow_path    = DecoupledPath(config, "cow", skips, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=0)
-        self.lvo_path    = DecoupledPath(config, "lvo", skips, aux_ch=1, active_aux_levels=[False, False, True, True], guidance_ch=16)
-        self.lesion_path = DecoupledPath(config, "lesion", skips, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=32)
+        # [FIX] Đảo ngược luồng: Lesion nhận 16 ch (từ CoW), LVO nhận 32 ch (từ CoW + Lesion)
+        self.lesion_path = DecoupledPath(config, "lesion", skips, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=16)
+        self.lvo_path    = DecoupledPath(config, "lvo", skips, aux_ch=1, active_aux_levels=[False, False, True, True], guidance_ch=32)
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor], epoch: int = 0):
         s5, d5 = cta_skips[4], perf_skips[4]
@@ -268,17 +269,17 @@ class MultiHeadDecoder(nn.Module):
         x_bottleneck = torch.cat([s5, d5], dim=1)
         x_bottleneck = self.shared_bottleneck(x_bottleneck)
         
-        # 2. DÒNG CHẢY TRI THỨC (Knowledge Cascade)
-        # Bước 1: Nhánh CoW chạy trước (Xây dựng bản đồ giải phẫu)
+        # 2. DÒNG CHẢY TRI THỨC (Knowledge Cascade) - [FIX] Đảo ngược thứ tự
+        # Bước 1: Nhánh CoW chạy trước (Xây dựng bản đồ giải phẫu mạch máu)
         f_cow, cow_auxs = self.cow_path(x_bottleneck, cta_skips, perf_skips, epoch=epoch)
         
-        # Bước 2: Nhánh LVO học từ CoW (Tìm điểm tắc trên mạch máu)
-        f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow, epoch=epoch)
+        # Bước 2: Nhánh Lesion chạy thứ hai. Nhận dẫn đường từ CoW để tìm vùng não chết (Perfusion Deficit).
+        f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow, epoch=epoch)
         
-        # Bước 3: Nhánh Lesion học từ cả hai (Tìm vùng tổn thương dựa trên mạch máu và điểm tắc)
-        # Ghép nối (Concatenate) thông tin từ CoW và LVO để dẫn đường cho Lesion
-        guidance_for_lesion = torch.cat([f_cow, f_lvo], dim=1)
-        f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lesion, epoch=epoch)
+        # Bước 3: Nhánh LVO chạy cuối cùng. Nhận dẫn đường từ CẢ HAI (CoW và Lesion).
+        # Nhờ vậy, LVO CHỈ tìm kiếm điểm tắc nghẽn trên các nhánh mạch máu nằm bên trong vùng não đang chết.
+        guidance_for_lvo = torch.cat([f_cow, f_lesion], dim=1)
+        f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lvo, epoch=epoch)
 
         # Trả về Dictionary AUX để losses.py xử lý chọn lọc
         aux_masks = {
