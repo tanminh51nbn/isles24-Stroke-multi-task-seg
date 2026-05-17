@@ -327,43 +327,26 @@ class MultiTaskLoss(nn.Module):
             torch.full_like(gap, self.pgw_w_min)
         )
 
-        # Momentum: trộn trọng số hiện tại với trọng số thô mới
+        # Momentum + Phân bổ lại phần thừa (Projected Simplex với Box Constraints)
         blended_w = self.pgw_momentum * self.current_weights + (1.0 - self.pgw_momentum) * raw_w
-
-        # Active-Set Simplex Projection (Water-filling):
-        # Đảm bảo tổng trọng số bằng n_tasks và tuân thủ tuyệt đối w_min và w_max (không bị rò rỉ sau chuẩn hóa).
-        w = blended_w.clone()
-        w_max = self.pgw_w_max.to(w.device)
-        w_min = self.pgw_w_min
         
-        fixed_mask = torch.zeros_like(w, dtype=torch.bool)
+        w = blended_w.clone()
+        w_min = torch.full_like(w, self.pgw_w_min)
+        w_max = self.pgw_w_max.to(w.device)
+        
+        # Phân bổ phần thừa tuần tự (tối đa N bước cho N tasks)
         for _ in range(self.n_tasks):
-            active_mask = ~fixed_mask
-            n_active = active_mask.sum()
-            if n_active == 0:
+            w = torch.clamp(w, min=w_min, max=w_max)
+            not_at_bounds = (w > w_min) & (w < w_max)
+            if not not_at_bounds.any():
                 break
-            
-            fixed_sum = w[fixed_mask].sum() if fixed_mask.any() else 0.0
-            active_budget = self.n_tasks - fixed_sum
-            
-            active_sum = w[active_mask].sum()
-            w[active_mask] = w[active_mask] * (active_budget / (active_sum + 1e-8))
-            
-            next_fixed = fixed_mask.clone()
-            for i in range(self.n_tasks):
-                if not fixed_mask[i]:
-                    if w[i] < w_min:
-                        w[i] = w_min
-                        next_fixed[i] = True
-                    elif w[i] > w_max[i]:
-                        w[i] = w_max[i]
-                        next_fixed[i] = True
-            
-            if torch.equal(fixed_mask, next_fixed):
+            excess = self.n_tasks - w.sum()
+            if abs(excess.item()) < 1e-4:
                 break
-            fixed_mask = next_fixed
+            n_free = not_at_bounds.sum().float()
+            w[not_at_bounds] += excess / n_free
             
-        final_w = w
+        final_w = torch.clamp(w, min=w_min, max=w_max)
         self.current_weights.copy_(final_w)
         self._pgw_epoch.fill_(epoch)
 
