@@ -69,8 +69,8 @@ training:
   dwa_ema_alpha: 0.2      # [NEW] EMA smoothing cho Loss (0.2 = ~5 epoch)
   dwa_momentum: 0.5       # [NEW] Momentum cho trọng số (chống nhảy vọt)
   initial_weights:
-    lesion: 0.35
-    lvo: 0.50
+    lesion: 0.50   # [FIX] Tăng weight khởi đầu để Lesion học ổn định trước
+    lvo: 0.35
     cow: 0.15
 
   # Performance Gap Weighting (thay thế DWA+)
@@ -81,9 +81,13 @@ training:
     temperature: 0.5        # Softmax temp (đặt nhỏ → phân hóa mạnh hơn)
     momentum: 0.3           # Momentum (đặt nhỏ → phản ứng nhanh hơn DWA+)
     w_min: 0.1              # Trọng số sàn mỗi task (CoW không bị bỏ qua hoàn toàn)
+    w_max:                  # [FIX] Trần per-task — ngăn LVO collapse chiếm đoạt budget
+      lesion: 2.2           # Lesion được phép ưu tiên cao
+      lvo:    1.4           # Cap LVO: không được vượt 1.4x khi đang collapse
+      cow:    1.0           # CoW đã đạt target, giữ thấp
     performance_targets:    # Mục tiêu hiệu suất cần đạt được
       lesion: 0.8          # Dice Score
-      lvo:    0.50          # F1 Score (slice-level, ð [0,1])
+      lvo:    0.50          # F1 Score (slice-level, ở [0,1])
       cow:    0.88          # Dice Score
 
   # Checkpointing

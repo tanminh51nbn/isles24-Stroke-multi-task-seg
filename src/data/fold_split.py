@@ -114,7 +114,7 @@ def apply_sampling(
 
     # 2. NHÓM LESION: CHIẾN THUẬT PHÂN TÁCH (Dòng 5 & 6 trong bảng)
     # 2.1 Lesion-only (Không LVO, Không CoW) -> Luân phiên 50%
-    lesion_pure_df = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train.get("has_cow", 0) == 0)]
+    lesion_pure_df = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train["has_cow"] == 0)]
     n_pure_fixed = len(lesion_pure_df) // 2
     
     is_even_epoch = (epoch % 2 == 0)
@@ -129,10 +129,10 @@ def apply_sampling(
         lesion_pure_subset = []
 
     # 2.2 Lesion + CoW (Có cả 2 nhưng không LVO) -> Giữ nguyên 100%
-    lesion_cow_subset = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train.get("has_cow", 0) == 1)]["basename"].tolist()
+    lesion_cow_subset = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train["has_cow"] == 1)]["basename"].tolist()
 
     # 3. NHÓM MỎ NEO GIẢI PHẪU (Cố định 100% slice có CoW nhưng không có bệnh)
-    neg_with_cow_pool = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0) & (df_train.get("has_cow", 0) == 1)]["basename"].tolist()
+    neg_with_cow_pool = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 0) & (df_train["has_cow"] == 1)]["basename"].tolist()
     # Giữ nguyên kích thước này vì nó không đổi theo Epoch
     neg_with_cow = neg_with_cow_pool
 

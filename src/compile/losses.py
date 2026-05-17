@@ -189,11 +189,18 @@ class MultiTaskLoss(nn.Module):
         self.init_w = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
 
         # 1. Lesion Task
-        self.lesion_main_loss = FocalTverskyLoss(
-            alpha=l_cfg["lesion"].get("alpha", 0.7),
-            beta=l_cfg["lesion"].get("beta", 0.3),
-            gamma=l_cfg["lesion"].get("gamma", 2.0)
-        )
+        lesion_type = l_cfg["lesion"].get("type", "tversky")
+        if lesion_type == "focal_tversky":
+            self.lesion_main_loss = FocalTverskyLoss(
+                alpha=l_cfg["lesion"].get("alpha", 0.45),
+                beta=l_cfg["lesion"].get("beta", 0.55),
+                gamma=l_cfg["lesion"].get("gamma", 2.0)
+            )
+        else:  # default: plain TverskyLoss — gradient tuyến tính, không bị bình phương
+            self.lesion_main_loss = TverskyLoss(
+                alpha=l_cfg["lesion"].get("alpha", 0.45),
+                beta=l_cfg["lesion"].get("beta", 0.55)
+            )
         self.lesion_hd_loss = SDFBoundaryLoss()
         self.lesion_hd_w = l_cfg["lesion"].get("hd_weight", 0.0)
 
@@ -243,6 +250,13 @@ class MultiTaskLoss(nn.Module):
         self.pgw_w_min        = pgw_cfg.get("w_min",       0.1)
         self.pgw_start_epoch  = pgw_cfg.get("start_epoch", 5)
         self.n_tasks          = 3
+        # Per-task weight ceiling: ngăn task collapse chiếm đoạt toàn bộ budget
+        w_max_cfg = pgw_cfg.get("w_max", {})
+        self.pgw_w_max = torch.tensor([
+            w_max_cfg.get("lesion", 3.0),
+            w_max_cfg.get("lvo",    3.0),
+            w_max_cfg.get("cow",    3.0),
+        ])
 
         # current_weights: khởi tạo từ initial_weights trong config
         self.register_buffer('current_weights', torch.tensor([
@@ -313,9 +327,12 @@ class MultiTaskLoss(nn.Module):
             torch.full_like(gap, self.pgw_w_min)
         )
 
-        # Momentum + clamp + renormalize
+        # Momentum + clamp(min) + clamp(max per-task) + renormalize
         blended_w = self.pgw_momentum * self.current_weights + (1.0 - self.pgw_momentum) * raw_w
         clamped_w = torch.clamp(blended_w, min=self.pgw_w_min)
+        # Áp trần per-task: ngăn LVO collapse chiếm đoạt budget của Lesion
+        w_max = self.pgw_w_max.to(clamped_w.device)
+        clamped_w = torch.min(clamped_w, w_max)
         final_w   = clamped_w * (self.n_tasks / clamped_w.sum())
         self.current_weights.copy_(final_w)
         self._pgw_epoch.fill_(epoch)
