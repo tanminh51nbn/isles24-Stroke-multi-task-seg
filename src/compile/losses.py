@@ -11,7 +11,7 @@ from typing import Tuple
 # ─── Tversky Loss ─────────────────────────────────────────────────────────────
 
 class TverskyLoss(nn.Module):
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1e-5):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0):
         super().__init__()
         self.alpha  = alpha
         self.beta   = beta
@@ -32,7 +32,7 @@ class TverskyLoss(nn.Module):
 # ─── Focal Tversky Loss ───────────────────────────────────────────────────────
 
 class FocalTverskyLoss(nn.Module):
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, gamma: float = 2.0, smooth: float = 1e-5):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, gamma: float = 2.0, smooth: float = 1.0):
         super().__init__()
         self.alpha  = alpha
         self.beta   = beta
