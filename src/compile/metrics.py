@@ -134,7 +134,7 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
     """Tính Accuracy, TP, FP, FN của LVO detection ở mức bệnh nhân.
 
     Một bệnh nhân dương tính LVO nếu max_pred trên tất cả lát cắt > threshold.
-    Returns: {"accuracy": float, "tp": int, "fp": int, "fn": int, "tn": int, "n": int}
+    Returns: {"accuracy": float, "tp": int, "fp": int, "fn": int, "tn": int, "n": int, "f1": float}
     """
     tp = fp = fn = tn = 0
     for stats in patient_stats.values():
@@ -145,7 +145,11 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
         else:                                  tn += 1
     n   = tp + fp + fn + tn
     acc = (tp + tn) / max(n, 1)
-    return {"accuracy": acc, "tp": tp, "fp": fp, "fn": fn, "tn": tn, "n": n}
+    # [METRIC] Patient-level F1 — chỉ số lâm sàng thực sự: mô hình có phát hiện đúng bệnh nhân nào bị LVO không?
+    precision = tp / (tp + fp + 1e-8)
+    recall    = tp / (tp + fn + 1e-8)
+    f1_patient = (2 * precision * recall) / (precision + recall + 1e-8)
+    return {"accuracy": acc, "tp": tp, "fp": fp, "fn": fn, "tn": tn, "n": n, "f1": f1_patient}
 
 
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None) -> dict:

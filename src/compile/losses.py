@@ -168,7 +168,7 @@ def soft_skel(img, iters):
     return skel
 
 class SoftCLDiceLoss(nn.Module):
-    def __init__(self, iters: int = 3, smooth: float = 1e-5):
+    def __init__(self, iters: int = 3, smooth: float = 1.0):
         super().__init__()
         self.iters, self.smooth = iters, smooth
 
@@ -366,7 +366,7 @@ class MultiTaskLoss(nn.Module):
         w = self.current_weights.to(targets.device)
         p_l, p_v, p_c = w[0], w[1], w[2]
 
-        dynamic_sigma = max(1.5, 7.0 * (0.96 ** cur_ep))
+        dynamic_sigma = max(1.5, 7.0 * (0.95 ** cur_ep))
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             pgw_active = self._pgw_epoch.item() >= 0
             tag = "[PGW]" if pgw_active else "[INIT]"
