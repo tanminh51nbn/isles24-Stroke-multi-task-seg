@@ -273,11 +273,10 @@ class MultiHeadDecoder(nn.Module):
         # Bước 1: Nhánh CoW chạy trước (Xây dựng bản đồ giải phẫu mạch máu)
         f_cow, cow_auxs = self.cow_path(x_bottleneck, cta_skips, perf_skips, epoch=epoch)
         
-        # Bước 2: Nhánh Lesion chạy thứ hai. Nhận dẫn đường từ CoW để tìm vùng não chết (Perfusion Deficit).
-        f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow, epoch=epoch)
+        # Bước 2: Nhánh Lesion chạy thứ hai.
+        f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow.detach(), epoch=epoch)
         
         # Bước 3: Nhánh LVO chạy cuối cùng. Nhận dẫn đường từ CẢ HAI (CoW và Lesion).
-        # Nhờ vậy, LVO CHỈ tìm kiếm điểm tắc nghẽn trên các nhánh mạch máu nằm bên trong vùng não đang chết.
         guidance_for_lvo = torch.cat([f_cow, f_lesion], dim=1)
         f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lvo, epoch=epoch)
 

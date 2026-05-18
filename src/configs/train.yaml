@@ -6,21 +6,23 @@
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
-    type: "tversky"
+    type: "focal_tversky"   # [FIX Vấn đề 4] gamma=1.5 khuếch đại gradient cho lesion nhỏ (scale-aware)
     alpha: 0.45
     beta: 0.55
+    gamma: 1.5              # 1.5 thay vì 2.0 — tránh over-focus gây ignore large lesion
     weight: 0.43
-    hd_weight: 0.0
+    hd_weight: 0.0          # HD tắt — gradient spike
+    cl_weight: 0.10         # [FIX Vấn đề 3] CLDice nhẹ — penalize fragmentation
+    cl_iters: 3
 
   lvo:
-    type: "focal_tversky"
-    alpha: 0.4
-    beta: 0.6
-    gamma: 2.0
+    type: "modified_focal"  # [FIX] Đổi về MFL — thiết kế cho Gaussian heatmap, tránh gradient death của FTL
+    mfl_alpha: 2.0          # Focal exponent cho positive pixels (penalty miss)
+    mfl_beta: 4.0           # Suppression exponent cho vùng gần positive (tránh false alarm)
     weight: 0.43
     # [T2.1] LVO Binary Classification Branch
-    lvo_cls_weight: 0.0       # Tỷ lệ BCE classification trong tổng LVO loss
-    lvo_cls_pos_weight: 1.5   # [FIX] 5.0→1.5: Hạ penalty FN — pos_weight=5 quá aggressive gây mất ổn định BCE
+    lvo_cls_weight: 0.0       # Đã tắt — BCE Cls gây oscillation trivial solutions
+    lvo_cls_pos_weight: 1.5
 
   cow:
     type: "cl_tversky"
@@ -83,7 +85,7 @@ training:
     w_min: 0.1              # Trọng số sàn mỗi task (CoW không bị bỏ qua hoàn toàn)
     w_max:                  # [FIX] Trần per-task — ngăn LVO collapse chiếm đoạt budget
       lesion: 2.2           # Lesion được phép ưu tiên cao
-      lvo:    1.4           # Cap LVO: không được vượt 1.4x khi đang collapse
+      lvo:    1.3           # Cap LVO: không được vượt 1.4x khi đang collapse
       cow:    1.0           # CoW đã đạt target, giữ thấp
     performance_targets:    # Mục tiêu hiệu suất cần đạt được
       lesion: 0.8          # Dice Score

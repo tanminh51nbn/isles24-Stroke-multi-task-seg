@@ -202,7 +202,10 @@ class MultiTaskLoss(nn.Module):
                 beta=l_cfg["lesion"].get("beta", 0.55)
             )
         self.lesion_hd_loss = SDFBoundaryLoss()
-        self.lesion_hd_w = l_cfg["lesion"].get("hd_weight", 0.0)
+        self.lesion_hd_w   = l_cfg["lesion"].get("hd_weight", 0.0)
+        # [FIX Vấn đề 3] CLDice cho Lesion — penalize fragmentation qua topology
+        self.lesion_cl_loss = SoftCLDiceLoss(iters=l_cfg["lesion"].get("cl_iters", 3))
+        self.lesion_cl_w   = l_cfg["lesion"].get("cl_weight", 0.0)
 
         # 2. LVO Task
         l_v_cfg = l_cfg.get("lvo", {})
@@ -227,10 +230,11 @@ class MultiTaskLoss(nn.Module):
         self.lvo_cls_w = l_v_cfg.get("lvo_cls_weight", 0.3)  # Tỷ lệ cls trong tổng LVO loss
 
         # 3. CoW Task
-        self.cow_main_loss = FocalTverskyLoss(
+        # [FIX] Dùng TverskyLoss (linear gradient) thay FocalTverskyLoss (gamma=2, gradient²)
+        # Tại Dice=0.835: gradient FTL ≈ 0.33x, gradient TL = 1.0x → mạnh hơn 3× để thoát local minimum
+        self.cow_main_loss = TverskyLoss(
             alpha=l_cfg["cow"].get("alpha", 0.5),
-            beta=l_cfg["cow"].get("beta", 0.5),
-            gamma=l_cfg["cow"].get("gamma", 2.0)
+            beta=l_cfg["cow"].get("beta", 0.5)
         )
         self.cow_cl_loss = SoftCLDiceLoss(iters=l_cfg["cow"].get("iters", 3))
         self.cow_cl_w = l_cfg["cow"].get("cl_weight", 0.0)
@@ -282,7 +286,9 @@ class MultiTaskLoss(nn.Module):
             return  # Giữ initial_weights trong giai đoạn warmup
 
         current = torch.tensor([
-            val_metrics.get("dice_lesion", 0.0),
+            # [FIX C] Dùng dice_lesion_pos (chỉ trên Lesion-positive slice) thay vì dice_lesion (inflate bởi background)
+            # dice_lesion ≈ 0.57 nhưng thực chất Lesion-positive Dice ≈ 0.40 — PGW cần thấy đúng gap thực sự
+            val_metrics.get("dice_lesion_pos", val_metrics.get("dice_lesion", 0.0)),
             val_metrics.get("f1_lvo",    0.0) / 100.0,  # F1 → [0,1]
             val_metrics.get("dice_cow",  0.0),
         ], device=self.current_weights.device)
@@ -366,7 +372,7 @@ class MultiTaskLoss(nn.Module):
         w = self.current_weights.to(targets.device)
         p_l, p_v, p_c = w[0], w[1], w[2]
 
-        dynamic_sigma = max(2.0, 7.0 * (0.97 ** cur_ep))  # [FIX] decay 0.95→0.97, floor 1.5→2.0px
+        dynamic_sigma = max(1.5, 5.5 * (0.96 ** cur_ep))  # [FIX] decay 0.95→0.97, floor 1.5→2.0px
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             pgw_active = self._pgw_epoch.item() >= 0
             tag = "[PGW]" if pgw_active else "[INIT]"
@@ -402,6 +408,7 @@ class MultiTaskLoss(nn.Module):
 
         # 2. Additional Task-specific Losses (Boundary & Topology)
         l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4])
+        l_l_cl = self.lesion_cl_loss(preds['lesion'], targets[:, 0:1])   # [FIX Vấn đề 3] CLDice Lesion
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3])
 
         # [T2.3] Asymmetric FP penalty nhỏ cho Lesion (phạt nặng pixel FP confident)
@@ -410,7 +417,8 @@ class MultiTaskLoss(nn.Module):
         l_l_afl = 0.1 * afl_fp.mean()
 
         # 3. Final Task Weighting
-        loss_l = ((1.0 - self.lesion_hd_w) * l_l_m + self.lesion_hd_w * l_l_hd) * p_l + l_l_afl
+        w_cl_l = self.lesion_cl_w
+        loss_l = ((1.0 - self.lesion_hd_w - w_cl_l) * l_l_m + self.lesion_hd_w * l_l_hd + w_cl_l * l_l_cl) * p_l + l_l_afl
         loss_v = l_v_m * p_v
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
 
@@ -430,7 +438,7 @@ class MultiTaskLoss(nn.Module):
                 h, w = a_p.shape[2:]
                 
                 if task_key == "lesion":
-                    t_l = F.interpolate(targets[:, 0:1].float(), (h, w), mode='nearest')
+                    t_l = F.interpolate(targets[:, 0:1].float(), (h, w), mode='area')
                     aux_loss += self.lesion_main_loss(a_p, t_l) * p_l * 0.5
                 
                 elif task_key == "lvo":

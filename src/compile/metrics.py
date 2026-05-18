@@ -236,6 +236,19 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
     aad_lesion = aad_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"])
     alcd_lesion = alcd_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"])
 
+    # [FIX C] Dice chỉ trên các slice có GT Lesion > 0 (loại bỏ background-only slice inflate metric)
+    # Giá trị này phản ánh đúng khả năng học Lesion thật sự, feed vào PGW thay vì d_lesion
+    lesion_gt_flat = targets[:, 0:1].view(targets.size(0), -1)  # (B, H*W)
+    has_lesion_gt  = lesion_gt_flat.sum(dim=1) > 0              # (B,) bool mask
+    if has_lesion_gt.any():
+        d_lesion_pos = dice_score(
+            preds["lesion"][has_lesion_gt],
+            targets[:, 0:1][has_lesion_gt],
+            threshold=t["lesion"]
+        ).item()
+    else:
+        d_lesion_pos = 1.0  # batch này toàn background — không trừng phạt
+
     # LVO: Gom stats nếu được cung cấp lvo_stats dict (Global mode)
     # Ngược lại tính per-batch như cũ (dùng cho debug)
     if lvo_stats is not None:
@@ -256,10 +269,11 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
             w["dice_cow_weight"]    * d_cow)
 
     return {
-        "dice_lesion": d_lesion,
-        "aad_lesion":  aad_lesion,
-        "alcd_lesion": alcd_lesion,
-        "f1_lvo":      f1_lvo,
-        "dice_cow":    d_cow,
-        "composite":   comp
+        "dice_lesion":     d_lesion,
+        "dice_lesion_pos": d_lesion_pos,  # [FIX C] Dice trên Lesion-positive slice — metric thực cho PGW
+        "aad_lesion":      aad_lesion,
+        "alcd_lesion":     alcd_lesion,
+        "f1_lvo":          f1_lvo,
+        "dice_cow":        d_cow,
+        "composite":       comp
     }

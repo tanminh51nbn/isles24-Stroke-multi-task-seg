@@ -13,7 +13,6 @@ import math
 from compile.metrics import (
     compute_all_metrics, finalize_lvo_f1,
     accumulate_patient_lvo_stats, finalize_patient_lvo_acc,
-    accumulate_patient_lesion_stats, finalize_patient_aad, finalize_patient_alcd,
 )
 from evaluation.visualize import overlay_predictions, select_best_sample
 from data.fold_split import apply_sampling
@@ -108,17 +107,15 @@ class Trainer:
     def validate(self, epoch: int) -> dict:
         self.model.eval()
         total_loss, main_loss = 0.0, 0.0
-        sum_d_l, sum_d_c = 0.0, 0.0
+        sum_d_l, sum_d_l_pos, sum_d_c = 0.0, 0.0, 0.0  # [FIX C] sum_d_l_pos: Lesion-positive slice only
         sum_aad, sum_alcd = 0.0, 0.0
         sum_p_v = 0.0
-        n_b = 0
+        n_b, n_b_pos = 0, 0  # n_b_pos: số batch có ít nhất 1 Lesion-positive slice
         
         # [FIX] Global LVO stats: gom TP/FP/FN trên toàn Val set thay vì per-batch avg
         lvo_stats = {"tp": 0, "fp": 0, "fn": 0}
         # Patient-level LVO stats
         patient_stats = {}
-        # Patient-level Lesion stats (AVD + ALCD chuẩn ISLES)
-        patient_lesion_stats = {}
         
         vis_interval = self.config["training"]["logging"].get("visualize_every", 5)
         should_vis = (epoch % vis_interval == 0) and (self.rank == 0)
@@ -146,6 +143,11 @@ class Trainer:
             sum_aad  += metrics["aad_lesion"]
             sum_alcd += metrics["alcd_lesion"]
             n_b += 1
+            # [FIX C] Accumulate Lesion-positive-only Dice (chỉ khi batch có GT Lesion)
+            d_l_pos = metrics.get("dice_lesion_pos", None)
+            if d_l_pos is not None and d_l_pos < 1.0:  # 1.0 = batch toàn background, bỏ qua
+                sum_d_l_pos += d_l_pos
+                n_b_pos += 1
 
             # Gom patient-level stats (chỉ rank 0)
             if self.rank == 0:
@@ -153,10 +155,6 @@ class Trainer:
                 accumulate_patient_lvo_stats(
                     preds["lvo"], lbl[:, 1:2], paths, patient_stats,
                     threshold=self.metric_weights.get("thresholds", {}).get("lvo", 0.2)
-                )
-                accumulate_patient_lesion_stats(
-                    preds["lesion"], lbl[:, 0:1], paths, patient_lesion_stats,
-                    threshold=self.metric_weights.get("thresholds", {}).get("lesion", 0.45)
                 )
 
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)
@@ -192,6 +190,7 @@ class Trainer:
             a_aad = sum_aad/max(n_b,1)
             a_alcd = sum_alcd/max(n_b,1)
             ap_v  = sum_p_v/max(n_b,1)
+        ad_l_pos = sum_d_l_pos / max(n_b_pos, 1)  # [FIX C] Lesion-positive Dice (global)
 
         # Tính F1 Global một lần duy nhất sau khi đã gom toàn bộ Val set
         af1_v = finalize_lvo_f1(lvo_stats)
@@ -217,27 +216,18 @@ class Trainer:
                         epoch=epoch, save_dir=vis_dir, thresholds=self.metric_weights.get("thresholds", {})
                     )
 
-        # Patient-level AAD và ALCD (chuẩn ISLES'24 AVD) — chỉ rank 0 có đủ dữ liệu
-        if self.rank == 0:
-            a_aad_patient  = finalize_patient_aad(patient_lesion_stats)
-            a_alcd_patient = finalize_patient_alcd(patient_lesion_stats)
-            print(f"    [Lesion Patient] AVD: {a_aad_patient:.1f}% | ALCD: {a_alcd_patient:.3f}")
-        else:
-            a_aad_patient, a_alcd_patient = 0.0, 0.0
-
         w = self.metric_weights
         # [FIX METRIC] Dùng Balanced Accuracy thay vì Patient-level F1 cho composite
-        # F1 với 62% positive rate: trivial "all-positive" đạt F1=0.77 miễn phí
-        # BalAcc: cả 2 trivial solutions đều bị cố ở 0.50 — buộc mô hình phải học discriminate thật
         pat_bal_lvo = pat.get("bal_acc", 0.0) if self.rank == 0 else 0.0
         comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * pat_bal_lvo + w["dice_cow_weight"] * ad_c)
         
         return {
-            "val_loss": avg_l, "val_main": avg_m, "dice_lesion": ad_l, "f1_lvo": af1_v, "dice_cow": ad_c,
+            "val_loss": avg_l, "val_main": avg_m, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
+            "f1_lvo": af1_v, "dice_cow": ad_c,
             "f1_lvo_patient": pat.get("f1", 0.0) * 100.0 if self.rank == 0 else 0.0,
-            "bal_acc_lvo": pat_bal_lvo * 100.0,   # Balanced Accuracy LVO (%) — metric chính cho checkpoint
-            "aad_lesion": a_aad_patient,           # Patient-level AVD (%) — chuẩn ISLES'24
-            "alcd_lesion": a_alcd_patient,         # Patient-level ALCD — chuẩn ISLES'24
+            "bal_acc_lvo": pat_bal_lvo * 100.0,
+            "aad_lesion": sum_aad / max(n_b, 1),
+            "alcd_lesion": sum_alcd / max(n_b, 1),
             "composite": comp,
             "p_lesion": float(losses.get("p_lesion", 1.0)),
             "p_lvo": ap_v,
@@ -270,7 +260,7 @@ class Trainer:
                 lr_enc = self.optimizer.param_groups[0]['lr']
                 lr_dec = self.optimizer.param_groups[1]['lr']
                 print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR (En/De): {lr_enc:.1e}/{lr_dec:.1e} | Comp: {v_m['composite']:.4f}")
-                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} | F1_LVO: {v_m['f1_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
+                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} (Pos: {v_m['dice_lesion_pos']:.4f}) | F1_LVO: {v_m['f1_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
                 print(f"   | [VAL] Loss: {v_m['val_loss']:.4f} (Main: {v_m['val_main']:.4f}) | AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.4f}")
                 print(f"   | [TRA] Loss: {t_m['train_loss']:.4f} (Main: {t_m['train_main']:.4f}) | P_LVO: {v_m['p_lvo']:.2f}\n{'-'*80}", flush=True)
             self.history.append({**t_m, **v_m, "epoch": epoch + 1})
