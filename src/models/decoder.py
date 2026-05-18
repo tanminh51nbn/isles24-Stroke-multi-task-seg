@@ -278,7 +278,8 @@ class MultiHeadDecoder(nn.Module):
         f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow.detach(), epoch=epoch)
         
         # Bước 3: Nhánh LVO chạy cuối cùng. Nhận dẫn đường từ CẢ HAI (CoW và Lesion).
-        guidance_for_lvo = torch.cat([f_cow, f_lesion], dim=1)
+        # [FIX] Phải detach() cả f_cow và f_lesion để gradient khổng lồ từ LVO Classification không xé rách trọng số của CoW và Lesion
+        guidance_for_lvo = torch.cat([f_cow.detach(), f_lesion.detach()], dim=1)
         f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lvo, epoch=epoch)
 
         # Trả về Dictionary AUX để losses.py xử lý chọn lọc
