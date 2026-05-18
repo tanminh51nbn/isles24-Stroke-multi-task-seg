@@ -10,7 +10,11 @@ from torch.utils.data import DataLoader
 from typing import Optional
 import math
 
-from compile.metrics import compute_all_metrics, finalize_lvo_f1, accumulate_patient_lvo_stats, finalize_patient_lvo_acc
+from compile.metrics import (
+    compute_all_metrics, finalize_lvo_f1,
+    accumulate_patient_lvo_stats, finalize_patient_lvo_acc,
+    accumulate_patient_lesion_stats, finalize_patient_aad, finalize_patient_alcd,
+)
 from evaluation.visualize import overlay_predictions, select_best_sample
 from data.fold_split import apply_sampling
 import os
@@ -111,8 +115,10 @@ class Trainer:
         
         # [FIX] Global LVO stats: gom TP/FP/FN trên toàn Val set thay vì per-batch avg
         lvo_stats = {"tp": 0, "fp": 0, "fn": 0}
-        # Patient-level LVO stats (chỉ để log, không ảnh hưởng training)
+        # Patient-level LVO stats
         patient_stats = {}
+        # Patient-level Lesion stats (AVD + ALCD chuẩn ISLES)
+        patient_lesion_stats = {}
         
         vis_interval = self.config["training"]["logging"].get("visualize_every", 5)
         should_vis = (epoch % vis_interval == 0) and (self.rank == 0)
@@ -147,6 +153,10 @@ class Trainer:
                 accumulate_patient_lvo_stats(
                     preds["lvo"], lbl[:, 1:2], paths, patient_stats,
                     threshold=self.metric_weights.get("thresholds", {}).get("lvo", 0.2)
+                )
+                accumulate_patient_lesion_stats(
+                    preds["lesion"], lbl[:, 0:1], paths, patient_lesion_stats,
+                    threshold=self.metric_weights.get("thresholds", {}).get("lesion", 0.45)
                 )
 
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)
@@ -185,6 +195,8 @@ class Trainer:
 
         # Tính F1 Global một lần duy nhất sau khi đã gom toàn bộ Val set
         af1_v = finalize_lvo_f1(lvo_stats)
+        # Khởi tạo pat mặc định cho rank != 0 (tránh UnboundLocalError trong DDP)
+        pat = {"accuracy": 0.0, "tp": 0, "fp": 0, "fn": 0, "tn": 0, "n": 0, "f1": 0.0, "bal_acc": 0.0}
         if self.rank == 0:
             # Log LVO Summary (Global + Patient)
             pat = finalize_patient_lvo_acc(
@@ -205,6 +217,14 @@ class Trainer:
                         epoch=epoch, save_dir=vis_dir, thresholds=self.metric_weights.get("thresholds", {})
                     )
 
+        # Patient-level AAD và ALCD (chuẩn ISLES'24 AVD) — chỉ rank 0 có đủ dữ liệu
+        if self.rank == 0:
+            a_aad_patient  = finalize_patient_aad(patient_lesion_stats)
+            a_alcd_patient = finalize_patient_alcd(patient_lesion_stats)
+            print(f"    [Lesion Patient] AVD: {a_aad_patient:.1f}% | ALCD: {a_alcd_patient:.3f}")
+        else:
+            a_aad_patient, a_alcd_patient = 0.0, 0.0
+
         w = self.metric_weights
         # [FIX METRIC] Dùng Balanced Accuracy thay vì Patient-level F1 cho composite
         # F1 với 62% positive rate: trivial "all-positive" đạt F1=0.77 miễn phí
@@ -214,9 +234,10 @@ class Trainer:
         
         return {
             "val_loss": avg_l, "val_main": avg_m, "dice_lesion": ad_l, "f1_lvo": af1_v, "dice_cow": ad_c,
-            "f1_lvo_patient": pat.get("f1", 0.0) * 100.0,
+            "f1_lvo_patient": pat.get("f1", 0.0) * 100.0 if self.rank == 0 else 0.0,
             "bal_acc_lvo": pat_bal_lvo * 100.0,   # Balanced Accuracy LVO (%) — metric chính cho checkpoint
-            "aad_lesion": a_aad, "alcd_lesion": a_alcd,
+            "aad_lesion": a_aad_patient,           # Patient-level AVD (%) — chuẩn ISLES'24
+            "alcd_lesion": a_alcd_patient,         # Patient-level ALCD — chuẩn ISLES'24
             "composite": comp,
             "p_lesion": float(losses.get("p_lesion", 1.0)),
             "p_lvo": ap_v,

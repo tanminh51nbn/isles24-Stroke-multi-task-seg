@@ -83,7 +83,7 @@ def f1_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float =
 
 
 def alcd_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
-    """Absolute Lesion Count Difference"""
+    """Absolute Lesion Count Difference (slice-level, dùng cho debug nội bộ)"""
     preds = (torch.sigmoid(logits) > threshold).float().cpu().numpy()
     gt    = (targets > 0.5).float().cpu().numpy()
     
@@ -93,6 +93,75 @@ def alcd_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0
         _, n_g = label(gt[i, 0])
         total_diff += abs(n_p - n_g)
     return total_diff / preds.shape[0]
+
+
+def accumulate_patient_lesion_stats(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    paths: list,
+    patient_lesion_stats: dict,
+    threshold: float = 0.5
+) -> None:
+    """Gom số pixel Lesion dự đoán và GT theo từng bệnh nhân (patient-level).
+
+    Tích lũy across tất cả lát cắt của cùng bệnh nhân để tính AVD và ALCD
+    theo chuẩn ISLES'24 (volume-level, không phải slice-level).
+    """
+    preds = (torch.sigmoid(logits) > threshold).float().cpu().numpy()
+    gt    = (targets > 0.5).float().cpu().numpy()
+
+    for i, path in enumerate(paths):
+        fname = os.path.basename(path).replace(".npy", "")
+        pid   = "_".join(fname.split("_")[:1])   # "sub-stroke0092"
+
+        pred_px = int(preds[i, 0].sum())
+        gt_px   = int(gt[i, 0].sum())
+        _, n_p  = label(preds[i, 0])
+        _, n_g  = label(gt[i, 0])
+
+        if pid not in patient_lesion_stats:
+            patient_lesion_stats[pid] = {
+                "pred_pixels": pred_px, "gt_pixels": gt_px,
+                "pred_components": n_p,  "gt_components": n_g,
+            }
+        else:
+            patient_lesion_stats[pid]["pred_pixels"]     += pred_px
+            patient_lesion_stats[pid]["gt_pixels"]       += gt_px
+            patient_lesion_stats[pid]["pred_components"] += n_p
+            patient_lesion_stats[pid]["gt_components"]   += n_g
+
+
+def finalize_patient_aad(patient_lesion_stats: dict) -> float:
+    """Patient-level Average Volume Difference (%) — tương đương ISLES AVD.
+
+    AVD_patient = |pred_vol - gt_vol| / max(gt_vol, 1) × 100
+    Nếu bệnh nhân có GT nhưng pred rỗng: 100% lỗi.
+    Nếu bệnh nhân không có GT và pred rỗng: bỏ qua (TN hoàn hảo).
+    """
+    diffs = []
+    for stats in patient_lesion_stats.values():
+        gt_v, pred_v = stats["gt_pixels"], stats["pred_pixels"]
+        if gt_v == 0 and pred_v == 0:
+            continue                          # TN: không tính vào AVD
+        elif gt_v == 0:
+            diffs.append(100.0)              # FP bệnh nhân: 100% error
+        else:
+            diffs.append(min(abs(pred_v - gt_v) / gt_v * 100.0, 500.0))
+    return sum(diffs) / max(len(diffs), 1)
+
+
+def finalize_patient_alcd(patient_lesion_stats: dict) -> float:
+    """Patient-level Absolute Lesion Count Difference.
+
+    Đếm tổng số thành phần liên thông 2D trên toàn bộ lát cắt của mỗi bệnh nhân
+    rồi lấy hiệu tuyệt đối — xấp xỉ 3D ALCD phù hợp cho pipeline 2.5D.
+    """
+    total_diff = 0
+    n = 0
+    for stats in patient_lesion_stats.values():
+        total_diff += abs(stats["pred_components"] - stats["gt_components"])
+        n += 1
+    return total_diff / max(n, 1)
 
 
 def accumulate_patient_lvo_stats(
