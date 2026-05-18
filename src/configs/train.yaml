@@ -29,7 +29,7 @@ loss:
     alpha: 0.4
     beta: 0.6
     weight: 0.14
-    cl_weight: 0.35
+    cl_weight: 0.45
     iters: 4
 
 # ── Composite Validation Score ──────────────────────────────────
