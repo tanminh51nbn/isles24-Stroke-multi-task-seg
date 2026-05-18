@@ -9,7 +9,7 @@ loss:
     type: "focal_tversky"
     alpha: 0.4
     beta: 0.6
-    gamma: 1.5
+    gamma: 1.0
     weight: 0.43
     hd_weight: 0.0
     cl_weight: 0.10
@@ -21,7 +21,7 @@ loss:
     mfl_beta: 4.0
     weight: 0.43
     # [T2.1] LVO Binary Classification Branch
-    lvo_cls_weight: 0.0
+    lvo_cls_weight: 0.3
     lvo_cls_pos_weight: 1.5
 
   cow:
