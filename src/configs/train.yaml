@@ -6,22 +6,22 @@
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
-    type: "focal_tversky"   # [FIX Vấn đề 4] gamma=1.5 khuếch đại gradient cho lesion nhỏ (scale-aware)
+    type: "focal_tversky"
     alpha: 0.45
     beta: 0.55
-    gamma: 1.5              # 1.5 thay vì 2.0 — tránh over-focus gây ignore large lesion
+    gamma: 1.5
     weight: 0.43
-    hd_weight: 0.0          # HD tắt — gradient spike
-    cl_weight: 0.10         # [FIX Vấn đề 3] CLDice nhẹ — penalize fragmentation
+    hd_weight: 0.0
+    cl_weight: 0.10
     cl_iters: 3
 
   lvo:
-    type: "modified_focal"  # [FIX] Đổi về MFL — thiết kế cho Gaussian heatmap, tránh gradient death của FTL
-    mfl_alpha: 2.0          # Focal exponent cho positive pixels (penalty miss)
-    mfl_beta: 4.0           # Suppression exponent cho vùng gần positive (tránh false alarm)
+    type: "modified_focal"
+    mfl_alpha: 2.0
+    mfl_beta: 4.0
     weight: 0.43
     # [T2.1] LVO Binary Classification Branch
-    lvo_cls_weight: 0.0       # Đã tắt — BCE Cls gây oscillation trivial solutions
+    lvo_cls_weight: 0.0
     lvo_cls_pos_weight: 1.5
 
   cow:

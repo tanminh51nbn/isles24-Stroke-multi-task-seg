@@ -98,7 +98,8 @@ class AuxHead(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=1)
         with torch.no_grad():
-            bias_val = -4.595 if task_name in ["lvo", "cow", "shared"] else -2.944
+            # [FIX] Đổi CoW bias từ -4.595 thành -2.944. -4.595 quá nhỏ khiến prediction ~0, gradient = 0
+            bias_val = -4.595 if task_name in ["lvo", "shared"] else -2.944
             for i in range(out_ch):
                 self.conv.bias[i] = bias_val
 

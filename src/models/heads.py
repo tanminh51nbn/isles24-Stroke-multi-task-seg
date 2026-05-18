@@ -131,9 +131,8 @@ class MultiTaskHeads(nn.Module):
         # Bias cũ (σ=0.01) quá conservative, model không tỉnh nổi sau 70 epoch
         nn.init.constant_(self.lvo_head.conv_out.bias, -2.0)
         
-        # 2. CoW (Hiếm, mạch mảnh): pi = 0.01 => bias = -4.595
-        # Ngăn chặn hoàn toàn hiện tượng "Màn hình xanh lá" (đoán toàn bộ ảnh là mạch máu)
-        nn.init.constant_(self.cow_head.conv_out.bias, -4.595)
+        # 2. CoW (Hiếm, mạch mảnh)
+        nn.init.constant_(self.cow_head.conv_out.bias, -2.944)
         
         # 3. Lesion (Ít, vùng lõi): pi = 0.05 => bias = -2.944
         nn.init.constant_(self.lesion_head.conv_out.bias, -2.944)
