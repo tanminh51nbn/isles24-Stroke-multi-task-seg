@@ -192,7 +192,7 @@ class Trainer:
                 threshold=self.metric_weights.get("thresholds", {}).get("lvo", 0.2)
             )
             print(f"    [LVO Summary] F1: {af1_v:.2f}% (TP={lvo_stats['tp']} FP={lvo_stats['fp']} FN={lvo_stats['fn']})")
-            print(f"    [LVO Patient] Acc: {pat['accuracy']*100:.1f}% ({pat['tp']+pat['tn']}/{pat['n']}) | TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']}")
+            print(f"    [LVO Patient] Acc: {pat['accuracy']*100:.1f}% ({pat['tp']+pat['tn']}/{pat['n']}) | TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']} | BalAcc={pat['bal_acc']*100:.1f}%")
             # Visualize sample tốt nhất (sau khi đã dưắt toàn bộ val loop)
             if should_vis and vis_candidates:
                 best = select_best_sample(vis_candidates)
@@ -206,15 +206,16 @@ class Trainer:
                     )
 
         w = self.metric_weights
-        # [FIX METRIC] Dùng Patient-level F1 (chuẩn lâm sàng) thay vì Slice-level F1 (metric ảo)
-        # Slice-level F1 (“af1_v”): đếm TP nếu có bất kỳ 1 pixel nào đúng → quá dễ, không có ý nghĩa lâm sàng
-        # Patient-level F1 (pat['f1']): đặt câu hỏi “Mô hình có phát hiện đúng bệnh nhân bị LVO không?”
-        pat_f1_lvo = pat.get("f1", 0.0) if self.rank == 0 else 0.0
-        comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * pat_f1_lvo + w["dice_cow_weight"] * ad_c)
+        # [FIX METRIC] Dùng Balanced Accuracy thay vì Patient-level F1 cho composite
+        # F1 với 62% positive rate: trivial "all-positive" đạt F1=0.77 miễn phí
+        # BalAcc: cả 2 trivial solutions đều bị cố ở 0.50 — buộc mô hình phải học discriminate thật
+        pat_bal_lvo = pat.get("bal_acc", 0.0) if self.rank == 0 else 0.0
+        comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * pat_bal_lvo + w["dice_cow_weight"] * ad_c)
         
         return {
             "val_loss": avg_l, "val_main": avg_m, "dice_lesion": ad_l, "f1_lvo": af1_v, "dice_cow": ad_c,
-            "f1_lvo_patient": pat_f1_lvo * 100.0,   # Patient-level F1 (%), metric lâm sàng thực sự
+            "f1_lvo_patient": pat.get("f1", 0.0) * 100.0,
+            "bal_acc_lvo": pat_bal_lvo * 100.0,   # Balanced Accuracy LVO (%) — metric chính cho checkpoint
             "aad_lesion": a_aad, "alcd_lesion": a_alcd,
             "composite": comp,
             "p_lesion": float(losses.get("p_lesion", 1.0)),

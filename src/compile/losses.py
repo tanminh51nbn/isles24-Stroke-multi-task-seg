@@ -366,7 +366,7 @@ class MultiTaskLoss(nn.Module):
         w = self.current_weights.to(targets.device)
         p_l, p_v, p_c = w[0], w[1], w[2]
 
-        dynamic_sigma = max(1.5, 7.0 * (0.95 ** cur_ep))
+        dynamic_sigma = max(2.0, 7.0 * (0.97 ** cur_ep))  # [FIX] decay 0.95→0.97, floor 1.5→2.0px
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             pgw_active = self._pgw_epoch.item() >= 0
             tag = "[PGW]" if pgw_active else "[INIT]"

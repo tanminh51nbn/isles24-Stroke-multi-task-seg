@@ -145,11 +145,18 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
         else:                                  tn += 1
     n   = tp + fp + fn + tn
     acc = (tp + tn) / max(n, 1)
-    # [METRIC] Patient-level F1 — chỉ số lâm sàng thực sự: mô hình có phát hiện đúng bệnh nhân nào bị LVO không?
+    # [METRIC] Patient-level F1
     precision = tp / (tp + fp + 1e-8)
     recall    = tp / (tp + fn + 1e-8)
     f1_patient = (2 * precision * recall) / (precision + recall + 1e-8)
-    return {"accuracy": acc, "tp": tp, "fp": fp, "fn": fn, "tn": tn, "n": n, "f1": f1_patient}
+    # [FIX METRIC] Balanced Accuracy = (Sensitivity + Specificity) / 2
+    # Trịt tiêu 2 trivial solutions:
+    #   all-positive: Sens=1.0, Spec=0.0 → BalAcc=0.50
+    #   all-negative: Sens=0.0, Spec=1.0 → BalAcc=0.50
+    sensitivity  = tp / (tp + fn + 1e-8)  # Recall = LVO detection rate
+    specificity  = tn / (tn + fp + 1e-8)  # LVO-negative correctly ruled out
+    bal_acc      = (sensitivity + specificity) / 2.0
+    return {"accuracy": acc, "tp": tp, "fp": fp, "fn": fn, "tn": tn, "n": n, "f1": f1_patient, "bal_acc": bal_acc}
 
 
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None) -> dict:

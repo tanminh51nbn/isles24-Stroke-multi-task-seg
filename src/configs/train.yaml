@@ -10,7 +10,7 @@ loss:
     alpha: 0.45
     beta: 0.55
     weight: 0.43
-    hd_weight: 0.1
+    hd_weight: 0.0
 
   lvo:
     type: "focal_tversky"
@@ -19,7 +19,7 @@ loss:
     gamma: 2.0
     weight: 0.43
     # [T2.1] LVO Binary Classification Branch
-    lvo_cls_weight: 0.5       # Tỷ lệ BCE classification trong tổng LVO loss
+    lvo_cls_weight: 0.0       # Tỷ lệ BCE classification trong tổng LVO loss
     lvo_cls_pos_weight: 1.5   # [FIX] 5.0→1.5: Hạ penalty FN — pos_weight=5 quá aggressive gây mất ổn định BCE
 
   cow:
@@ -27,7 +27,7 @@ loss:
     alpha: 0.5
     beta: 0.5
     weight: 0.14
-    cl_weight: 0.2
+    cl_weight: 0.35
     iters: 4
 
 # ── Composite Validation Score ──────────────────────────────────
