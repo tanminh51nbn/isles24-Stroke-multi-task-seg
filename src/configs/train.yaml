@@ -7,8 +7,8 @@
 loss:
   lesion:
     type: "focal_tversky"
-    alpha: 0.45
-    beta: 0.55
+    alpha: 0.4
+    beta: 0.6
     gamma: 1.5
     weight: 0.43
     hd_weight: 0.0
@@ -26,8 +26,8 @@ loss:
 
   cow:
     type: "cl_tversky"
-    alpha: 0.5
-    beta: 0.5
+    alpha: 0.4
+    beta: 0.6
     weight: 0.14
     cl_weight: 0.35
     iters: 4
