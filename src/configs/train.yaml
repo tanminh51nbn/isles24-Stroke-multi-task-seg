@@ -66,31 +66,29 @@ training:
   freeze_encoder_epochs: 20
 
   # Cơ chế dìu nhau đi (DWA+)
-  dwa_start_epoch: 8      # [NEW] Kích hoạt sau Warmup để tránh nhiễu
+  dwa_start_epoch: 8
   dwa_temperature: 1.0
-  dwa_ema_alpha: 0.2      # [NEW] EMA smoothing cho Loss (0.2 = ~5 epoch)
-  dwa_momentum: 0.5       # [NEW] Momentum cho trọng số (chống nhảy vọt)
+  dwa_ema_alpha: 0.2
+  dwa_momentum: 0.5
   initial_weights:
-    lesion: 0.50   # [FIX] Tăng weight khởi đầu để Lesion học ổn định trước
+    lesion: 0.40
     lvo: 0.35
-    cow: 0.15
+    cow: 0.25
 
   # Performance Gap Weighting (thay thế DWA+)
-  # Điều chỉnh trọng số task theo khoảng cách tới target metric,
-  # không phải tốc độ thay đổi loss — tránh failure mode "đầu hàng task khó".
   pgw:
-    start_epoch: 5          # Kích hoạt sau warmup
-    temperature: 0.5        # Softmax temp (đặt nhỏ → phân hóa mạnh hơn)
-    momentum: 0.3           # Momentum (đặt nhỏ → phản ứng nhanh hơn DWA+)
-    w_min: 0.1              # Trọng số sàn mỗi task (CoW không bị bỏ qua hoàn toàn)
-    w_max:                  # [FIX] Trần per-task — ngăn LVO collapse chiếm đoạt budget
-      lesion: 2.2           # Lesion được phép ưu tiên cao
-      lvo:    1.3           # Cap LVO: không được vượt 1.4x khi đang collapse
-      cow:    1.0           # CoW đã đạt target, giữ thấp
-    performance_targets:    # Mục tiêu hiệu suất cần đạt được
-      lesion: 0.8          # Dice Score
-      lvo:    0.50          # F1 Score (slice-level, ở [0,1])
-      cow:    0.88          # Dice Score
+    start_epoch: 8
+    temperature: 0.5
+    momentum: 0.3
+    w_min: 0.1
+    w_max:
+      lesion: 2.2
+      lvo: 1.3
+      cow: 1.0
+    performance_targets:
+      lesion: 0.8
+      lvo: 0.50
+      cow: 0.88
 
   # Checkpointing
   checkpoint:
