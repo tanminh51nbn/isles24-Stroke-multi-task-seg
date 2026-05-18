@@ -21,13 +21,13 @@ class TverskyLoss(nn.Module):
         probs = torch.sigmoid(logits)
         probs   = probs.view(probs.size(0), -1)
         targets = targets.view(targets.size(0), -1)
-        TP = (probs * targets).sum(dim=1)
-        FP = (probs * (1 - targets)).sum(dim=1)
-        FN = ((1 - probs) * targets).sum(dim=1)
+        TP = (probs * targets).sum()
+        FP = (probs * (1 - targets)).sum()
+        FN = ((1 - probs) * targets).sum()
         numerator   = TP + self.smooth
         denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
         tversky_index = numerator / denominator.clamp(min=self.smooth)
-        return (1.0 - tversky_index.mean()).clamp(min=0.0, max=1.0)
+        return (1.0 - tversky_index).clamp(min=0.0, max=1.0)
 
 # ─── Focal Tversky Loss ───────────────────────────────────────────────────────
 
@@ -43,14 +43,14 @@ class FocalTverskyLoss(nn.Module):
         probs   = torch.sigmoid(logits)
         probs   = probs.view(probs.size(0), -1)
         targets = targets.view(targets.size(0), -1)
-        TP = (probs * targets).sum(dim=1)
-        FP = (probs * (1 - targets)).sum(dim=1)
-        FN = ((1 - probs) * targets).sum(dim=1)
+        TP = (probs * targets).sum()
+        FP = (probs * (1 - targets)).sum()
+        FN = ((1 - probs) * targets).sum()
         numerator   = TP + self.smooth
         denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
         tversky_index = numerator / denominator.clamp(min=self.smooth)
         error = (1.0 - tversky_index).clamp(min=1e-6, max=1.0)
-        return torch.pow(error, self.gamma).mean()
+        return torch.pow(error, self.gamma)
 
 def apply_gaussian_blur(mask: torch.Tensor, sigma: float) -> torch.Tensor:
     if sigma <= 0: return mask
@@ -175,9 +175,9 @@ class SoftCLDiceLoss(nn.Module):
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = torch.sigmoid(logits)
         t_s, p_s = soft_skel(targets, self.iters), soft_skel(probs, self.iters)
-        t_p = ((p_s * targets).sum(dim=(1, 2, 3)) + self.smooth) / (p_s.sum(dim=(1, 2, 3)) + self.smooth)
-        t_s_ = ((t_s * probs).sum(dim=(1, 2, 3)) + self.smooth) / (t_s.sum(dim=(1, 2, 3)) + self.smooth)
-        return 1.0 - ((2.0 * t_p * t_s_) / (t_p + t_s_ + self.smooth)).mean()
+        t_p = ((p_s * targets).sum() + self.smooth) / (p_s.sum() + self.smooth)
+        t_s_ = ((t_s * probs).sum() + self.smooth) / (t_s.sum() + self.smooth)
+        return 1.0 - ((2.0 * t_p * t_s_) / (t_p + t_s_ + self.smooth))
 
 # ─── Multi-Task Loss (The Core) ───────────────────────────────────────────────
 
