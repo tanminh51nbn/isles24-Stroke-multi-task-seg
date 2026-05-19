@@ -21,6 +21,9 @@ Cách dùng trên Kaggle:
 import os
 # [OPTIMIZE] Tránh phân mảnh bộ nhớ trên card T4
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
+os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "OFF"
 import sys
 import argparse
 import yaml
@@ -81,6 +84,7 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
     import io as _io
     if rank != 0:
         _sys.stdout = _io.StringIO()
+        _sys.stderr = _io.StringIO()
 
     # Load config
     config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
@@ -123,7 +127,7 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         model, 
         device_ids=[rank], 
         output_device=rank,
-        find_unused_parameters=True
+        find_unused_parameters=False
     )
 
     # ── Loss / Optimizer / Scheduler ──────────────────────────────
