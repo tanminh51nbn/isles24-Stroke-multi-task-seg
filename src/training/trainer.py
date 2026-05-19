@@ -224,15 +224,15 @@ class Trainer:
                     )
 
         w = self.metric_weights
-        # [FIX METRIC] Dùng Balanced Accuracy thay vì Patient-level F1 cho composite
-        pat_bal_lvo = pat.get("bal_acc", 0.0) if self.rank == 0 else 0.0
-        comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * pat_bal_lvo + w["dice_cow_weight"] * ad_c)
+        # [FIX] Dùng Slice-level F1 (đã được đồng bộ hoàn hảo qua 2 GPU) thay vì Patient-level (bị lỗi chia cắt DDP)
+        slice_f1_lvo = af1_v / 100.0
+        comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * slice_f1_lvo + w["dice_cow_weight"] * ad_c)
         
         return {
             "val_loss": avg_l, "val_main": avg_m, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
             "f1_lvo": af1_v, "dice_cow": ad_c,
             "f1_lvo_patient": pat.get("f1", 0.0) * 100.0 if self.rank == 0 else 0.0,
-            "bal_acc_lvo": pat_bal_lvo * 100.0,
+            "bal_acc_lvo": pat.get("bal_acc", 0.0) * 100.0 if self.rank == 0 else 0.0,
             "aad_lesion": sum_aad / max(n_b, 1),
             "alcd_lesion": sum_alcd / max(n_b, 1),
             "composite": comp,

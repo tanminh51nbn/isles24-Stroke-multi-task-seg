@@ -7,39 +7,32 @@
 split:
   val_ratio: 0.2
   seed: 42
-  mode: "kfold" # "single" hoặc "kfold"
+  mode: "kfold"
   n_folds: 5
-  stratify_by: "lvo" # Đảm bảo LVO patients phân bổ đều qua các fold
-  current_fold: 0 # Được ghi đè bởi PINELINE.py khi chạy K-Fold
-  # GroupShuffleSplit theo patient_id — chống Data Leakage
+  stratify_by: "lvo"
+  current_fold: 0
 
 # ── DataLoader ───────────────────────────────────────────────────
 dataloader:
-  batch_size: 16
+  batch_size: 24
   num_workers: 4
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
-  drop_last: true # Tránh batch size 1 ở cuối epoch
+  drop_last: true
 
 # ── Sampling Strategy ────────────────────────────────────────────
 sampling:
   enabled: true
   metadata_csv: "/kaggle/working/dataset_metadata.csv"
-  # Oversample lát cắt có LVO (rất hiếm) lên 10 lần để hỗ trợ Curriculum Learning
   lvo_oversample_factor: 10
-  # [FIX 1] Tách neg_list thành 2 nhóm:
-  # - cow_neg_keepall: Giữ 100% slice CoW(+) Lesion(-) — counter-examples được yếu quý
-  # - plain_neg_ratio: Chỉ giữ 30% slice não trống hoàn toàn (không CoW, không Lesion)
-  cow_neg_keepall: true # Giữ 100% slice CoW(+), Lesion(-)
-  plain_neg_ratio: 0.3 # Downsample slice trống (thay cho downsample_neg_ratio)
-  downsample_neg_ratio: 0.5 # Fallback nếu không có cột has_cow trong metadata
+  cow_neg_keepall: true
+  plain_neg_ratio: 0.15
+  downsample_neg_ratio: 0.5
 
 # ── Augmentation ─────────────────────────────────────────────────
 augmentation:
   enabled: true
-
-  # Flip tắt hoàn toàn — không chắc chắn về hướng định vị não trong dataset MIP
   horizontal_flip:
     prob: 0.0
 
