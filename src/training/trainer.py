@@ -53,8 +53,13 @@ class Trainer:
                 preds = self.model(inp, epoch=epoch)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
 
-            if not torch.isfinite(losses["total"]):
+            is_finite = torch.tensor(1.0 if torch.isfinite(losses["total"]) else 0.0, device=self.device)
+            if dist.is_initialized():
+                dist.all_reduce(is_finite, op=dist.ReduceOp.MIN)
+            
+            if is_finite.item() == 0.0:
                 nan_batches += 1
+                self.optimizer.zero_grad(set_to_none=True)
                 continue
 
             self.scaler.scale(losses["total"]).backward()
@@ -87,11 +92,13 @@ class Trainer:
             main_loss += losses["main"].item()
             n_batches += 1
 
-        # [FIX 1.3] Log spike LVO 1 lần / epoch (chỉ khi > 100 — spike thực sự nguy hiểm)
-        if self.rank == 0 and max_lvo_spike > 100.0:
-            import math
-            spike_str = "inf" if math.isinf(max_lvo_spike) else f"{max_lvo_spike:.1f}"
-            print(f"    [WARN] LVO max grad spike: {spike_str} → clipped to 10.0")
+        if self.rank == 0:
+            if max_lvo_spike > 100.0:
+                import math
+                spike_str = "inf" if math.isinf(max_lvo_spike) else f"{max_lvo_spike:.1f}"
+                print(f"    [WARN] LVO max grad spike: {spike_str} → clipped to 10.0")
+            if nan_batches > 0:
+                print(f"    [WARN] Đã skip {nan_batches} batches do lỗi NaN/Inf.")
         
         if dist.is_initialized():
             sync = torch.tensor([total_loss, main_loss, float(n_batches)], device=self.device)

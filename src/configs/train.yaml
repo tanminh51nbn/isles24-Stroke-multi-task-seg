@@ -7,8 +7,8 @@
 loss:
   lesion:
     type: "focal_tversky"
-    alpha: 0.4
-    beta: 0.6
+    alpha: 0.3
+    beta: 0.7
     gamma: 1.0
     weight: 0.43
     hd_weight: 0.0
@@ -21,7 +21,7 @@ loss:
     mfl_beta: 4.0
     weight: 0.43
     # [T2.1] LVO Binary Classification Branch
-    lvo_cls_weight: 0.3
+    lvo_cls_weight: 0.2
     lvo_cls_pos_weight: 1.5
 
   cow:
@@ -40,8 +40,8 @@ composite_score:
   f1_lvo_weight: 0.45
   dice_cow_weight: 0.1
   thresholds:
-    lesion: 0.45
-    lvo: 0.15   # [T2.1] Hạ ngưỡng LVO: 0.2→0.15 — nhạy hơn sau khi có cls branch guide
+    lesion: 0.4
+    lvo: 0.1
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
@@ -55,7 +55,7 @@ optimizer:
 # ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
   warmup_epochs: 7
-  hold_epochs: 23
+  hold_epochs: 13
   min_lr: 5.0e-6
 
 # ── Training ────────────────────────────────────────────────────
