@@ -127,7 +127,7 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         model, 
         device_ids=[rank], 
         output_device=rank,
-        find_unused_parameters=False
+        find_unused_parameters=True
     )
 
     # ── Loss / Optimizer / Scheduler ──────────────────────────────
