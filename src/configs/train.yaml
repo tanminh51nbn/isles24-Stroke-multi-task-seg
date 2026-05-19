@@ -62,7 +62,7 @@ scheduler:
 training:
   epochs: 100
   amp: true
-  grad_clip_norm: 2.0   # [T2] Tăng 1.0→2.0: effective LVO clip 0.87→1.74 — LVO có đủ gradient space
+  grad_clip_norm: 4.0
   freeze_encoder_epochs: 20
 
   # Cơ chế dìu nhau đi (DWA+)
