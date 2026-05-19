@@ -249,12 +249,13 @@ class MultiHeadDecoder(nn.Module):
         
         # 1. Bottleneck chung (32x32)
         self.shared_bottleneck = nn.Sequential(
-            ConvBnGelu1x1(3072, bottleneck_ch),
+            ConvBnGelu1x1(2048, bottleneck_ch),
             ConvBnGelu(bottleneck_ch, bottleneck_ch),
         )
 
         # 2. Ba lộ trình tách biệt hoàn toàn (Triple-Head Specialist)
-        # Skip channels (combined CTA + Perf): s4=2048, s3=1024, s2=512, s1=128
+        # Skip channels (combined CTA + Perf for Dual DenseNet121):
+        # s4=1024+1024=2048, s3=512+512=1024, s2=256+256=512, s1=64+64=128
         skips = [2048, 1024, 512, 128]
         
         # [FIX] Cấu hình AUX: LVO tắt 2 tầng sâu (16x16, 32x32) để giảm nhiễu

@@ -287,12 +287,29 @@ def build_encoders(config: dict):
     Returns:
         (cta_encoder, perfusion_encoder)
     """
-    cta_enc = ResNet50Encoder(
-        in_channels=config["cta_encoder"]["in_channels"],
-        weights_path=config["cta_encoder"]["weights"],
-    )
-    perf_enc = DenseNet121Encoder(
-        in_channels=config["perfusion_encoder"]["in_channels"],
-        weights_path=config["perfusion_encoder"]["weights"],
-    )
+    cta_name = config["cta_encoder"].get("name", "resnet50").lower()
+    if cta_name == "densenet121":
+        cta_enc = DenseNet121Encoder(
+            in_channels=config["cta_encoder"]["in_channels"],
+            weights_path=config["cta_encoder"]["weights"],
+        )
+    else:
+        cta_enc = ResNet50Encoder(
+            in_channels=config["cta_encoder"]["in_channels"],
+            weights_path=config["cta_encoder"]["weights"],
+        )
+
+    perf_name = config["perfusion_encoder"].get("name", "densenet121").lower()
+    if perf_name == "densenet121":
+        perf_enc = DenseNet121Encoder(
+            in_channels=config["perfusion_encoder"]["in_channels"],
+            weights_path=config["perfusion_encoder"]["weights"],
+        )
+    else:
+        # Fallback to ResNet50 if somehow specified
+        perf_enc = ResNet50Encoder(
+            in_channels=config["perfusion_encoder"]["in_channels"],
+            weights_path=config["perfusion_encoder"]["weights"],
+        )
+        
     return cta_enc, perf_enc

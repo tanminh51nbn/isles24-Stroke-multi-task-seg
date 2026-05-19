@@ -42,17 +42,8 @@ class DualEncoderUNet(nn.Module):
         self.cta_idx  = config["channel_split"]["cta_indices"]    # 6 kênh
         self.perf_idx = config["channel_split"]["perfusion_indices"]  # 12 kênh
 
-        # Encoder CTA: ResNet-50 + RadImageNet
-        self.cta_encoder = ResNet50Encoder(
-            in_channels=len(self.cta_idx),
-            weights_path=config["cta_encoder"]["weights"],
-        )
-
-        # Encoder Perfusion: DenseNet-121 + RadImageNet
-        self.perf_encoder = DenseNet121Encoder(
-            in_channels=len(self.perf_idx),
-            weights_path=config["perfusion_encoder"]["weights"],
-        )
+        from models.encoder import build_encoders
+        self.cta_encoder, self.perf_encoder = build_encoders(config)
 
         # Decoder đa nhánh kết hợp skip features từ 2 encoder
         self.decoder = MultiHeadDecoder(config)
