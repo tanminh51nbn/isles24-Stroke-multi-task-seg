@@ -34,12 +34,12 @@ perfusion_encoder:
 # ── Decoder ─────────────────────────────────────────────────────
 decoder:
   attention_type: "dual"  # "dual", "ag", or null
-  out_channels: [512, 256, 128, 64]
+  out_channels: [256, 128, 64, 32]
   final_ch: 16
 
 # ── Heads (Residual Task Blocks) ────────────────────────────────
 heads:
-  dropout: 0.25
+  dropout: 0.4
   activation: "GELU"
   lesion:
     out_channels: 1
