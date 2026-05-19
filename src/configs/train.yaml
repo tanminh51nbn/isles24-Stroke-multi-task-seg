@@ -41,7 +41,7 @@ composite_score:
   dice_cow_weight: 0.1
   thresholds:
     lesion: 0.5
-    lvo: 0.5
+    lvo: 0.4
     cow: 0.5
 
 # ── Optimizer ───────────────────────────────────────────────────
