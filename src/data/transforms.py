@@ -219,8 +219,8 @@ class RandomGamma:
     def __call__(self, sample: dict) -> dict:
         if random.random() < self.prob:
             gamma = random.uniform(*self.gamma_range)
-            # Giả định input đã được normalize [0, 1]
-            sample["input"] = torch.pow(sample["input"], gamma)
+            inp = torch.clamp(sample["input"], min=0.0, max=1.0)
+            sample["input"] = torch.pow(inp, gamma)
         return sample
 
 

@@ -95,9 +95,9 @@ class ISLES24Dataset(Dataset):
 
         # Input: float32, shape (18, 256, 256), range [0, 1]
         inp = torch.from_numpy(data["input"].astype(np.float32))
-
+        inp = torch.nan_to_num(aug_inp, nan=0.0, posinf=0.0, neginf=0.0)
+        
         # Label gốc: float32, shape (3, 256, 256), values {0, 1}
-        # [FIX] Chuyển sang Tensor ngay từ đầu để tương thích với transforms.py
         raw_label = torch.from_numpy(data["label"].astype(np.float32)).contiguous()
 
         # ── Augmentation ────────────────────────────────────────────────────
@@ -125,7 +125,6 @@ class ISLES24Dataset(Dataset):
         ], dim=0)
 
         # Sanitize NaN/inf (Cuối cùng cho an toàn tuyệt đối)
-        inp = torch.nan_to_num(aug_inp, nan=0.0, posinf=0.0, neginf=0.0)
         lbl = torch.nan_to_num(full_label, nan=0.0, posinf=0.0, neginf=0.0)
 
         return {"input": inp, "label": lbl, "path": path}
