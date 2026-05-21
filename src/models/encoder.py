@@ -94,6 +94,7 @@ class ResNet50Encoder(nn.Module):
 
     def __init__(self, in_channels: int = 6, weights_path: str = None):
         super().__init__()
+        self.skip_channels = [64, 256, 512, 1024, 2048]
         # Load backbone chuẩn (ImageNet) để lấy cấu trúc
         backbone = models.resnet50(weights=None)
 
@@ -176,13 +177,14 @@ class DenseNet121Encoder(nn.Module):
     """
     DenseNet-121 encoder trích xuất 5 cấp skip features cho UNet decoder.
 
-    Skip output channels: [64, 128, 256, 512, 1024]
+    Skip output channels: [64, 256, 512, 1024, 1024]
     Phù hợp với Perfusion map vì Dense Connection tái sử dụng feature hiệu quả,
     giúp giữ lại thông tin gradient màu sắc mờ nhạt của Tmax/CBF.
     """
 
     def __init__(self, in_channels: int = 12, weights_path: str = None):
         super().__init__()
+        self.skip_channels = [64, 256, 512, 1024, 1024]
         backbone = models.densenet121(weights=None)
         features = backbone.features
 

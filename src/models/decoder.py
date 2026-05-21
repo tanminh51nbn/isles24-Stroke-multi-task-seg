@@ -112,13 +112,12 @@ class FeatureFusionBlock(nn.Module):
     Đưa đặc trưng từ 2 Encoder về cùng một không gian biểu diễn và dùng 
     Channel-Attention để mô hình tự học trọng số giữa CTA (Cấu trúc) và Perfusion (Tưới máu).
     """
-    def __init__(self, in_ch: int):
+    def __init__(self, cta_ch: int, perf_ch: int):
         super().__init__()
-        # Giả định cta_ch == perf_ch == in_ch // 2
-        half_ch = in_ch // 2
-        self.conv_cta = ConvBnGelu1x1(half_ch, half_ch)
-        self.conv_perf = ConvBnGelu1x1(half_ch, half_ch)
+        self.conv_cta = ConvBnGelu1x1(cta_ch, cta_ch)
+        self.conv_perf = ConvBnGelu1x1(perf_ch, perf_ch)
         
+        in_ch = cta_ch + perf_ch
         # Squeeze-and-Excitation để học trọng số kênh
         self.se = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
@@ -136,15 +135,16 @@ class FeatureFusionBlock(nn.Module):
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, in_ch: int, skip_ch: int, out_ch: int, attention_type: Optional[str] = "dual", use_aux: bool = True, task_name: str = "shared", aux_ch: int = 1):
+    def __init__(self, in_ch: int, cta_skip_ch: int, perf_skip_ch: int, out_ch: int, attention_type: Optional[str] = "dual", use_aux: bool = True, task_name: str = "shared", aux_ch: int = 1):
         super().__init__()
         self.attention_type = attention_type
         self.use_aux = use_aux
         self.aux_ch = aux_ch
         self.task_name = task_name
         
+        skip_ch = cta_skip_ch + perf_skip_ch
         # Module Fusion để đồng bộ CTA và Perfusion
-        self.fusion = FeatureFusionBlock(skip_ch)
+        self.fusion = FeatureFusionBlock(cta_skip_ch, perf_skip_ch)
         
         self.conv1 = ConvBnGelu1x1(in_ch + skip_ch + aux_ch, out_ch)
         self.conv2 = ConvBnGelu(out_ch, out_ch)
@@ -188,7 +188,7 @@ class DecoupledPath(nn.Module):
     """
     Một nhánh Decoder chuyên biệt đi từ level 4 đến level 1.
     """
-    def __init__(self, config: dict, task_name: str, skip_channels: List[int], aux_ch: int = 1, active_aux_levels: List[bool] = [True, True, True, True], guidance_ch: int = 0):
+    def __init__(self, config: dict, task_name: str, cta_skip_channels: List[int], perf_skip_channels: List[int], aux_ch: int = 1, active_aux_levels: List[bool] = [True, True, True, True], guidance_ch: int = 0):
         super().__init__()
         self.active_aux_levels = active_aux_levels
         self.task_name = task_name
@@ -196,11 +196,12 @@ class DecoupledPath(nn.Module):
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
-        # skip_channels: [s4, s3, s2, s1] -> [2048, 1024, 512, 128]
-        self.dec4 = DecoderBlock(1024, skip_channels[0], dec_ch[0], attn_type, use_aux=active_aux_levels[0], task_name=task_name, aux_ch=aux_ch)
-        self.dec3 = DecoderBlock(dec_ch[0], skip_channels[1], dec_ch[1], attn_type, use_aux=active_aux_levels[1], task_name=task_name, aux_ch=aux_ch)
-        self.dec2 = DecoderBlock(dec_ch[1], skip_channels[2], dec_ch[2], attn_type, use_aux=active_aux_levels[2], task_name=task_name, aux_ch=aux_ch)
-        self.dec1 = DecoderBlock(dec_ch[2], skip_channels[3], dec_ch[3], attn_type, use_aux=active_aux_levels[3], task_name=task_name, aux_ch=aux_ch)
+        # cta_skip_channels: [s4, s3, s2, s1]
+        # perf_skip_channels: [d4, d3, d2, d1]
+        self.dec4 = DecoderBlock(1024, cta_skip_channels[0], perf_skip_channels[0], dec_ch[0], attn_type, use_aux=active_aux_levels[0], task_name=task_name, aux_ch=aux_ch)
+        self.dec3 = DecoderBlock(dec_ch[0], cta_skip_channels[1], perf_skip_channels[1], dec_ch[1], attn_type, use_aux=active_aux_levels[1], task_name=task_name, aux_ch=aux_ch)
+        self.dec2 = DecoderBlock(dec_ch[1], cta_skip_channels[2], perf_skip_channels[2], dec_ch[2], attn_type, use_aux=active_aux_levels[2], task_name=task_name, aux_ch=aux_ch)
+        self.dec1 = DecoderBlock(dec_ch[2], cta_skip_channels[3], perf_skip_channels[3], dec_ch[3], attn_type, use_aux=active_aux_levels[3], task_name=task_name, aux_ch=aux_ch)
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
@@ -243,26 +244,26 @@ class MultiHeadDecoder(nn.Module):
     - Nhánh 1 (LVO_Path): Chuyên gia soi điểm nhỏ (Heatmap).
     - Nhánh 2 (LesionAnatomy_Path): Chuyên gia phân vùng lớn (Lesion + CoW).
     """
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, cta_channels: List[int], perf_channels: List[int]):
         super().__init__()
         bottleneck_ch = 1024
         
         # 1. Bottleneck chung (32x32)
+        in_bottleneck = cta_channels[4] + perf_channels[4]
         self.shared_bottleneck = nn.Sequential(
-            ConvBnGelu1x1(2048, bottleneck_ch),
+            ConvBnGelu1x1(in_bottleneck, bottleneck_ch),
             ConvBnGelu(bottleneck_ch, bottleneck_ch),
         )
 
         # 2. Ba lộ trình tách biệt hoàn toàn (Triple-Head Specialist)
-        # Skip channels (combined CTA + Perf for Dual DenseNet121):
-        # s4=1024+1024=2048, s3=512+512=1024, s2=256+256=512, s1=64+64=128
-        skips = [2048, 1024, 512, 128]
+        cta_skips_dec = [cta_channels[3], cta_channels[2], cta_channels[1], cta_channels[0]]
+        perf_skips_dec = [perf_channels[3], perf_channels[2], perf_channels[1], perf_channels[0]]
         
         # [FIX] Cấu hình AUX: LVO tắt 2 tầng sâu (16x16, 32x32) để giảm nhiễu
-        self.cow_path    = DecoupledPath(config, "cow", skips, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=0)
+        self.cow_path    = DecoupledPath(config, "cow", cta_skips_dec, perf_skips_dec, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=0)
         # [FIX] Đảo ngược luồng: Lesion nhận 16 ch (từ CoW), LVO nhận 32 ch (từ CoW + Lesion)
-        self.lesion_path = DecoupledPath(config, "lesion", skips, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=16)
-        self.lvo_path    = DecoupledPath(config, "lvo", skips, aux_ch=1, active_aux_levels=[False, False, True, True], guidance_ch=32)
+        self.lesion_path = DecoupledPath(config, "lesion", cta_skips_dec, perf_skips_dec, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=16)
+        self.lvo_path    = DecoupledPath(config, "lvo", cta_skips_dec, perf_skips_dec, aux_ch=1, active_aux_levels=[False, False, True, True], guidance_ch=32)
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor], epoch: int = 0):
         s5, d5 = cta_skips[4], perf_skips[4]

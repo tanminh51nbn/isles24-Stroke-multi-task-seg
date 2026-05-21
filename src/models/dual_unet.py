@@ -46,7 +46,11 @@ class DualEncoderUNet(nn.Module):
         self.cta_encoder, self.perf_encoder = build_encoders(config)
 
         # Decoder đa nhánh kết hợp skip features từ 2 encoder
-        self.decoder = MultiHeadDecoder(config)
+        self.decoder = MultiHeadDecoder(
+            config,
+            cta_channels=self.cta_encoder.skip_channels,
+            perf_channels=self.perf_encoder.skip_channels,
+        )
 
         # 3 heads độc lập
         # Lấy in_ch từ config của decoder (mặc định là 16)

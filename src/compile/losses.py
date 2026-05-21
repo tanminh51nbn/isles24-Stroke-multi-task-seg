@@ -99,7 +99,7 @@ class ModifiedFocalLoss(nn.Module):
         
         # [FIX] Trừng phạt thiết quân luật: Giảm giới hạn max từ 1000 xuống 50
         # Mục đích: Không cho mô hình "vẽ bừa" để đổi lấy điểm TP nữa.
-        weight_pos = (num_neg / num_pos).clamp(max=30.0)
+        weight_pos = (num_neg / num_pos).clamp(max=50)
         
         # Bơm sức mạnh cho Vùng Đỏ bằng đòn bẩy
         loss_pos = pos_loss.sum() * weight_pos
@@ -372,7 +372,7 @@ class MultiTaskLoss(nn.Module):
         w = self.current_weights.to(targets.device)
         p_l, p_v, p_c = w[0], w[1], w[2]
 
-        dynamic_sigma = max(1.5, 5.5 * (0.96 ** cur_ep))  # [FIX] decay 0.95→0.97, floor 1.5→2.0px
+        dynamic_sigma = max(2.0, 5.5 * (0.96 ** cur_ep))  # [FIX] decay 0.95→0.97, floor 1.5→2.0px
         if kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank()==0):
             pgw_active = self._pgw_epoch.item() >= 0
             tag = "[PGW]" if pgw_active else "[INIT]"

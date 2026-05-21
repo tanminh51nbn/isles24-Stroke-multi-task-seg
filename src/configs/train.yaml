@@ -11,8 +11,8 @@ loss:
     beta: 0.7
     gamma: 2.0
     weight: 0.43
-    hd_weight: 0.0
-    cl_weight: 0.10
+    hd_weight: 0.30
+    cl_weight: 0.0
     cl_iters: 3
 
   lvo:
@@ -20,9 +20,8 @@ loss:
     mfl_alpha: 2.0
     mfl_beta: 4.0
     weight: 0.43
-    # [T2.1] LVO Binary Classification Branch
-    lvo_cls_weight: 0.2
-    lvo_cls_pos_weight: 1.5
+    lvo_cls_weight: 0.25
+    lvo_cls_pos_weight: 2.0
 
   cow:
     type: "cl_tversky"
