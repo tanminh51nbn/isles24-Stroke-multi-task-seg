@@ -95,7 +95,7 @@ class ISLES24Dataset(Dataset):
 
         # Input: float32, shape (18, 256, 256), range [0, 1]
         inp = torch.from_numpy(data["input"].astype(np.float32))
-        inp = torch.nan_to_num(aug_inp, nan=0.0, posinf=0.0, neginf=0.0)
+        inp = torch.nan_to_num(inp, nan=0.0, posinf=0.0, neginf=0.0)
         
         # Label gốc: float32, shape (3, 256, 256), values {0, 1}
         raw_label = torch.from_numpy(data["label"].astype(np.float32)).contiguous()
