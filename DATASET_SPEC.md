@@ -25,7 +25,7 @@ Bộ dữ liệu nguyên bản ISLES 2024 (được cung cấp qua Zenodo) là m
 - CBF: [0, 35]
 - CBV: [0, 10]
 - MTT: [0, 20]
-4. **Đúc 2.5D & Resizing (2.5D Stacking):** Để tạo bối cảnh không gian mà không tốn chi phí tính toán của 3D-CNN, dữ liệu được xếp chồng theo chiều Z: `(Z-1, Z, Z+1)`. Hình ảnh được resize về kích thước chuẩn `256x256` thông qua thuật toán padding kết hợp nội suy để bảo toàn tỷ lệ khung hình (Những ai bé hơn 256 thì pad vào, những ai lớn hơn 256 thì resize về).
+4. **Đúc 2.5D & Tích hợp MIP (Hybrid 2.5D & MIP Stacking):** Để tạo bối cảnh không gian rộng mà không tốn chi phí tính toán của 3D-CNN, dữ liệu được xếp chồng theo chiều Z bằng cách kết hợp lát cắt gốc và ảnh chiếu cường độ tối đa (MIP): `[MIP_Below(6), Center_Z(6), MIP_Above(6)]`. Hình ảnh được resize về kích thước chuẩn `256x256` thông qua thuật toán padding kết hợp nội suy để bảo toàn tỷ lệ khung hình (Những ai bé hơn 256 thì pad vào, những ai lớn hơn 256 thì resize về).
 5. **Thanh lọc bóng ma (Ghost Purging):** Những lát cắt ở đỉnh đầu hoặc dưới cổ (nơi không chứa bất kỳ nhu mô não nào) được tự động quét và loại bỏ vĩnh viễn, tạo ra một bộ dataset "tinh khiết" không chứa dữ liệu rác.
 
 ---
@@ -53,10 +53,10 @@ Cú pháp: `sub-stroke[ID]_slice[Z].npy`
 Mỗi file là một `Dictionary` chứa 2 khối dữ liệu (Tensors):
 
 #### 🟩 `input`: Shape `(18, 256, 256)`, Kiểu dữ liệu `float32`
-Chứa 6 loại ảnh y tế được xếp dọc qua 3 lát cắt liên tiếp (Trọng số từ 0.0 đến 1.0).
-- **Channel 00 -> 05 (Lát cắt Z-1):** `[CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]`
-- **Channel 06 -> 11 (Lát cắt Z  ):** `[CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]`
-- **Channel 12 -> 17 (Lát cắt Z+1):** `[CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]`
+Chứa 6 loại ảnh y tế được sắp xếp lai giữa lát cắt đơn gốc và ảnh MIP (Max Intensity Projection) của các lát lân cận trong bán kính quét $WINDOW\_RADIUS = 7$ lát cắt:
+- **Channel 00 -> 05 (MIP Below - Quét từ Z-7 đến Z-1):** `[CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]` (Ảnh chiếu cường độ tối đa)
+- **Channel 06 -> 11 (Center_Z - Lát cắt đơn tại vị trí Z):** `[CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]` (Giữ nguyên độ sắc nét gốc để phân vùng tổn thương)
+- **Channel 12 -> 17 (MIP Above - Quét từ Z+1 đến Z+7):** `[CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT]` (Ảnh chiếu cường độ tối đa)
 
 *(Lưu ý về Dữ liệu khuyết: Do đặc thù FOV hẹp của Perfusion map, ở một số lát cắt trên cao hoặc dưới thấp, các kênh Perfusion map (Tmax, CBF, CBV, MTT) sẽ mang giá trị 0 toàn bộ. CTA sẽ vẫn có hình ảnh. Mô hình của bạn phải có khả năng học cách bỏ qua Perfusion map và tự chẩn đoán bằng CTA ở các lát cắt này).*
 
