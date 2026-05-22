@@ -11,8 +11,8 @@ loss:
     beta: 0.7
     gamma: 2.0
     weight: 0.43
-    hd_weight: 0.30
-    cl_weight: 0.0
+    hd_weight: 0.0
+    cl_weight: 0.15
     cl_iters: 3
 
   lvo:
@@ -80,20 +80,23 @@ training:
   dwa_ema_alpha: 0.2
   dwa_momentum: 0.5
   initial_weights:
-    lesion: 0.40
-    lvo: 0.35
-    cow: 0.25
+    lesion: 1.20
+    lvo: 1.05
+    cow: 0.75
 
   # Performance Gap Weighting (thay thế DWA+)
   pgw:
     start_epoch: 8
     temperature: 1.0
     momentum: 0.8
-    w_min: 0.1
+    w_min:
+      lesion: 0.15
+      lvo: 0.15
+      cow: 0.20
     w_max:
-      lesion: 1.6
-      lvo: 1.3
-      cow: 1.0
+      lesion: 4.8
+      lvo: 3.9
+      cow: 3.0
     performance_targets:
       lesion: 0.7
       lvo: 0.50

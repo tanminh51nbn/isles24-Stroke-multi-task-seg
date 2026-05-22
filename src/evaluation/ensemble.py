@@ -91,9 +91,14 @@ def ensemble_predict(
 
     for model in models:
         out = model(x)
-        for task in task_preds:
-            # Sigmoid để chuyển logit → probability
-            task_preds[task].append(torch.sigmoid(out[task]))
+        task_preds["lesion"].append(torch.sigmoid(out["lesion"]))
+        task_preds["cow"].append(torch.sigmoid(out["cow"]))
+        
+        lvo_prob = torch.sigmoid(out["lvo"])
+        if "lvo_cls" in out and out["lvo_cls"] is not None:
+            cls_prob = torch.sigmoid(out["lvo_cls"]).view(-1, 1, 1, 1)
+            lvo_prob = lvo_prob * cls_prob
+        task_preds["lvo"].append(lvo_prob)
 
     # Trung bình trên dimension mô hình
     return {

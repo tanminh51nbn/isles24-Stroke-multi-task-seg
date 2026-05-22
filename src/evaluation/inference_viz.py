@@ -104,9 +104,13 @@ def run_compare_mode(args, model, train_cfg, device):
                 preds = model(inp)
                 axes[i+1].imshow(bg_img, cmap='bone')
                 
-                if name == "lvo":
                     # Hiển thị LVO dạng Heatmap rực rỡ (colormap hot)
-                    heat = torch.sigmoid(preds["lvo"]).cpu().numpy()[0, 0]
+                    sig_lvo_tensor = torch.sigmoid(preds["lvo"])
+                    lvo_cls = preds.get("lvo_cls", None)
+                    if lvo_cls is not None:
+                        cls_prob = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
+                        sig_lvo_tensor = sig_lvo_tensor * cls_prob
+                    heat = sig_lvo_tensor.cpu().numpy()[0, 0]
                     axes[i+1].imshow(heat, cmap='hot', alpha=0.6, vmin=0, vmax=1)
                 elif name == "lesion":
                     # Lesion hiển thị Mask nhị phân
@@ -124,7 +128,12 @@ def run_compare_mode(args, model, train_cfg, device):
                     
                     m_lesion = (torch.sigmoid(preds["lesion"]) > thresh_l).cpu().numpy()[0, 0]
                     m_cow    = (torch.sigmoid(preds["cow"]) > thresh_c).cpu().numpy()[0, 0]
-                    h_lvo    = torch.sigmoid(preds["lvo"]).cpu().numpy()[0, 0]
+                    sig_lvo_tensor = torch.sigmoid(preds["lvo"])
+                    lvo_cls = preds.get("lvo_cls", None)
+                    if lvo_cls is not None:
+                        cls_prob = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
+                        sig_lvo_tensor = sig_lvo_tensor * cls_prob
+                    h_lvo    = sig_lvo_tensor.cpu().numpy()[0, 0]
                     
                     if m_lesion.sum() > 0:
                         ov_l = np.zeros((*m_lesion.shape, 4))
