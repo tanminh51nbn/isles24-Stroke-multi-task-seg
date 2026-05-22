@@ -21,21 +21,30 @@ from typing import List
 
 def inflate_weights(weight: torch.Tensor, target_channels: int) -> torch.Tensor:
     """
-    NÂNG CẤP: Thổi phồng weight với trọng số tập trung vào tâm (Center-Weighted).
-    Giả định lát cắt ở giữa chứa thông tin quan trọng nhất, các lát cắt rìa là bối cảnh.
+    Thổi phồng weight với trọng số tập trung vào lát cắt ở giữa (Slice-Aware Center-Weighted).
+    Vì dữ liệu dạng 2.5D xếp chồng 3 lát cắt (Z-1, Z, Z+1):
+    - Lát cắt trung tâm Z (chứa nhãn chính xác nhất) nhận trọng số cao nhất (1.0).
+    - Các lát cắt lân cận Z-1 và Z+1 (đóng vai trò bối cảnh) nhận trọng số thấp hơn (0.4).
     """
     out_ch, in_ch, kH, kW = weight.shape # in_ch thường là 3
     
     # 1. Lấy đặc trưng trung bình từ 3 kênh gốc
     mean_weight = weight.mean(dim=1, keepdim=True) # (out_ch, 1, kH, kW)
     
-    # 2. Tạo profile trọng số cho các lát cắt (Gaussian-like)
-    # Ví dụ với 9 kênh: [0.5, 0.7, 0.9, 1.0, 1.1, 1.0, 0.9, 0.7, 0.5]
-    center = target_channels // 2
-    indices = torch.arange(target_channels).float()
-    # Tính khoảng cách tới tâm, càng xa tâm trọng số càng giảm nhẹ
-    weights = torch.exp(-0.1 * (indices - center)**2)
-    weights = weights / weights.sum() * 3.0 # Chuẩn hóa để tổng năng lượng tương đương 3 kênh gốc
+    # 2. Tạo profile trọng số theo từng lát cắt cụ thể (Slice-Aware)
+    # Chia đều target_channels thành 3 nhóm tương ứng với 3 lát cắt Z-1, Z, Z+1
+    channels_per_slice = target_channels // 3
+    
+    weights = torch.zeros(target_channels)
+    for i in range(target_channels):
+        slice_idx = i // channels_per_slice
+        if slice_idx == 1:  # Lát cắt trung tâm Z
+            weights[i] = 1.0
+        else:               # Lát cắt lân cận Z-1 hoặc Z+1
+            weights[i] = 0.4
+            
+    # Chuẩn hóa để tổng năng lượng tương đương 3 kênh gốc
+    weights = weights / weights.sum() * 3.0
     
     # 3. Thổi phồng và áp trọng số
     new_weight = mean_weight.repeat(1, target_channels, 1, 1)
