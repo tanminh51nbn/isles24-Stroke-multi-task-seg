@@ -56,9 +56,9 @@ composite_score:
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
-  lr: 3.0e-4
-  weight_decay: 3.0e-2
-  encoder_lr_scale: 0.1 # [FIX] Nâng LR Encoder lên 10% sau khi đã ổn định LVO
+  lr: 5.0e-4
+  weight_decay: 5.0e-2
+  encoder_lr_scale: 0.05
   eps: 1.0e-7
 
 # ── LR Scheduler ────────────────────────────────────────────────
