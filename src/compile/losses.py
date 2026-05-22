@@ -97,9 +97,9 @@ class ModifiedFocalLoss(nn.Module):
         num_pos = pos_mask.sum().clamp(min=1.0)
         num_neg = neg_mask.sum().clamp(min=1.0)
         
-        # [FIX] Trừng phạt thiết quân luật: Giảm giới hạn max từ 1000 xuống 50
+        # [FIX] Trừng phạt thiết quân luật: Giảm giới hạn max từ 1000 xuống 200
         # Mục đích: Không cho mô hình "vẽ bừa" để đổi lấy điểm TP nữa.
-        weight_pos = (num_neg / num_pos).clamp(max=50)
+        weight_pos = (num_neg / num_pos).clamp(max=200)
         
         # Bơm sức mạnh cho Vùng Đỏ bằng đòn bẩy
         loss_pos = pos_loss.sum() * weight_pos
@@ -251,7 +251,17 @@ class MultiTaskLoss(nn.Module):
         ])
         self.pgw_temperature  = pgw_cfg.get("temperature", 0.5)
         self.pgw_momentum     = pgw_cfg.get("momentum",    0.3)
-        self.pgw_w_min        = pgw_cfg.get("w_min",       0.1)
+        w_min_cfg = pgw_cfg.get("w_min", 0.1)
+        if isinstance(w_min_cfg, dict):
+            self.register_buffer('pgw_w_min', torch.tensor([
+                w_min_cfg.get("lesion", 0.1),
+                w_min_cfg.get("lvo",    0.1),
+                w_min_cfg.get("cow",    0.1),
+            ], dtype=torch.float32))
+        elif isinstance(w_min_cfg, (list, tuple)):
+            self.register_buffer('pgw_w_min', torch.tensor(w_min_cfg, dtype=torch.float32))
+        else:
+            self.register_buffer('pgw_w_min', torch.tensor([w_min_cfg, w_min_cfg, w_min_cfg], dtype=torch.float32))
         self.pgw_start_epoch  = pgw_cfg.get("start_epoch", 5)
         self.n_tasks          = 3
         # Per-task weight ceiling: ngăn task collapse chiếm đoạt toàn bộ budget
@@ -321,8 +331,9 @@ class MultiTaskLoss(nn.Module):
             self.current_weights.copy_(init)
             return
 
-        # Softmax chỉ trên active tasks; budget = N - n_inactive * w_min
-        weight_budget = self.n_tasks - n_inactive * self.pgw_w_min
+        # Softmax chỉ trên active tasks; budget = N - sum(w_min for inactive tasks)
+        inactive_w_min_sum = (self.pgw_w_min * (~active_mask).float()).sum()
+        weight_budget = self.n_tasks - inactive_w_min_sum
         active_gap    = gap * active_mask.float()
         # [FIX NaN] Subtract max before exp (Softmax stability trick) để tránh nổ Inf khi gap lớn hoặc temp nhỏ
         max_gap       = torch.max(active_gap) if n_active > 0 else 0.0
@@ -330,14 +341,14 @@ class MultiTaskLoss(nn.Module):
         raw_w = torch.where(
             active_mask,
             (exp_gap / (exp_gap.sum() + 1e-8)) * weight_budget,
-            torch.full_like(gap, self.pgw_w_min)
+            self.pgw_w_min
         )
 
         # Momentum + Phân bổ lại phần thừa (Projected Simplex với Box Constraints)
         blended_w = self.pgw_momentum * self.current_weights + (1.0 - self.pgw_momentum) * raw_w
         
         w = blended_w.clone()
-        w_min = torch.full_like(w, self.pgw_w_min)
+        w_min = self.pgw_w_min.to(w.device)
         w_max = self.pgw_w_max.to(w.device)
         
         # Phân bổ phần thừa tuần tự (tối đa N bước cho N tasks)

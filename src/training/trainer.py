@@ -171,7 +171,8 @@ class Trainer:
                 paths = batch.get("path", [""] * inp.shape[0])
                 accumulate_patient_lvo_stats(
                     preds["lvo"], lbl[:, 1:2], paths, patient_stats,
-                    threshold=lvo_thr
+                    threshold=lvo_thr,
+                    lvo_cls=preds.get("lvo_cls", None)
                 )
 
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)

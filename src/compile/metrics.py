@@ -80,9 +80,13 @@ def aad_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.
     return (sum(diff_percentages) / len(diff_percentages)) * 100.0
 
 
-def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> dict:
+def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None) -> dict:
     """Gom TP/FP/FN từng batch để tính F1 global sau khi duyệt xong Val set."""
-    preds = (torch.sigmoid(logits) > threshold).float().cpu().numpy()
+    probs = torch.sigmoid(logits)
+    if lvo_cls is not None:
+        probs_cls = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
+        probs = probs * probs_cls
+    preds = (probs > threshold).float().cpu().numpy()
     gt    = (targets > 0.1).float().cpu().numpy()
     
     tp, fp, fn = 0, 0, 0
@@ -108,9 +112,9 @@ def finalize_lvo_f1(lvo_stats: dict) -> float:
     return f1 * 100.0
 
 
-def f1_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
+def f1_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None) -> float:
     """Instance-level F1 Score cho LVO Detection (per-batch, dùng cho debug)."""
-    stats = accumulate_lvo_stats(logits, targets, threshold)
+    stats = accumulate_lvo_stats(logits, targets, threshold, lvo_cls)
     return finalize_lvo_f1(stats)
 
 
@@ -201,7 +205,8 @@ def accumulate_patient_lvo_stats(
     targets: torch.Tensor,
     paths: list,
     patient_stats: dict,
-    threshold: float = 0.5
+    threshold: float = 0.5,
+    lvo_cls: torch.Tensor = None
 ) -> None:
     """Gom dự đoán LVO theo bệnh nhân (patient-level) từ batch.
 
@@ -209,7 +214,11 @@ def accumulate_patient_lvo_stats(
     patient_stats: dict, cập nhật in-place. Structure:
         {patient_id: {"has_gt": bool, "max_pred": float}}
     """
-    preds_prob = torch.sigmoid(logits).float().cpu()
+    probs = torch.sigmoid(logits)
+    if lvo_cls is not None:
+        probs_cls = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
+        probs = probs * probs_cls
+    preds_prob = probs.float().cpu()
     gt_bin     = (targets > 0.1).float().cpu()
 
     for i, path in enumerate(paths):
@@ -262,6 +271,7 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
 
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None) -> dict:
     t = weights.get("thresholds", {"lesion": 0.45, "lvo": 0.05, "cow": 0.5})
+    lvo_cls = preds.get("lvo_cls", None)
 
     # Lesion Metrics
     d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]).item()
@@ -284,13 +294,13 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
     # LVO: Gom stats nếu được cung cấp lvo_stats dict (Global mode)
     # Ngược lại tính per-batch như cũ (dùng cho debug)
     if lvo_stats is not None:
-        batch_stats = accumulate_lvo_stats(preds["lvo"], targets[:, 1:2], threshold=t["lvo"])
+        batch_stats = accumulate_lvo_stats(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], lvo_cls=lvo_cls)
         lvo_stats["tp"] += batch_stats["tp"]
         lvo_stats["fp"] += batch_stats["fp"]
         lvo_stats["fn"] += batch_stats["fn"]
         f1_lvo = 0.0  # Sẽ được tính ở cuối epoch bởi finalize_lvo_f1
     else:
-        f1_lvo = f1_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"])
+        f1_lvo = f1_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], lvo_cls=lvo_cls)
     
     # CoW Metrics
     d_cow = dice_score(preds["cow"], targets[:, 2:3], threshold=t["cow"]).item()
