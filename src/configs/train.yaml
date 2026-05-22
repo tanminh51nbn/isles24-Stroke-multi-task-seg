@@ -40,8 +40,18 @@ composite_score:
   dice_cow_weight: 0.1
   thresholds:
     lesion: 0.5
-    lvo: 0.4
+    lvo: 0.10      # Giá trị khởi đầu (epoch 1–20, encoder khóa) — get_lvo_threshold() sẽ override runtime
     cow: 0.5
+  # ── LVO Threshold Linear Ramp ───────────────────────────────────
+  # Tránh metric cliff khi encoder unfreeze ở epoch 21
+  # Công thức: thresh = thresh_freeze + t*(thresh_unfreeze-thresh_freeze)
+  # với t = (epoch - freeze_epoch) / (ramp_end_epoch - freeze_epoch)
+  lvo_threshold_ramp:
+    freeze_epoch:    20    # Epoch cuối cùng giữ ngưỡng dễ (khớp freeze_encoder_epochs)
+    ramp_end_epoch:  30    # Epoch bắt đầu giữ ngưỡng ketat (khớp early_stopping.start_epoch)
+    thresh_freeze:   0.10  # Ngưỡng khi encoder đang bị khóa  (epoch ≤ 20)
+    thresh_unfreeze: 0.30  # Ngưỡng đích sau khi hội tụ       (epoch ≥ 30)
+
 
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:

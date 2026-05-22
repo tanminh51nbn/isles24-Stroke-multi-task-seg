@@ -14,6 +14,38 @@ import numpy as np
 from scipy.ndimage import label
 
 
+def get_lvo_threshold(epoch: int, cfg: dict) -> float:
+    """
+    Tính ngưỡng LVO động theo epoch (Linear Ramp).
+
+    Chiến lược:
+      - Epoch ≤ freeze_epoch         : thresh_freeze  (dễ dãi, bắt tín hiệu yếu khi encoder khóa)
+      - freeze_epoch < epoch ≤ ramp_end: tăng tuyến tính → thresh_unfreeze
+      - Epoch > ramp_end             : thresh_unfreeze (siết chặt, encoder đã hội tụ)
+
+    Args:
+        epoch (int): Epoch hiện tại (1-indexed, như in log).
+        cfg (dict) : Nhánh ``composite_score`` từ train.yaml.
+
+    Returns:
+        float: Ngưỡng LVO hợp lệ cho epoch này.
+    """
+    ramp_cfg        = cfg.get("lvo_threshold_ramp", {})
+    freeze_epoch    = int(ramp_cfg.get("freeze_epoch",    20))
+    ramp_end_epoch  = int(ramp_cfg.get("ramp_end_epoch", 30))
+    thresh_freeze   = float(ramp_cfg.get("thresh_freeze",   0.10))
+    thresh_unfreeze = float(ramp_cfg.get("thresh_unfreeze", 0.30))
+
+    if epoch <= freeze_epoch:
+        return thresh_freeze
+    elif epoch >= ramp_end_epoch:
+        return thresh_unfreeze
+    else:
+        # Tuyến tính: 0 → 1 trong khoảng (freeze_epoch, ramp_end_epoch]
+        t = (epoch - freeze_epoch) / max(ramp_end_epoch - freeze_epoch, 1)
+        return thresh_freeze + t * (thresh_unfreeze - thresh_freeze)
+
+
 def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, smooth: float = 1e-6) -> torch.Tensor:
     preds = (torch.sigmoid(logits) > threshold).float()
     preds   = preds.view(preds.size(0), -1)

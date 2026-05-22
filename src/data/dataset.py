@@ -127,7 +127,7 @@ class ISLES24Dataset(Dataset):
         # Sanitize NaN/inf (Cuối cùng cho an toàn tuyệt đối)
         lbl = torch.nan_to_num(full_label, nan=0.0, posinf=0.0, neginf=0.0)
 
-        return {"input": inp, "label": lbl, "path": path}
+        return {"input": aug_inp, "label": lbl, "path": path}
 
 
 

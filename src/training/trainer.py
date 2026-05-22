@@ -13,6 +13,7 @@ import math
 from compile.metrics import (
     compute_all_metrics, finalize_lvo_f1,
     accumulate_patient_lvo_stats, finalize_patient_lvo_acc,
+    get_lvo_threshold,
 )
 from evaluation.visualize import overlay_predictions, select_best_sample
 from data.fold_split import apply_sampling
@@ -123,7 +124,9 @@ class Trainer:
         lvo_stats = {"tp": 0, "fp": 0, "fn": 0}
         # Patient-level LVO stats
         patient_stats = {}
-        
+
+        # [RAMP] Tính ngưỡng LVO động theo epoch — linear ramp từ thresh_freeze → thresh_unfreeze
+        lvo_thr = get_lvo_threshold(epoch + 1, self.metric_weights)  # epoch là 0-indexed, log dùng 1-indexed
         vis_interval = self.config["training"]["logging"].get("visualize_every", 5)
         should_vis = (epoch % vis_interval == 0) and (self.rank == 0)
         vis_candidates = []  # Thu thập ứng viên từ toàn bộ val loop
@@ -143,8 +146,11 @@ class Trainer:
             main_loss += losses["main"].item()
             sum_p_v += losses.get("p_lvo", 1.0)
             
+            # Override thresholds.lvo = lvo_thr (dynamic ramp) cho batch này
+            _t = {**self.metric_weights, "thresholds": {**self.metric_weights.get("thresholds", {}), "lvo": lvo_thr}}
             # Truyền lvo_stats vào để gom TP/FP/FN toàn cục
-            metrics = compute_all_metrics(preds, lbl, self.metric_weights, lvo_stats=lvo_stats)
+            metrics = compute_all_metrics(preds, lbl, _t, lvo_stats=lvo_stats)
+
             sum_d_l  += metrics["dice_lesion"]
             sum_d_c  += metrics["dice_cow"]
             sum_aad  += metrics["aad_lesion"]
@@ -161,7 +167,7 @@ class Trainer:
                 paths = batch.get("path", [""] * inp.shape[0])
                 accumulate_patient_lvo_stats(
                     preds["lvo"], lbl[:, 1:2], paths, patient_stats,
-                    threshold=self.metric_weights.get("thresholds", {}).get("lvo", 0.2)
+                    threshold=lvo_thr
                 )
 
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)
@@ -207,9 +213,9 @@ class Trainer:
             # Log LVO Summary (Global + Patient)
             pat = finalize_patient_lvo_acc(
                 patient_stats,
-                threshold=self.metric_weights.get("thresholds", {}).get("lvo", 0.2)
+                threshold=lvo_thr
             )
-            print(f"    [LVO Summary] F1: {af1_v:.2f}% (TP={lvo_stats['tp']} FP={lvo_stats['fp']} FN={lvo_stats['fn']})")
+            print(f"    [LVO Summary] F1: {af1_v:.2f}% (TP={lvo_stats['tp']} FP={lvo_stats['fp']} FN={lvo_stats['fn']}) | Threshold={lvo_thr:.2f}")
             print(f"    [LVO Patient] Acc: {pat['accuracy']*100:.1f}% ({pat['tp']+pat['tn']}/{pat['n']}) | TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']} | BalAcc={pat['bal_acc']*100:.1f}%")
             # Visualize sample tốt nhất (sau khi đã dưắt toàn bộ val loop)
             if should_vis and vis_candidates:
