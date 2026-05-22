@@ -22,6 +22,8 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     epochs       = [h["epoch"] for h in history]
     train_losses = [h["train_loss"]   for h in history]
     val_losses   = [h["val_loss"]     for h in history]
+    train_raw    = [h.get("train_raw", h["train_loss"]) for h in history]
+    val_raw      = [h.get("val_raw", h["val_loss"]) for h in history]
     dice_lesion  = [h["dice_lesion"]  for h in history]
     f1_lvo       = [h["f1_lvo"]/100.0 for h in history] # Đưa về [0,1] để vẽ chung đồ thị
     dice_cow     = [h["dice_cow"]     for h in history]
@@ -30,8 +32,10 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     fig, axes = plt.subplots(1, 4, figsize=(22, 5))
     fig.suptitle("ISLES'24 — Training Progress & Multi-Task Dynamics", fontsize=14, fontweight="bold")
 
-    axes[0].plot(epochs, train_losses, color="#E74C3C", linewidth=2, label="Train Loss")
-    axes[0].plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss", linestyle="--")
+    axes[0].plot(epochs, train_losses, color="#E74C3C", linewidth=2, label="Train Loss (Weighted)")
+    axes[0].plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss (Weighted)", linestyle="--")
+    axes[0].plot(epochs, train_raw,    color="#E67E22", linewidth=1.5, label="Train Loss (Raw)", alpha=0.8)
+    axes[0].plot(epochs, val_raw,      color="#2ECC71", linewidth=1.5, label="Val Loss (Raw)", linestyle="-.", alpha=0.8)
     axes[0].set_title("Loss Curves"); axes[0].legend(); axes[0].grid(True, alpha=0.3)
 
     axes[1].plot(epochs, dice_lesion, color="#3498DB", linewidth=2, label="Dice Lesion")

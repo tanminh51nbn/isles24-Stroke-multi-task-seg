@@ -303,7 +303,7 @@ class MultiTaskLoss(nn.Module):
                 device=self.current_weights.device
             )
             self.current_weights.copy_(init)
-            print(f"    [PGW] Tất cả task đạt target → reset về initial_weights")
+            print(f"    [PGW] Tất cả task đạt target -> reset về initial_weights")
             return
 
         # [FIX 1.2] Tách task ĐÃ đạt target (gap≈0) và CHƯA đạt.
@@ -362,7 +362,7 @@ class MultiTaskLoss(nn.Module):
             "C" if not active_mask[2] else "",
         ]) or "none"
         print(f"    [PGW]: Gap L={gap[0]:.3f} V={gap[1]:.3f} C={gap[2]:.3f} "
-              f"→ Weights: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f} "
+              f"-> Weights: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f} "
               f"(fixed: {fixed_tag})")
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
@@ -422,6 +422,12 @@ class MultiTaskLoss(nn.Module):
         loss_v = l_v_m * p_v
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
 
+        # Unweighted task losses (dùng để logging/monitoring độ hội tụ thực tế)
+        unweighted_lesion = ((1.0 - self.lesion_hd_w - w_cl_l) * l_l_m + self.lesion_hd_w * l_l_hd + w_cl_l * l_l_cl) + l_l_afl
+        unweighted_lvo = l_v_m
+        unweighted_cow = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl)
+        unweighted_main = unweighted_lesion + unweighted_lvo + unweighted_cow
+
         main_loss = loss_l + loss_v + loss_c
 
         # (running_loss không còn dùng cho DWA — giữ lại để debug nếu cần)
@@ -460,5 +466,6 @@ class MultiTaskLoss(nn.Module):
             'l_cow': loss_c.item() if isinstance(loss_c, torch.Tensor) else loss_c,
             'p_lesion': p_l if isinstance(p_l, (float, int)) else p_l.item(),
             'p_lvo': p_v if isinstance(p_v, (float, int)) else p_v.item(),
-            'p_cow': p_c if isinstance(p_c, (float, int)) else p_c.item()
+            'p_cow': p_c if isinstance(p_c, (float, int)) else p_c.item(),
+            'unweighted_main': unweighted_main.item() if isinstance(unweighted_main, torch.Tensor) else unweighted_main
         }

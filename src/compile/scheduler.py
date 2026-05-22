@@ -61,7 +61,7 @@ def build_scheduler(optimizer, config: dict, steps_per_epoch: int = 1):
 
     print(
         f"[Scheduler] Phased Strategy: Warmup({warmup_ep}ep) "
-        f"→ Hold({hold_ep}ep) → Cosine({total_ep - warmup_ep - hold_ep}ep) | "
+        f"-> Hold({hold_ep}ep) -> Cosine({total_ep - warmup_ep - hold_ep}ep) | "
         f"min_lr={min_lr:.2e}"
     )
     return scheduler

@@ -40,7 +40,7 @@ class Trainer:
 
     def train_one_epoch(self, epoch: int) -> dict:
         self.model.train()
-        total_loss, main_loss, n_batches, nan_batches = 0.0, 0.0, 0, 0
+        total_loss, main_loss, raw_loss, n_batches, nan_batches = 0.0, 0.0, 0.0, 0, 0
         max_lvo_spike = 0.0  # [FIX 1.3] Track spike lớn nhất, log 1 lần / epoch
         print(f"\nStarting Epoch {epoch + 1}:")
         
@@ -91,30 +91,33 @@ class Trainer:
 
             total_loss += losses["total"].item()
             main_loss += losses["main"].item()
+            raw_loss += losses.get("unweighted_main", losses["main"].item())
             n_batches += 1
 
         if self.rank == 0:
             if max_lvo_spike > 100.0:
                 import math
                 spike_str = "inf" if math.isinf(max_lvo_spike) else f"{max_lvo_spike:.1f}"
-                print(f"    [WARN] LVO max grad spike: {spike_str} → clipped to 10.0")
+                print(f"    [WARN] LVO max grad spike: {spike_str} -> clipped to 10.0")
             if nan_batches > 0:
                 print(f"    [WARN] Đã skip {nan_batches} batches do lỗi NaN/Inf.")
         
         if dist.is_initialized():
-            sync = torch.tensor([total_loss, main_loss, float(n_batches)], device=self.device)
+            sync = torch.tensor([total_loss, main_loss, float(n_batches), raw_loss], device=self.device)
             dist.all_reduce(sync, op=dist.ReduceOp.SUM)
             avg_loss = sync[0].item() / max(sync[2].item(), 1)
             avg_main = sync[1].item() / max(sync[2].item(), 1)
+            avg_raw = sync[3].item() / max(sync[2].item(), 1)
         else:
             avg_loss = total_loss / max(n_batches, 1)
             avg_main = main_loss / max(n_batches, 1)
-        return {"train_loss": avg_loss, "train_main": avg_main}
+            avg_raw = raw_loss / max(n_batches, 1)
+        return {"train_loss": avg_loss, "train_main": avg_main, "train_raw": avg_raw}
 
     @torch.no_grad()
     def validate(self, epoch: int) -> dict:
         self.model.eval()
-        total_loss, main_loss = 0.0, 0.0
+        total_loss, main_loss, raw_loss = 0.0, 0.0, 0.0
         sum_d_l, sum_d_l_pos, sum_d_c = 0.0, 0.0, 0.0  # [FIX C] sum_d_l_pos: Lesion-positive slice only
         sum_aad, sum_alcd = 0.0, 0.0
         sum_p_v = 0.0
@@ -144,6 +147,7 @@ class Trainer:
 
             total_loss += losses["total"].item()
             main_loss += losses["main"].item()
+            raw_loss += losses.get("unweighted_main", losses["main"].item())
             sum_p_v += losses.get("p_lvo", 1.0)
             
             # Override thresholds.lvo = lvo_thr (dynamic ramp) cho batch này
@@ -189,15 +193,17 @@ class Trainer:
             dist.all_reduce(lvo_tensor, op=dist.ReduceOp.SUM)
             lvo_stats = {"tp": int(lvo_tensor[0].item()), "fp": int(lvo_tensor[1].item()), "fn": int(lvo_tensor[2].item())}
             
-            sync = torch.tensor([total_loss, main_loss, sum_d_l, sum_d_c, sum_aad, sum_alcd, sum_p_v, float(n_b)], device=self.device)
+            sync = torch.tensor([total_loss, main_loss, sum_d_l, sum_d_c, sum_aad, sum_alcd, sum_p_v, float(n_b), raw_loss], device=self.device)
             dist.all_reduce(sync, op=dist.ReduceOp.SUM)
             v = sync.cpu().numpy()
             avg_l, avg_m = v[0]/max(v[7],1), v[1]/max(v[7],1)
             ad_l, ad_c = v[2]/max(v[7],1), v[3]/max(v[7],1)
             a_aad, a_alcd, ap_v = v[4]/max(v[7],1), v[5]/max(v[7],1), v[6]/max(v[7],1)
+            avg_raw = v[8]/max(v[7],1)
         else:
             avg_l = total_loss/max(n_b,1)
             avg_m = main_loss/max(n_b,1)
+            avg_raw = raw_loss/max(n_b,1)
             ad_l  = sum_d_l/max(n_b,1)
             ad_c  = sum_d_c/max(n_b,1)
             a_aad = sum_aad/max(n_b,1)
@@ -235,7 +241,7 @@ class Trainer:
         comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * slice_f1_lvo + w["dice_cow_weight"] * ad_c)
         
         return {
-            "val_loss": avg_l, "val_main": avg_m, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
+            "val_loss": avg_l, "val_main": avg_m, "val_raw": avg_raw, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
             "f1_lvo": af1_v, "dice_cow": ad_c,
             "f1_lvo_patient": pat.get("f1", 0.0) * 100.0 if self.rank == 0 else 0.0,
             "bal_acc_lvo": pat.get("bal_acc", 0.0) * 100.0 if self.rank == 0 else 0.0,
@@ -274,8 +280,8 @@ class Trainer:
                 lr_dec = self.optimizer.param_groups[1]['lr']
                 print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR (En/De): {lr_enc:.1e}/{lr_dec:.1e} | Comp: {v_m['composite']:.4f}")
                 print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} (Pos: {v_m['dice_lesion_pos']:.4f}) | F1_LVO: {v_m['f1_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
-                print(f"   | [VAL] Loss: {v_m['val_loss']:.4f} (Main: {v_m['val_main']:.4f}) | AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.4f}")
-                print(f"   | [TRA] Loss: {t_m['train_loss']:.4f} (Main: {t_m['train_main']:.4f}) | P_LVO: {v_m['p_lvo']:.2f}\n{'-'*80}", flush=True)
+                print(f"   | [VAL] Loss: {v_m['val_loss']:.4f} (Main: {v_m['val_main']:.4f}, Raw: {v_m['val_raw']:.4f}) | AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.4f}")
+                print(f"   | [TRA] Loss: {t_m['train_loss']:.4f} (Main: {t_m['train_main']:.4f}, Raw: {t_m['train_raw']:.4f}) | P_LVO: {v_m['p_lvo']:.2f}\n{'-'*80}", flush=True)
             self.history.append({**t_m, **v_m, "epoch": epoch + 1})
             if checkpoint and self.rank == 0:
                 if (epoch + 1) >= self.config["training"]["checkpoint"].get("start_epoch", 1):

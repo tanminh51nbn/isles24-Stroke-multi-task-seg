@@ -58,7 +58,7 @@ optimizer:
   type: "adamw"
   lr: 5.0e-4
   weight_decay: 5.0e-2
-  encoder_lr_scale: 0.05
+  encoder_lr_scale: 0.02
   eps: 1.0e-7
 
 # ── LR Scheduler ────────────────────────────────────────────────
@@ -87,15 +87,15 @@ training:
   # Performance Gap Weighting (thay thế DWA+)
   pgw:
     start_epoch: 8
-    temperature: 0.5
-    momentum: 0.3
+    temperature: 1.0
+    momentum: 0.8
     w_min: 0.1
     w_max:
-      lesion: 2.2
+      lesion: 1.6
       lvo: 1.3
       cow: 1.0
     performance_targets:
-      lesion: 0.8
+      lesion: 0.7
       lvo: 0.50
       cow: 0.88
 
