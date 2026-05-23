@@ -25,6 +25,7 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     train_raw    = [h.get("train_raw", h["train_loss"]) for h in history]
     val_raw      = [h.get("val_raw", h["val_loss"]) for h in history]
     dice_lesion  = [h["dice_lesion"]  for h in history]
+    dice_lesion_pos = [h.get("dice_lesion_pos", 0.0) for h in history]
     f1_lvo       = [h["f1_lvo"]/100.0 for h in history] # Đưa về [0,1] để vẽ chung đồ thị
     dice_cow     = [h["dice_cow"]     for h in history]
     composite    = [h["composite"]    for h in history]
@@ -33,14 +34,15 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     fig.suptitle("ISLES'24 — Training Progress & Multi-Task Dynamics", fontsize=14, fontweight="bold")
 
     axes[0].plot(epochs, train_losses, color="#E74C3C", linewidth=2, label="Train Loss (Weighted)")
-    axes[0].plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss (Weighted)", linestyle="--")
-    axes[0].plot(epochs, train_raw,    color="#E67E22", linewidth=1.5, label="Train Loss (Raw)", alpha=0.8)
-    axes[0].plot(epochs, val_raw,      color="#2ECC71", linewidth=1.5, label="Val Loss (Raw)", linestyle="-.", alpha=0.8)
+    axes[0].plot(epochs, train_raw,    color="#E74C3C", linewidth=1.5, label="Train Loss (Raw)", linestyle="--", alpha=0.7)
+    axes[0].plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss (Weighted)")
+    axes[0].plot(epochs, val_raw,      color="#3498DB", linewidth=1.5, label="Val Loss (Raw)", linestyle="--", alpha=0.7)
     axes[0].set_title("Loss Curves"); axes[0].legend(); axes[0].grid(True, alpha=0.3)
 
     axes[1].plot(epochs, dice_lesion, color="#3498DB", linewidth=2, label="Dice Lesion")
-    axes[1].plot(epochs, f1_lvo,       color="#E74C3C", linewidth=2, label="F1 LVO",  linestyle="--")
-    axes[1].plot(epochs, dice_cow,    color="#2ECC71", linewidth=2, label="Dice CoW",    linestyle=":")
+    axes[1].plot(epochs, dice_lesion_pos, color="#3498DB", linewidth=1.5, label="Dice Lesion (Pos)", linestyle="--")
+    axes[1].plot(epochs, f1_lvo,       color="#E74C3C", linewidth=2, label="F1 LVO")
+    axes[1].plot(epochs, dice_cow,    color="#2ECC71", linewidth=2, label="Dice CoW")
     axes[1].set_title("Validation Metrics"); axes[1].legend(); axes[1].set_ylim(0, 1); axes[1].grid(True, alpha=0.3)
 
     p_l = [h.get("p_lesion", 1.0) for h in history]
