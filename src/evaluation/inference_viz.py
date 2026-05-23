@@ -103,6 +103,7 @@ def run_compare_mode(args, model, train_cfg, device):
             with torch.no_grad():
                 preds = model(inp)
                 axes[i+1].imshow(bg_img, cmap='bone')
+                
                 if name == "lvo":
                     # Hiển thị LVO dạng Heatmap rực rỡ (colormap hot)
                     sig_lvo_tensor = torch.sigmoid(preds["lvo"])

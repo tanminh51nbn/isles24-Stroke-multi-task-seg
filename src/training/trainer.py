@@ -177,8 +177,7 @@ class Trainer:
                 lvo_cls_gating = preds.get("lvo_cls", None) if epoch >= 25 else None
                 accumulate_patient_lvo_stats(
                     preds["lvo"], lbl[:, 1:2], paths, patient_stats,
-                    threshold=lvo_thr,
-                    lvo_cls=lvo_cls_gating
+                    threshold=lvo_thr
                 )
 
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)

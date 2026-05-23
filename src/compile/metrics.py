@@ -263,8 +263,6 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
 
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None, epoch: int = 999) -> dict:
     t = weights.get("thresholds", {"lesion": 0.45, "lvo": 0.05, "cow": 0.5})
-    # Tách gating khỏi training metrics trước epoch 25 (chỉ gating ở validation từ epoch 25 trở đi)
-    lvo_cls = preds.get("lvo_cls", None) if epoch >= 25 else None
 
     # Lesion Metrics
     d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]).item()
