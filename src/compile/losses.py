@@ -6,10 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
-from typing import Tuple
+from typing import Tuple, Optional
 
 # ─── Tversky Loss ─────────────────────────────────────────────────────────────
-
+ 
 class TverskyLoss(nn.Module):
     def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0):
         super().__init__()
@@ -21,13 +21,13 @@ class TverskyLoss(nn.Module):
         probs = torch.sigmoid(logits)
         probs   = probs.view(probs.size(0), -1)
         targets = targets.view(targets.size(0), -1)
-        TP = (probs * targets).sum()
-        FP = (probs * (1 - targets)).sum()
-        FN = ((1 - probs) * targets).sum()
+        TP = (probs * targets).sum(dim=1)
+        FP = (probs * (1 - targets)).sum(dim=1)
+        FN = ((1 - probs) * targets).sum(dim=1)
         numerator   = TP + self.smooth
         denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
         tversky_index = numerator / denominator.clamp(min=self.smooth)
-        return (1.0 - tversky_index).clamp(min=0.0, max=1.0)
+        return (1.0 - tversky_index).mean()
 
 # ─── Focal Tversky Loss ───────────────────────────────────────────────────────
 
@@ -43,14 +43,14 @@ class FocalTverskyLoss(nn.Module):
         probs   = torch.sigmoid(logits)
         probs   = probs.view(probs.size(0), -1)
         targets = targets.view(targets.size(0), -1)
-        TP = (probs * targets).sum()
-        FP = (probs * (1 - targets)).sum()
-        FN = ((1 - probs) * targets).sum()
+        TP = (probs * targets).sum(dim=1)
+        FP = (probs * (1 - targets)).sum(dim=1)
+        FN = ((1 - probs) * targets).sum(dim=1)
         numerator   = TP + self.smooth
         denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
         tversky_index = numerator / denominator.clamp(min=self.smooth)
         error = (1.0 - tversky_index).clamp(min=1e-6, max=1.0)
-        return torch.pow(error, self.gamma)
+        return torch.pow(error, self.gamma).mean()
 
 def apply_gaussian_blur(mask: torch.Tensor, sigma: float) -> torch.Tensor:
     if sigma <= 0: return mask
@@ -138,11 +138,43 @@ class BoundaryLoss(nn.Module):
         return 1.0 - ((2.0 * intersection + 1e-5) / (union + 1e-5)).mean()
 
 class SDFBoundaryLoss(nn.Module):
-    def forward(self, logits: torch.Tensor, sdf: torch.Tensor) -> torch.Tensor:
-        probs = torch.sigmoid(logits)
-        fp_loss = probs * torch.clamp(sdf, min=0)
-        fn_loss = (1 - probs) * torch.abs(torch.clamp(sdf, max=0))
-        return (fp_loss + fn_loss).mean()
+    def forward(self, logits: torch.Tensor, sdf: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if mask is None:
+            # Fallback for compatibility (e.g. tests or older configurations)
+            probs = torch.sigmoid(logits)
+            fp_loss = probs * torch.clamp(sdf, min=0)
+            fn_loss = (1 - probs) * torch.abs(torch.clamp(sdf, max=0))
+            return (fp_loss + fn_loss).mean()
+
+        # mask shape: (B, 1, H, W)
+        # 1. Slice-Level Gating: Only compute loss on slices that actually contain lesions
+        has_lesion = (mask.sum(dim=(1, 2, 3)) > 0)
+        if not has_lesion.any():
+            return torch.tensor(0.0, device=logits.device)
+
+        logits_pos = logits[has_lesion]
+        sdf_pos = sdf[has_lesion]
+
+        probs = torch.sigmoid(logits_pos)
+
+        # 2. Foreground-Background Balancing: compute mean fp_loss and fn_loss separately
+        # Background pixels have sdf > 0
+        is_bg = sdf_pos > 0
+        # Foreground pixels have sdf <= 0
+        is_fg = sdf_pos <= 0
+
+        num_bg = is_bg.sum().float()
+        num_fg = is_fg.sum().float()
+
+        # Calculate losses
+        fp_loss = probs * torch.clamp(sdf_pos, min=0)
+        fn_loss = (1 - probs) * torch.abs(torch.clamp(sdf_pos, max=0))
+
+        # Average separately to balance gradients
+        fp_mean = fp_loss.sum() / (num_bg + 1e-8)
+        fn_mean = fn_loss.sum() / (num_fg + 1e-8)
+
+        return fp_mean + fn_mean
 
 # ─── Soft clDice ─────────────────────────────────────────────────────────────
 
@@ -337,14 +369,17 @@ class MultiTaskLoss(nn.Module):
         if epoch >= 25:
             current_lesion_metric = current[0].item()
             best_val = self.best_lesion_metric.item()
-            if current_lesion_metric > best_val + 0.002:
-                self.best_lesion_metric.fill_(current_lesion_metric)
-                self.lesion_stall_epochs.fill_(0)
-            else:
-                self.lesion_stall_epochs.add_(1)
-            
-            if self.lesion_stall_epochs.item() >= 10:
+            if current_lesion_metric < 0.18:
                 is_stalled = True
+            else:
+                if current_lesion_metric > best_val + 0.002:
+                    self.best_lesion_metric.fill_(current_lesion_metric)
+                    self.lesion_stall_epochs.fill_(0)
+                else:
+                    self.lesion_stall_epochs.add_(1)
+                
+                if self.lesion_stall_epochs.item() >= 10:
+                    is_stalled = True
 
         target = self.perf_targets.to(current.device)
         gap = torch.clamp(target - current, min=0.0)  # Chỉ tính gap âm (chưa đạt)
@@ -467,7 +502,7 @@ class MultiTaskLoss(nn.Module):
             l_v_m = (1.0 - self.lvo_cls_w) * l_v_m + self.lvo_cls_w * l_v_cls
 
         # 2. Additional Task-specific Losses (Boundary & Topology)
-        l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4])
+        l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4], targets[:, 0:1])
         w_cl_l = self.lesion_cl_w
         l_l_cl = self.lesion_cl_loss(preds['lesion'], targets[:, 0:1]) if w_cl_l > 0.0 else torch.tensor(0.0, device=targets.device)
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) if self.cow_cl_w > 0.0 else torch.tensor(0.0, device=targets.device)
