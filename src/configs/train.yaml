@@ -12,6 +12,7 @@ loss:
     weight: 0.43
     hd_weight: 0.30
     cl_weight: 0.0
+    bce_pos_weight: 3.0
     cl_iters: 3
 
   lvo:
