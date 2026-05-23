@@ -76,15 +76,19 @@ class Trainer:
                         elif "cow" in n.lower(): gn["c"] += val
                 print(f"    [GRAD] B{batch_idx:03d} | 🎯 LVO: {gn['v']:.3f} | 🔴 Lesion: {gn['l']:.3f} | 🟢 CoW: {gn['c']:.3f}")
 
-            # [FIX 1.3] Per-task gradient clip cho LVO HEAD trước global clip.
+            # [FIX 1.3] Per-task gradient clip cho các nhánh để bảo vệ encoder (Bệnh 3)
             raw = self.model.module if hasattr(self.model, "module") else self.model
-            lvo_params = [p for n, p in raw.named_parameters()
-                          if "lvo" in n.lower() and p.grad is not None]
-            if lvo_params:
-                lvo_norm = nn.utils.clip_grad_norm_(lvo_params, max_norm=10.0)
-                lvo_val = lvo_norm.item() if torch.is_tensor(lvo_norm) else float(lvo_norm)
-                if lvo_val > max_lvo_spike:
-                    max_lvo_spike = lvo_val
+            for task, max_norm in [("lesion", 5.0), ("lvo", 10.0), ("cow", 10.0)]:
+                task_params = [p for n, p in raw.named_parameters()
+                               if task in n.lower() and p.grad is not None]
+                if task_params:
+                    task_norm = nn.utils.clip_grad_norm_(task_params, max_norm=max_norm)
+                    if task == "lvo":
+                        lvo_val = task_norm.item() if torch.is_tensor(task_norm) else float(task_norm)
+                        if lvo_val > max_lvo_spike:
+                            max_lvo_spike = lvo_val
+            
+            # Clip toàn bộ tham số mô hình (global clip)
             nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -152,8 +156,8 @@ class Trainer:
             
             # Override thresholds.lvo = lvo_thr (dynamic ramp) cho batch này
             _t = {**self.metric_weights, "thresholds": {**self.metric_weights.get("thresholds", {}), "lvo": lvo_thr}}
-            # Truyền lvo_stats vào để gom TP/FP/FN toàn cục
-            metrics = compute_all_metrics(preds, lbl, _t, lvo_stats=lvo_stats)
+            # Truyền lvo_stats và epoch vào để gom TP/FP/FN toàn cục
+            metrics = compute_all_metrics(preds, lbl, _t, lvo_stats=lvo_stats, epoch=epoch)
 
             sum_d_l  += metrics["dice_lesion"]
             sum_d_c  += metrics["dice_cow"]
@@ -169,10 +173,12 @@ class Trainer:
             # Gom patient-level stats (chỉ rank 0)
             if self.rank == 0:
                 paths = batch.get("path", [""] * inp.shape[0])
+                # Tách gating khỏi patient-level LVO trước epoch 25
+                lvo_cls_gating = preds.get("lvo_cls", None) if epoch >= 25 else None
                 accumulate_patient_lvo_stats(
                     preds["lvo"], lbl[:, 1:2], paths, patient_stats,
                     threshold=lvo_thr,
-                    lvo_cls=preds.get("lvo_cls", None)
+                    lvo_cls=lvo_cls_gating
                 )
 
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)

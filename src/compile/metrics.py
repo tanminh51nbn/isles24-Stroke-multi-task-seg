@@ -16,20 +16,12 @@ from scipy.ndimage import label
 
 def get_lvo_threshold(epoch: int, cfg: dict) -> float:
     """
-    Tính ngưỡng LVO động theo epoch (Linear Ramp).
-
-    Chiến lược:
-      - Epoch ≤ freeze_epoch         : thresh_freeze  (dễ dãi, bắt tín hiệu yếu khi encoder khóa)
-      - freeze_epoch < epoch ≤ ramp_end: tăng tuyến tính → thresh_unfreeze
-      - Epoch > ramp_end             : thresh_unfreeze (siết chặt, encoder đã hội tụ)
-
-    Args:
-        epoch (int): Epoch hiện tại (1-indexed, như in log).
-        cfg (dict) : Nhánh ``composite_score`` từ train.yaml.
-
-    Returns:
-        float: Ngưỡng LVO hợp lệ cho epoch này.
+    Tính ngưỡng LVO động theo epoch (hoặc cố định nếu không cấu hình ramp).
     """
+    if "lvo_threshold_ramp" not in cfg:
+        thresholds = cfg.get("thresholds", {})
+        return float(thresholds.get("lvo", 0.15))
+
     ramp_cfg        = cfg.get("lvo_threshold_ramp", {})
     freeze_epoch    = int(ramp_cfg.get("freeze_epoch",    20))
     ramp_end_epoch  = int(ramp_cfg.get("ramp_end_epoch", 30))
@@ -269,9 +261,10 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
     return {"accuracy": acc, "tp": tp, "fp": fp, "fn": fn, "tn": tn, "n": n, "f1": f1_patient, "bal_acc": bal_acc}
 
 
-def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None) -> dict:
+def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None, epoch: int = 999) -> dict:
     t = weights.get("thresholds", {"lesion": 0.45, "lvo": 0.05, "cow": 0.5})
-    lvo_cls = preds.get("lvo_cls", None)
+    # Tách gating khỏi training metrics trước epoch 25 (chỉ gating ở validation từ epoch 25 trở đi)
+    lvo_cls = preds.get("lvo_cls", None) if epoch >= 25 else None
 
     # Lesion Metrics
     d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]).item()

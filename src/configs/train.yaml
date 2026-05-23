@@ -6,13 +6,13 @@
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
-    type: "focal_tversky"
-    alpha: 0.3
-    beta: 0.7
-    gamma: 2.0
+    type: "compound_dice_bce"
+    alpha: 0.5
+    beta: 0.5
     weight: 0.43
-    hd_weight: 0.0
-    cl_weight: 0.15
+    hd_weight: 0.30
+    cl_weight: 0.0
+    bce_pos_weight: 3.0
     cl_iters: 3
 
   lvo:
@@ -40,17 +40,8 @@ composite_score:
   dice_cow_weight: 0.1
   thresholds:
     lesion: 0.5
-    lvo: 0.10      # Giá trị khởi đầu (epoch 1–20, encoder khóa) — get_lvo_threshold() sẽ override runtime
+    lvo: 0.15      # Cố định suốt quá trình training (không dùng ramp)
     cow: 0.5
-  # ── LVO Threshold Linear Ramp ───────────────────────────────────
-  # Tránh metric cliff khi encoder unfreeze ở epoch 21
-  # Công thức: thresh = thresh_freeze + t*(thresh_unfreeze-thresh_freeze)
-  # với t = (epoch - freeze_epoch) / (ramp_end_epoch - freeze_epoch)
-  lvo_threshold_ramp:
-    freeze_epoch:    20    # Epoch cuối cùng giữ ngưỡng dễ (khớp freeze_encoder_epochs)
-    ramp_end_epoch:  40    # Epoch bắt đầu giữ ngưỡng ketat (khớp early_stopping.start_epoch)
-    thresh_freeze:   0.10  # Ngưỡng khi encoder đang bị khóa  (epoch ≤ 20)
-    thresh_unfreeze: 0.40  # Ngưỡng đích sau khi hội tụ       (epoch ≥ 30)
 
 
 # ── Optimizer ───────────────────────────────────────────────────

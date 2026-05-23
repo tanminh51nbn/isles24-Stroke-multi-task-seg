@@ -179,6 +179,24 @@ class SoftCLDiceLoss(nn.Module):
         t_s_ = ((t_s * probs).sum() + self.smooth) / (t_s.sum() + self.smooth)
         return 1.0 - ((2.0 * t_p * t_s_) / (t_p + t_s_ + self.smooth))
 
+# ─── Compound Dice + BCE Loss ──────────────────────────────────────────────────
+
+class CompoundDiceBCELoss(nn.Module):
+    """
+    nnU-Net compound loss: 0.5 * Dice (Tversky alpha=beta=0.5) + 0.5 * BCEWithLogitsLoss.
+    Cung cấp pixel-level gradients từ BCE để kéo mô hình ra khỏi các vùng chết (predict all zero).
+    """
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 3.0):
+        super().__init__()
+        self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth)
+        self.bce = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], dtype=torch.float32))
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        dice_loss = self.dice(logits, targets)
+        bce_loss = self.bce(logits, targets)
+        return 0.5 * dice_loss + 0.5 * bce_loss
+
+
 # ─── Multi-Task Loss (The Core) ───────────────────────────────────────────────
 
 class MultiTaskLoss(nn.Module):
@@ -195,6 +213,12 @@ class MultiTaskLoss(nn.Module):
                 alpha=l_cfg["lesion"].get("alpha", 0.45),
                 beta=l_cfg["lesion"].get("beta", 0.55),
                 gamma=l_cfg["lesion"].get("gamma", 2.0)
+            )
+        elif lesion_type == "compound_dice_bce":
+            self.lesion_main_loss = CompoundDiceBCELoss(
+                alpha=l_cfg["lesion"].get("alpha", 0.5),
+                beta=l_cfg["lesion"].get("beta", 0.5),
+                pos_weight=l_cfg["lesion"].get("bce_pos_weight", 3.0)
             )
         else:  # default: plain TverskyLoss — gradient tuyến tính, không bị bình phương
             self.lesion_main_loss = TverskyLoss(
@@ -281,6 +305,10 @@ class MultiTaskLoss(nn.Module):
         # Buffer lưu epoch cuối cùng được cập nhật (để biết PGW đã kích hoạt chưa)
         self.register_buffer('_pgw_epoch', torch.tensor(-1, dtype=torch.long))
 
+        # Buffers cho Stall Detection (Bệnh 4)
+        self.register_buffer('best_lesion_metric', torch.tensor(-1.0, dtype=torch.float))
+        self.register_buffer('lesion_stall_epochs', torch.tensor(0, dtype=torch.long))
+
     def update_weights_from_metrics(self, val_metrics: dict, epoch: int):
         """Cập nhật current_weights theo Performance Gap Weighting (PGW).
 
@@ -303,8 +331,27 @@ class MultiTaskLoss(nn.Module):
             val_metrics.get("dice_cow",  0.0),
         ], device=self.current_weights.device)
 
+        # Stall Detection cho Lesion (Bệnh 4)
+        # Chỉ kích hoạt từ Epoch 25+ (sau khi mở băng encoder 5 epoch) để tránh nhiễu
+        is_stalled = False
+        if epoch >= 25:
+            current_lesion_metric = current[0].item()
+            best_val = self.best_lesion_metric.item()
+            if current_lesion_metric > best_val + 0.002:
+                self.best_lesion_metric.fill_(current_lesion_metric)
+                self.lesion_stall_epochs.fill_(0)
+            else:
+                self.lesion_stall_epochs.add_(1)
+            
+            if self.lesion_stall_epochs.item() >= 10:
+                is_stalled = True
+
         target = self.perf_targets.to(current.device)
         gap = torch.clamp(target - current, min=0.0)  # Chỉ tính gap âm (chưa đạt)
+
+        # Nếu stalled, triệt tiêu gap của Lesion để coi như task này đã đạt/không ưu tiên nữa
+        if is_stalled:
+            gap[0] = 0.0
 
         if gap.sum() < 1e-6:
             # Tất cả task đã vượt target → dùng lại initial_weights (không có task nào cần ưu tiên đặc biệt)
@@ -313,7 +360,8 @@ class MultiTaskLoss(nn.Module):
                 device=self.current_weights.device
             )
             self.current_weights.copy_(init)
-            print(f"    [PGW] Tất cả task đạt target -> reset về initial_weights")
+            stall_info = " (stalled)" if is_stalled else ""
+            print(f"    [PGW] Tất cả task đạt target hoặc Lesion bị stall -> reset về initial_weights{stall_info}")
             return
 
         # [FIX 1.2] Tách task ĐÃ đạt target (gap≈0) và CHƯA đạt.
@@ -372,9 +420,10 @@ class MultiTaskLoss(nn.Module):
             "V" if not active_mask[1] else "",
             "C" if not active_mask[2] else "",
         ]) or "none"
+        stall_info = f" (stalled, {self.lesion_stall_epochs.item()} eps)" if is_stalled else ""
         print(f"    [PGW]: Gap L={gap[0]:.3f} V={gap[1]:.3f} C={gap[2]:.3f} "
               f"-> Weights: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f} "
-              f"(fixed: {fixed_tag})")
+              f"(fixed: {fixed_tag}){stall_info}")
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
         cur_ep = int(epoch)
@@ -419,8 +468,9 @@ class MultiTaskLoss(nn.Module):
 
         # 2. Additional Task-specific Losses (Boundary & Topology)
         l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4])
-        l_l_cl = self.lesion_cl_loss(preds['lesion'], targets[:, 0:1])   # [FIX Vấn đề 3] CLDice Lesion
-        l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3])
+        w_cl_l = self.lesion_cl_w
+        l_l_cl = self.lesion_cl_loss(preds['lesion'], targets[:, 0:1]) if w_cl_l > 0.0 else torch.tensor(0.0, device=targets.device)
+        l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) if self.cow_cl_w > 0.0 else torch.tensor(0.0, device=targets.device)
 
         # [T2.3] Asymmetric FP penalty nhỏ cho Lesion (phạt nặng pixel FP confident)
         probs_l = torch.sigmoid(preds['lesion'].float())
@@ -428,7 +478,6 @@ class MultiTaskLoss(nn.Module):
         l_l_afl = 0.1 * afl_fp.mean()
 
         # 3. Final Task Weighting
-        w_cl_l = self.lesion_cl_w
         loss_l = ((1.0 - self.lesion_hd_w - w_cl_l) * l_l_m + self.lesion_hd_w * l_l_hd + w_cl_l * l_l_cl) * p_l + l_l_afl
         loss_v = l_v_m * p_v
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
