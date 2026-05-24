@@ -19,7 +19,8 @@ class TverskyLoss(nn.Module):
         self.batch  = batch
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        probs = torch.sigmoid(logits)
+        probs = torch.sigmoid(logits.float())
+        targets = targets.float()
         if self.batch:
             probs   = probs.contiguous().view(-1)
             targets = targets.contiguous().view(-1)
@@ -155,6 +156,10 @@ class SDFBoundaryLoss(nn.Module):
         self.fg_weight = fg_weight
 
     def forward(self, logits: torch.Tensor, sdf: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        logits = logits.float()
+        sdf = sdf.float()
+        if mask is not None:
+            mask = mask.float()
         if mask is None:
             # Fallback for compatibility (e.g. tests or older configurations)
             probs = torch.sigmoid(logits)
@@ -239,6 +244,8 @@ class SliceBalancedBCELoss(nn.Module):
         self.pos_weight = pos_weight
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        logits = logits.float()
+        targets = targets.float()
         batch_size = targets.size(0)
         losses = []
         for i in range(batch_size):
