@@ -410,7 +410,7 @@ class MultiTaskLoss(nn.Module):
         if epoch >= 25:
             current_lesion_metric = current[0].item()
             best_val = self.best_lesion_metric.item()
-            if current_lesion_metric < 0.18:
+            if current_lesion_metric < 0.05:
                 is_stalled = True
             else:
                 if current_lesion_metric > best_val + 0.002:
