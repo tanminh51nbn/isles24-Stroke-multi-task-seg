@@ -11,9 +11,9 @@ loss:
     beta: 0.7
     weight: 0.43
     hd_weight: 0.30
-    hd_fg_weight: 0.15
+    hd_fg_weight: 1.0
     cl_weight: 0.0
-    bce_pos_weight: 0.15
+    bce_pos_weight: 2.0
     cl_iters: 3
 
   lvo:
@@ -64,7 +64,7 @@ training:
   epochs: 100
   amp: true
   grad_clip_norm: 4.0
-  freeze_encoder_epochs: 100
+  freeze_encoder_epochs: 20
 
   # Cơ chế dìu nhau đi (DWA+)
   dwa_start_epoch: 8

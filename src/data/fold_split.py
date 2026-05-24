@@ -124,7 +124,7 @@ def apply_sampling(
         pool = lesion_pure_df[lesion_pure_df["slice_idx"] % 2 != 0]["basename"].tolist()
     
     if len(pool) > 0:
-        lesion_pure_subset = rng.choices(pool, k=n_pure_fixed)
+        lesion_pure_subset = rng.sample(pool, min(n_pure_fixed, len(pool)))
     else:
         lesion_pure_subset = []
 
@@ -142,7 +142,7 @@ def apply_sampling(
     n_plain_fixed = int(len(neg_plain_pool) * plain_neg_ratio)
     
     if len(neg_plain_pool) > 0:
-        neg_plain = rng.choices(neg_plain_pool, k=n_plain_fixed)
+        neg_plain = rng.sample(neg_plain_pool, min(n_plain_fixed, len(neg_plain_pool)))
     else:
         neg_plain = []
 

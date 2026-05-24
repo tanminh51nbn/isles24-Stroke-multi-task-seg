@@ -139,15 +139,15 @@ class RandomIntensityScale:
 
 class RandomElasticTransform(nn.Module):
     """
-    Biến dạng đàn hồi (Elastic Deformation).
+    Biến dạng đàn hồi (Elastic Deformation) đã sửa lỗi.
     Mô phỏng nhu mô não bị chèn ép do sưng phù (edema).
-    Dùng PyTorch grid_sample để xử lý nhanh trên GPU.
+    Sử dụng Separable Gaussian convolution để làm mịn displacement field trên GPU.
     """
-    def __init__(self, prob: float = 0.2, alpha: float = 1.0, sigma: float = 50.0):
+    def __init__(self, prob: float = 0.2, alpha: float = 15.0, sigma: float = 6.0):
         super().__init__()
         self.prob  = prob
-        self.alpha = alpha
-        self.sigma = sigma
+        self.alpha = alpha  # Độ lệch tối đa (pixel)
+        self.sigma = sigma  # Độ mịn (pixel)
 
     def __call__(self, sample: dict) -> dict:
         if random.random() > self.prob:
@@ -157,23 +157,37 @@ class RandomElasticTransform(nn.Module):
         lbl = sample["label"]  # (3, H, W)
         C, H, W = inp.shape
 
-        # Tạo displacement field ngẫu nhiên
-        dx = torch.randn(1, 1, H, W, device=inp.device) * self.alpha
-        dy = torch.randn(1, 1, H, W, device=inp.device) * self.alpha
+        # 1. Tạo displacement field ngẫu nhiên thô
+        dx = torch.randn(1, 1, H, W, device=inp.device)
+        dy = torch.randn(1, 1, H, W, device=inp.device)
 
-        # Làm mượt field bằng Gaussian blur (mô phỏng sự biến dạng liên tục)
-        kernel_size = int(self.sigma * 3)
+        # 2. Làm mượt field bằng Separable Gaussian convolution (nhanh hơn 2D conv)
+        kernel_size = int(self.sigma * 4)
         if kernel_size % 2 == 0: kernel_size += 1
         
-        # Tạo meshgrid chuẩn
+        x = torch.arange(kernel_size).float() - (kernel_size - 1) / 2
+        kernel_1d = torch.exp(-x.pow(2) / (2 * self.sigma**2))
+        kernel_1d = kernel_1d / kernel_1d.sum()
+        
+        kernel_x = kernel_1d.view(1, 1, 1, -1).to(inp.device)
+        kernel_y = kernel_1d.view(1, 1, -1, 1).to(inp.device)
+        
+        padding = kernel_size // 2
+        dx = F.conv2d(F.conv2d(dx, kernel_x, padding=(0, padding)), kernel_y, padding=(padding, 0))
+        dy = F.conv2d(F.conv2d(dy, kernel_x, padding=(0, padding)), kernel_y, padding=(padding, 0))
+        
+        # 3. Quy đổi độ lệch từ pixel sang normalized coordinate space [-1, 1]
+        dx = dx * (self.alpha * 2.0 / W)
+        dy = dy * (self.alpha * 2.0 / H)
+
+        # 4. Tạo meshgrid chuẩn
         yy, xx = torch.meshgrid(torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing='ij')
         grid = torch.stack([xx, yy], dim=-1).to(inp.device).unsqueeze(0) # (1, H, W, 2)
 
-        # Thêm biến dạng vào grid
+        # 5. Cộng displacement và áp dụng biến dạng
         disp = torch.cat([dx.permute(0, 2, 3, 1), dy.permute(0, 2, 3, 1)], dim=-1)
         grid = (grid + disp).clamp(-1, 1)
 
-        # Áp dụng
         sample["input"] = F.grid_sample(inp.unsqueeze(0), grid, mode="bilinear", align_corners=False).squeeze(0)
         sample["label"] = F.grid_sample(lbl.unsqueeze(0), grid, mode="nearest", align_corners=False).squeeze(0)
         return sample
