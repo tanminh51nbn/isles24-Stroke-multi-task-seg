@@ -11,23 +11,35 @@ from typing import Tuple, Optional
 # ─── Tversky Loss ─────────────────────────────────────────────────────────────
  
 class TverskyLoss(nn.Module):
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, batch: bool = True):
         super().__init__()
         self.alpha  = alpha
         self.beta   = beta
         self.smooth = smooth
+        self.batch  = batch
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = torch.sigmoid(logits)
-        probs   = probs.view(probs.size(0), -1)
-        targets = targets.view(targets.size(0), -1)
-        TP = (probs * targets).sum(dim=1)
-        FP = (probs * (1 - targets)).sum(dim=1)
-        FN = ((1 - probs) * targets).sum(dim=1)
-        numerator   = TP + self.smooth
-        denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
-        tversky_index = numerator / denominator.clamp(min=self.smooth)
-        return (1.0 - tversky_index).mean()
+        if self.batch:
+            probs   = probs.contiguous().view(-1)
+            targets = targets.contiguous().view(-1)
+            TP = (probs * targets).sum()
+            FP = (probs * (1 - targets)).sum()
+            FN = ((1 - probs) * targets).sum()
+            numerator   = TP + self.smooth
+            denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
+            tversky_index = numerator / denominator.clamp(min=self.smooth)
+            return 1.0 - tversky_index
+        else:
+            probs   = probs.view(probs.size(0), -1)
+            targets = targets.view(targets.size(0), -1)
+            TP = (probs * targets).sum(dim=1)
+            FP = (probs * (1 - targets)).sum(dim=1)
+            FN = ((1 - probs) * targets).sum(dim=1)
+            numerator   = TP + self.smooth
+            denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
+            tversky_index = numerator / denominator.clamp(min=self.smooth)
+            return (1.0 - tversky_index).mean()
 
 # ─── Focal Tversky Loss ───────────────────────────────────────────────────────
 
@@ -261,7 +273,7 @@ class CompoundDiceBCELoss(nn.Module):
     """
     def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 1.0):
         super().__init__()
-        self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth)
+        self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth, batch=True)
         self.bce = SliceBalancedBCELoss(pos_weight=pos_weight)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
@@ -331,7 +343,8 @@ class MultiTaskLoss(nn.Module):
         # Tại Dice=0.835: gradient FTL ≈ 0.33x, gradient TL = 1.0x → mạnh hơn 3× để thoát local minimum
         self.cow_main_loss = TverskyLoss(
             alpha=l_cfg["cow"].get("alpha", 0.5),
-            beta=l_cfg["cow"].get("beta", 0.5)
+            beta=l_cfg["cow"].get("beta", 0.5),
+            batch=True
         )
         self.cow_cl_loss = SoftCLDiceLoss(iters=l_cfg["cow"].get("iters", 3))
         self.cow_cl_w = l_cfg["cow"].get("cl_weight", 0.0)
