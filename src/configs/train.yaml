@@ -6,13 +6,13 @@
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
-    type: "focal_tversky"
+    type: "compound_dice_bce"
     alpha: 0.3
     beta: 0.7
-    gamma: 2.0
     weight: 0.43
     hd_weight: 0.30
     cl_weight: 0.0
+    bce_pos_weight: 1.0
     cl_iters: 3
 
   lvo:
