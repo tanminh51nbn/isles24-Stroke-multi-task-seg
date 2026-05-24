@@ -232,60 +232,25 @@ class SoftCLDiceLoss(nn.Module):
         t_s_ = ((t_s * probs).sum() + self.smooth) / (t_s.sum() + self.smooth)
         return 1.0 - ((2.0 * t_p * t_s_) / (t_p + t_s_ + self.smooth))
 
-# ─── Slice Balanced BCE Loss ──────────────────────────────────────────────────
-
-class SliceBalancedBCELoss(nn.Module):
-    """
-    Binary Cross Entropy cân bằng ở mức slice để giải quyết class imbalance cực đoan
-    và cung cấp non-saturating gradients kéo mô hình thoát khỏi all-zero collapse.
-    """
-    def __init__(self, pos_weight: float = 1.0):
-        super().__init__()
-        self.pos_weight = pos_weight
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        logits = logits.float()
-        targets = targets.float()
-        batch_size = targets.size(0)
-        losses = []
-        for i in range(batch_size):
-            log_slice = logits[i, 0]
-            tar_slice = targets[i, 0]
-            
-            num_fg = (tar_slice > 0.5).sum().float()
-            if num_fg > 0:
-                # Slice dương: Cân bằng gradient 50/50 giữa nền và tổn thương
-                fg_mask = tar_slice > 0.5
-                bg_mask = ~fg_mask
-                
-                loss_fg = F.binary_cross_entropy_with_logits(
-                    log_slice[fg_mask], tar_slice[fg_mask], reduction='mean'
-                )
-                loss_bg = F.binary_cross_entropy_with_logits(
-                    log_slice[bg_mask], tar_slice[bg_mask], reduction='mean'
-                )
-                losses.append(self.pos_weight * loss_fg + loss_bg)
-            else:
-                # Slice âm: Phạt FP bình thường
-                losses.append(F.binary_cross_entropy_with_logits(log_slice, tar_slice, reduction='mean'))
-                
-        return torch.stack(losses).mean()
-
 # ─── Compound Dice + BCE Loss ──────────────────────────────────────────────────
 
 class CompoundDiceBCELoss(nn.Module):
     """
-    nnU-Net compound loss cải tiến: 0.5 * Dice (Tversky) + 0.5 * SliceBalancedBCELoss.
+    nnU-Net compound loss cải tiến: 0.5 * Dice (Tversky) + 0.5 * BCEWithLogitsLoss.
     Cung cấp non-saturating gradients từ BCE để kéo mô hình thoát khỏi all-zero collapse.
     """
     def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 1.0):
         super().__init__()
         self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth, batch=True)
-        self.bce = SliceBalancedBCELoss(pos_weight=pos_weight)
+        self.register_buffer("pos_weight", torch.tensor([pos_weight]))
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        logits = logits.float()
+        targets = targets.float()
+        
         dice_loss = self.dice(logits, targets)
-        bce_loss = self.bce(logits, targets)
+        bce_loss = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=self.pos_weight)
+        
         return 0.5 * dice_loss + 0.5 * bce_loss
 
 
