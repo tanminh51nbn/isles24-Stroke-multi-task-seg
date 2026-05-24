@@ -239,9 +239,9 @@ class CompoundDiceBCELoss(nn.Module):
     nnU-Net compound loss cải tiến: 0.5 * Dice (Tversky) + 0.5 * BCEWithLogitsLoss.
     Cung cấp non-saturating gradients từ BCE để kéo mô hình thoát khỏi all-zero collapse.
     """
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 1.0):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 1.0, batch: bool = False):
         super().__init__()
-        self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth, batch=True)
+        self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth, batch=batch)
         self.register_buffer("pos_weight", torch.tensor([pos_weight]))
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
@@ -275,7 +275,8 @@ class MultiTaskLoss(nn.Module):
             self.lesion_main_loss = CompoundDiceBCELoss(
                 alpha=l_cfg["lesion"].get("alpha", 0.5),
                 beta=l_cfg["lesion"].get("beta", 0.5),
-                pos_weight=l_cfg["lesion"].get("bce_pos_weight", 3.0)
+                pos_weight=l_cfg["lesion"].get("bce_pos_weight", 3.0),
+                batch=l_cfg["lesion"].get("dice_batch", False)
             )
         else:  # default: plain TverskyLoss — gradient tuyến tính, không bị bình phương
             self.lesion_main_loss = TverskyLoss(

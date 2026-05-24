@@ -13,7 +13,8 @@ loss:
     hd_weight: 0.30
     hd_fg_weight: 1.0
     cl_weight: 0.0
-    bce_pos_weight: 2.0
+    bce_pos_weight: 150.0
+    dice_batch: false
     cl_iters: 3
 
   lvo:
@@ -53,10 +54,9 @@ optimizer:
   encoder_lr_scale: 0.02
   eps: 1.0e-7
 
-# ── LR Scheduler ────────────────────────────────────────────────
 scheduler:
   warmup_epochs: 7
-  hold_epochs: 13
+  hold_epochs: 0
   min_lr: 2.5e-6
 
 # ── Training ────────────────────────────────────────────────────
