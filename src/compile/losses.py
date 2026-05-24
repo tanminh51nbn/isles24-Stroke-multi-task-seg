@@ -234,22 +234,52 @@ class SoftCLDiceLoss(nn.Module):
 
 # ─── Compound Dice + BCE Loss ──────────────────────────────────────────────────
 
+class BinaryFocalLoss(nn.Module):
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = 'mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits.float())
+        targets = targets.float()
+        
+        pt = torch.where(targets == 1.0, probs, 1.0 - probs)
+        alpha_t = torch.where(targets == 1.0, self.alpha, 1.0 - self.alpha)
+        
+        bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+        focal_loss = alpha_t * torch.pow(1.0 - pt, self.gamma) * bce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
 class CompoundDiceBCELoss(nn.Module):
     """
-    nnU-Net compound loss cải tiến: 0.5 * Dice (Tversky) + 0.5 * BCEWithLogitsLoss.
-    Cung cấp non-saturating gradients từ BCE để kéo mô hình thoát khỏi all-zero collapse.
+    nnU-Net compound loss cải tiến: 0.5 * Dice (Tversky) + 0.5 * BCEWithLogitsLoss (hoặc FocalLoss).
     """
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 1.0, batch: bool = False):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 1.0, batch: bool = False, use_focal: bool = False, focal_alpha: float = 0.25, focal_gamma: float = 2.0):
         super().__init__()
         self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth, batch=batch)
-        self.register_buffer("pos_weight", torch.tensor([pos_weight]))
+        self.use_focal = use_focal
+        if use_focal:
+            self.focal = BinaryFocalLoss(alpha=focal_alpha, gamma=focal_gamma)
+        else:
+            self.register_buffer("pos_weight", torch.tensor([pos_weight]))
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         logits = logits.float()
         targets = targets.float()
         
         dice_loss = self.dice(logits, targets)
-        bce_loss = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=self.pos_weight)
+        if self.use_focal:
+            bce_loss = self.focal(logits, targets)
+        else:
+            bce_loss = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=self.pos_weight)
         
         return 0.5 * dice_loss + 0.5 * bce_loss
 
@@ -275,8 +305,11 @@ class MultiTaskLoss(nn.Module):
             self.lesion_main_loss = CompoundDiceBCELoss(
                 alpha=l_cfg["lesion"].get("alpha", 0.5),
                 beta=l_cfg["lesion"].get("beta", 0.5),
-                pos_weight=l_cfg["lesion"].get("bce_pos_weight", 3.0),
-                batch=l_cfg["lesion"].get("dice_batch", False)
+                pos_weight=l_cfg["lesion"].get("bce_pos_weight", 1.0),
+                batch=l_cfg["lesion"].get("dice_batch", False),
+                use_focal=l_cfg["lesion"].get("use_focal", False),
+                focal_alpha=l_cfg["lesion"].get("focal_alpha", 0.25),
+                focal_gamma=l_cfg["lesion"].get("focal_gamma", 2.0)
             )
         else:  # default: plain TverskyLoss — gradient tuyến tính, không bị bình phương
             self.lesion_main_loss = TverskyLoss(
@@ -560,25 +593,37 @@ class MultiTaskLoss(nn.Module):
         
         # Duyệt qua từng task trong dictionary AUX
         for task_key, aux_list in aux_dict.items():
+            task_aux_loss = 0.0
+            num_active = 0
             for a_p in aux_list:
-                if a_p is None: continue # Bỏ qua các tầng bị tắt (như LVO 16x16, 32x32)
+                if a_p is None: continue # Bỏ qua các tầng bị tắt
+                num_active += 1
                 
                 h, w = a_p.shape[2:]
                 
                 if task_key == "lesion":
                     t_l = F.interpolate(targets[:, 0:1].float(), (h, w), mode='area')
-                    aux_loss += self.lesion_main_loss(a_p, t_l) * p_l * 0.5
+                    task_aux_loss += self.lesion_main_loss(a_p, t_l)
                 
                 elif task_key == "lvo":
                     t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
                     if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
-                        aux_loss += self.lvo_loss_fn(a_p, t_v, sigma=4.0) * p_v * 0.5
+                        task_aux_loss += self.lvo_loss_fn(a_p, t_v, sigma=4.0)
                     else:
-                        aux_loss += self.lvo_loss_fn(a_p, t_v) * p_v * 0.5
+                        task_aux_loss += self.lvo_loss_fn(a_p, t_v)
                     
                 elif task_key == "cow":
                     t_c = F.interpolate(targets[:, 2:3].float(), (h, w), mode='nearest')
-                    aux_loss += self.cow_main_loss(a_p, t_c) * p_c * 0.5
+                    task_aux_loss += self.cow_main_loss(a_p, t_c)
+            
+            if num_active > 0:
+                # Trọng số Aux = 0.5 * TaskWeight, đã chia trung bình qua các tầng
+                if task_key == "lesion":
+                    aux_loss += (task_aux_loss / num_active) * p_l * 0.5
+                elif task_key == "lvo":
+                    aux_loss += (task_aux_loss / num_active) * p_v * 0.5
+                elif task_key == "cow":
+                    aux_loss += (task_aux_loss / num_active) * p_c * 0.5
 
         total = main_loss + aux_loss
         return {
