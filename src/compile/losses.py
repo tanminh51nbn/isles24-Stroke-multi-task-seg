@@ -138,6 +138,10 @@ class BoundaryLoss(nn.Module):
         return 1.0 - ((2.0 * intersection + 1e-5) / (union + 1e-5)).mean()
 
 class SDFBoundaryLoss(nn.Module):
+    def __init__(self, fg_weight: float = 0.1):
+        super().__init__()
+        self.fg_weight = fg_weight
+
     def forward(self, logits: torch.Tensor, sdf: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         if mask is None:
             # Fallback for compatibility (e.g. tests or older configurations)
@@ -174,7 +178,7 @@ class SDFBoundaryLoss(nn.Module):
         fp_mean = fp_loss.sum() / (num_bg + 1e-8)
         fn_mean = fn_loss.sum() / (num_fg + 1e-8)
 
-        return fp_mean + fn_mean
+        return fp_mean + self.fg_weight * fn_mean
 
 # ─── Soft clDice ─────────────────────────────────────────────────────────────
 
@@ -294,7 +298,7 @@ class MultiTaskLoss(nn.Module):
                 alpha=l_cfg["lesion"].get("alpha", 0.45),
                 beta=l_cfg["lesion"].get("beta", 0.55)
             )
-        self.lesion_hd_loss = SDFBoundaryLoss()
+        self.lesion_hd_loss = SDFBoundaryLoss(fg_weight=l_cfg["lesion"].get("hd_fg_weight", 0.1))
         self.lesion_hd_w   = l_cfg["lesion"].get("hd_weight", 0.0)
         # [FIX Vấn đề 3] CLDice cho Lesion — penalize fragmentation qua topology
         self.lesion_cl_loss = SoftCLDiceLoss(iters=l_cfg["lesion"].get("cl_iters", 3))

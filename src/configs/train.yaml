@@ -11,8 +11,9 @@ loss:
     beta: 0.7
     weight: 0.43
     hd_weight: 0.30
+    hd_fg_weight: 0.05
     cl_weight: 0.0
-    bce_pos_weight: 1.0
+    bce_pos_weight: 0.05
     cl_iters: 3
 
   lvo:
