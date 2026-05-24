@@ -123,10 +123,10 @@ def apply_sampling(
     else:
         pool = lesion_pure_df[lesion_pure_df["slice_idx"] % 2 != 0]["basename"].tolist()
     
-    if len(pool) > 0:
-        lesion_pure_subset = rng.sample(pool, min(n_pure_fixed, len(pool)))
+    if len(pool) >= n_pure_fixed:
+        lesion_pure_subset = rng.sample(pool, n_pure_fixed)
     else:
-        lesion_pure_subset = []
+        lesion_pure_subset = pool + rng.choices(pool, k=n_pure_fixed - len(pool)) if len(pool) > 0 else []
 
     # 2.2 Lesion + CoW (Có cả 2 nhưng không LVO) -> Giữ nguyên 100%
     lesion_cow_subset = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train["has_cow"] == 1)]["basename"].tolist()
@@ -141,10 +141,10 @@ def apply_sampling(
     plain_neg_ratio = sampling_cfg.get("plain_neg_ratio", 0.3)
     n_plain_fixed = int(len(neg_plain_pool) * plain_neg_ratio)
     
-    if len(neg_plain_pool) > 0:
-        neg_plain = rng.sample(neg_plain_pool, min(n_plain_fixed, len(neg_plain_pool)))
+    if len(neg_plain_pool) >= n_plain_fixed:
+        neg_plain = rng.sample(neg_plain_pool, n_plain_fixed)
     else:
-        neg_plain = []
+        neg_plain = neg_plain_pool + rng.choices(neg_plain_pool, k=n_plain_fixed - len(neg_plain_pool)) if len(neg_plain_pool) > 0 else []
 
     sampled_basenames = []
     final_lvo_factor = sampling_cfg.get("final_lvo_factor", 6)
