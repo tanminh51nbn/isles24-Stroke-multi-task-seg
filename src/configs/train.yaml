@@ -10,7 +10,7 @@ loss:
     alpha: 0.3
     beta: 0.7
     weight: 0.43
-    cls_weight: 0.3
+    cls_weight: 0.25
     cls_pos_weight: 2.0
     dice_batch: false
 
