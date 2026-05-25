@@ -6,9 +6,10 @@
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
-    type: "tversky"
+    type: "compound"
     alpha: 0.3
     beta: 0.7
+    pos_weight: 2.0
     weight: 0.43
     cls_weight: 0.25
     cls_pos_weight: 2.0
@@ -48,12 +49,12 @@ optimizer:
   type: "adamw"
   lr: 2.5e-4
   weight_decay: 5.0e-2
-  encoder_lr_scale: 0.02
+  encoder_lr_scale: 0.10
   eps: 1.0e-7
 
 scheduler:
   warmup_epochs: 7
-  hold_epochs: 3
+  hold_epochs: 8
   min_lr: 2.5e-6
 
 # ── Training ────────────────────────────────────────────────────
@@ -61,13 +62,8 @@ training:
   epochs: 100
   amp: true
   grad_clip_norm: 2.0
-  freeze_encoder_epochs: 20
+  freeze_encoder_epochs: 11
 
-  # Cơ chế dìu nhau đi (DWA+)
-  dwa_start_epoch: 8
-  dwa_temperature: 1.0
-  dwa_ema_alpha: 0.2
-  dwa_momentum: 0.5
   initial_weights:
     lesion: 1.20
     lvo: 1.05
@@ -102,7 +98,7 @@ training:
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 30
+    start_epoch: 25
     patience: 20
     min_delta: 0.0001
 
