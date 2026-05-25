@@ -175,15 +175,13 @@ class Trainer:
                 sum_d_l_pos += d_l_pos
                 n_b_pos += 1
 
-            # Gom patient-level stats (chỉ rank 0)
-            if self.rank == 0:
-                paths = batch.get("path", [""] * inp.shape[0])
-                # Tách gating khỏi patient-level LVO trước epoch 25
-                lvo_cls_gating = preds.get("lvo_cls", None) if epoch >= 25 else None
-                accumulate_patient_lvo_stats(
-                    preds["lvo"], lbl[:, 1:2], paths, patient_stats,
-                    threshold=lvo_thr, lvo_cls=lvo_cls_gating
-                )
+            paths = batch.get("path", [""] * inp.shape[0])
+            # Tách gating khỏi patient-level LVO trước epoch 25
+            lvo_cls_gating = preds.get("lvo_cls", None) if epoch >= 25 else None
+            accumulate_patient_lvo_stats(
+                preds["lvo"], lbl[:, 1:2], paths, patient_stats,
+                threshold=lvo_thr, lvo_cls=lvo_cls_gating
+            )
 
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)
             if should_vis and self.rank == 0:
@@ -204,13 +202,37 @@ class Trainer:
             dist.all_reduce(lvo_tensor, op=dist.ReduceOp.SUM)
             lvo_stats = {"tp": int(lvo_tensor[0].item()), "fp": int(lvo_tensor[1].item()), "fn": int(lvo_tensor[2].item())}
             
-            sync = torch.tensor([total_loss, main_loss, sum_d_l, sum_d_c, sum_aad, sum_alcd, sum_p_v, float(n_b), raw_loss], device=self.device)
+            # Đồng bộ các chỉ số slice bao gồm cả sum_d_l_pos và n_b_pos
+            sync = torch.tensor([
+                total_loss, main_loss, sum_d_l, sum_d_c, sum_aad, sum_alcd, 
+                sum_p_v, float(n_b), raw_loss, sum_d_l_pos, float(n_b_pos)
+            ], device=self.device)
             dist.all_reduce(sync, op=dist.ReduceOp.SUM)
             v = sync.cpu().numpy()
             avg_l, avg_m = v[0]/max(v[7],1), v[1]/max(v[7],1)
             ad_l, ad_c = v[2]/max(v[7],1), v[3]/max(v[7],1)
             a_aad, a_alcd, ap_v = v[4]/max(v[7],1), v[5]/max(v[7],1), v[6]/max(v[7],1)
             avg_raw = v[8]/max(v[7],1)
+            ad_l_pos = v[9]/max(v[10], 1)
+
+            # Thu thập và gộp patient_stats từ tất cả các rank
+            world_size = dist.get_world_size()
+            gathered_stats = [None] * world_size
+            dist.all_gather_object(gathered_stats, patient_stats)
+            
+            merged_stats = {}
+            for rank_stats in gathered_stats:
+                if rank_stats is None: continue
+                for pid, stats in rank_stats.items():
+                    if pid not in merged_stats:
+                        merged_stats[pid] = {
+                            "has_gt": stats["has_gt"],
+                            "max_pred": stats["max_pred"]
+                        }
+                    else:
+                        merged_stats[pid]["has_gt"] = merged_stats[pid]["has_gt"] or stats["has_gt"]
+                        merged_stats[pid]["max_pred"] = max(merged_stats[pid]["max_pred"], stats["max_pred"])
+            patient_stats = merged_stats
         else:
             avg_l = total_loss/max(n_b,1)
             avg_m = main_loss/max(n_b,1)
@@ -220,21 +242,22 @@ class Trainer:
             a_aad = sum_aad/max(n_b,1)
             a_alcd = sum_alcd/max(n_b,1)
             ap_v  = sum_p_v/max(n_b,1)
-        ad_l_pos = sum_d_l_pos / max(n_b_pos, 1)  # [FIX C] Lesion-positive Dice (global)
+            ad_l_pos = sum_d_l_pos / max(n_b_pos, 1)
 
         # Tính F1 Global một lần duy nhất sau khi đã gom toàn bộ Val set
         af1_v = finalize_lvo_f1(lvo_stats)
-        # Khởi tạo pat mặc định cho rank != 0 (tránh UnboundLocalError trong DDP)
-        pat = {"accuracy": 0.0, "tp": 0, "fp": 0, "fn": 0, "tn": 0, "n": 0, "f1": 0.0, "bal_acc": 0.0}
+        
+        # Tính patient LVO metrics trên toàn bộ tập dữ liệu đã gộp
+        pat = finalize_patient_lvo_acc(
+            patient_stats,
+            threshold=lvo_thr
+        )
+        
         if self.rank == 0:
             # Log LVO Summary (Global + Patient)
-            pat = finalize_patient_lvo_acc(
-                patient_stats,
-                threshold=lvo_thr
-            )
             print(f"    [LVO Summary] F1: {af1_v:.2f}% (TP={lvo_stats['tp']} FP={lvo_stats['fp']} FN={lvo_stats['fn']}) | Threshold={lvo_thr:.2f}")
             print(f"    [LVO Patient] Acc: {pat['accuracy']*100:.1f}% ({pat['tp']+pat['tn']}/{pat['n']}) | TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']} | BalAcc={pat['bal_acc']*100:.1f}%")
-            # Visualize sample tốt nhất (sau khi đã dưắt toàn bộ val loop)
+            # Visualize sample tốt nhất (sau khi đã duyệt toàn bộ val loop)
             if should_vis and vis_candidates:
                 best = select_best_sample(vis_candidates)
                 if best is not None:
@@ -254,10 +277,10 @@ class Trainer:
         return {
             "val_loss": avg_l, "val_main": avg_m, "val_raw": avg_raw, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
             "f1_lvo": af1_v, "dice_cow": ad_c,
-            "f1_lvo_patient": pat.get("f1", 0.0) * 100.0 if self.rank == 0 else 0.0,
-            "bal_acc_lvo": pat.get("bal_acc", 0.0) * 100.0 if self.rank == 0 else 0.0,
-            "aad_lesion": sum_aad / max(n_b, 1),
-            "alcd_lesion": sum_alcd / max(n_b, 1),
+            "f1_lvo_patient": pat.get("f1", 0.0) * 100.0,
+            "bal_acc_lvo": pat.get("bal_acc", 0.0) * 100.0,
+            "aad_lesion": a_aad,
+            "alcd_lesion": a_alcd,
             "composite": comp,
             "p_lesion": float(losses.get("p_lesion", 1.0)),
             "p_lvo": ap_v,
@@ -300,6 +323,6 @@ class Trainer:
             if early_stopping and (epoch + 1) >= self.config["training"]["early_stopping"].get("start_epoch", 1):
                 if early_stopping(v_m["composite"]): break
             self.scheduler.step()
-            if hasattr(self.loss_fn, "update_weights_from_metrics") and self.rank == 0:
+            if hasattr(self.loss_fn, "update_weights_from_metrics"):
                 self.loss_fn.update_weights_from_metrics(v_m, epoch)
         return self.history
