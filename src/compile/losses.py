@@ -11,12 +11,13 @@ from typing import Tuple, Optional
 # ─── Tversky Loss ─────────────────────────────────────────────────────────────
  
 class TverskyLoss(nn.Module):
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, batch: bool = True):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, batch: bool = True, reduction: str = 'mean'):
         super().__init__()
         self.alpha  = alpha
         self.beta   = beta
         self.smooth = smooth
         self.batch  = batch
+        self.reduction = reduction
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = torch.sigmoid(logits.float())
@@ -40,17 +41,22 @@ class TverskyLoss(nn.Module):
             numerator   = TP + self.smooth
             denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
             tversky_index = numerator / denominator.clamp(min=self.smooth)
-            return (1.0 - tversky_index).mean()
+            loss_vec = 1.0 - tversky_index
+            if self.reduction == 'mean':
+                return loss_vec.mean()
+            else:
+                return loss_vec
 
 # ─── Focal Tversky Loss ───────────────────────────────────────────────────────
 
 class FocalTverskyLoss(nn.Module):
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, gamma: float = 2.0, smooth: float = 1.0):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, gamma: float = 2.0, smooth: float = 1.0, reduction: str = 'mean'):
         super().__init__()
         self.alpha  = alpha
         self.beta   = beta
         self.gamma  = gamma
         self.smooth = smooth
+        self.reduction = reduction
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs   = torch.sigmoid(logits)
@@ -63,7 +69,11 @@ class FocalTverskyLoss(nn.Module):
         denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
         tversky_index = numerator / denominator.clamp(min=self.smooth)
         error = (1.0 - tversky_index).clamp(min=1e-6, max=1.0)
-        return torch.pow(error, self.gamma).mean()
+        loss_vec = torch.pow(error, self.gamma)
+        if self.reduction == 'mean':
+            return loss_vec.mean()
+        else:
+            return loss_vec
 
 def apply_gaussian_blur(mask: torch.Tensor, sigma: float) -> torch.Tensor:
     if sigma <= 0: return mask
@@ -83,17 +93,18 @@ def apply_gaussian_blur(mask: torch.Tensor, sigma: float) -> torch.Tensor:
 # ─── Modified Focal Loss ──────────────────────────────────────────────────────
 
 class ModifiedFocalLoss(nn.Module):
-    def __init__(self, alpha: float = 2.0, beta: float = 4.0, eps: float = 1e-6):
+    def __init__(self, alpha: float = 2.0, beta: float = 4.0, eps: float = 1e-6, reduction: str = 'mean'):
         super().__init__()
         self.alpha = alpha
         self.beta  = beta
         self.eps   = eps
+        self.reduction = reduction
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor, sigma: float = 0.0, debug: bool = False) -> torch.Tensor:
         pred = torch.sigmoid(logits.float()).clamp(min=self.eps, max=1.0 - self.eps)
         
         # 1. Vùng Đỏ (Nhãn gốc) và Vùng Nền (Tất cả còn lại)
-        # Sử dụng nguyên gốc targets thay vì đỉnh của heatmap
+        # Sử dụng nguyên gốc targets thay vị trí đỉnh của heatmap
         pos_mask = (targets >= 0.5).float()
         neg_mask = 1.0 - pos_mask
         
@@ -101,33 +112,32 @@ class ModifiedFocalLoss(nn.Module):
         heatmap_gt = apply_gaussian_blur(targets, sigma) if sigma > 0 else targets
         
         # 3. Tính Lực Thưởng và Lực Phạt
-        # Lực phạt (neg_loss) bị triệt tiêu bằng (1 - heatmap_gt)^beta khi tiến gần Vùng Đỏ
-        # [FIX NaN] Thêm self.eps để tránh log(0) gây ra NaN/Inf
         pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred + self.eps)
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred + self.eps)
         
-        # 4. Đòn bẩy chống khôn lỏi (Dynamic Force Balancing)
-        num_pos = pos_mask.sum().clamp(min=1.0)
-        num_neg = neg_mask.sum().clamp(min=1.0)
+        # 4. Tính toán theo từng lát cắt (dim = (1, 2, 3)) để hỗ trợ slice-level weights
+        slice_pos_loss = pos_loss.sum(dim=(1, 2, 3))
+        slice_neg_loss = neg_loss.sum(dim=(1, 2, 3))
         
-        # [FIX] Trừng phạt thiết quân luật: Giảm giới hạn max từ 1000 xuống 200
-        # Mục đích: Không cho mô hình "vẽ bừa" để đổi lấy điểm TP nữa.
-        weight_pos = (num_neg / num_pos).clamp(max=200)
+        slice_num_pos = pos_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
+        slice_num_neg = neg_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
         
-        # Bơm sức mạnh cho Vùng Đỏ bằng đòn bẩy
-        loss_pos = pos_loss.sum() * weight_pos
-        loss_neg = neg_loss.sum()
+        # Trừng phạt thiết quân luật cục bộ trên từng lát cắt
+        slice_weight_pos = (slice_num_neg / slice_num_pos).clamp(max=200)
         
-        # Chia trung bình có trọng số để loss scale ổn định [0, 1]
-        loss = (loss_pos + loss_neg) / (num_neg + num_pos * weight_pos)
+        slice_loss_pos = slice_pos_loss * slice_weight_pos
+        slice_loss = (slice_loss_pos + slice_neg_loss) / (slice_num_neg + slice_num_pos * slice_weight_pos)
+        
+        slice_loss = torch.nan_to_num(slice_loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
         
         if debug:
             num_pos_val = int(pos_mask.sum().item())
-            weight_val = weight_pos.item()
-            print(f"      [MFL_DEBUG] pos_px={num_pos_val} weight_pos={weight_val:.1f} "
-                  f"pos_loss={loss_pos.item():.2f} neg_loss={loss_neg.item():.2f} total={loss.item():.4f}")
+            print(f"      [MFL_DEBUG] pos_px={num_pos_val} mean_loss={slice_loss.mean().item():.4f}")
 
-        return torch.nan_to_num(loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
+        if self.reduction == 'mean':
+            return slice_loss.mean()
+        else:
+            return slice_loss
 
 # ─── LVO Loss ────────────────────────────────────────────────────────────────
 # Sử dụng Modified Focal Loss để tập trung vào các điểm tắc mạch nhỏ (Keypoints)
@@ -256,18 +266,20 @@ class BinaryFocalLoss(nn.Module):
         elif self.reduction == 'sum':
             return focal_loss.sum()
         else:
-            return focal_loss
+            # Return slice-level vector of shape (B,) by averaging over spatial dimensions
+            return focal_loss.view(focal_loss.size(0), -1).mean(dim=1)
 
 class CompoundDiceBCELoss(nn.Module):
     """
     nnU-Net compound loss cải tiến: 0.5 * Dice (Tversky) + 0.5 * BCEWithLogitsLoss (hoặc FocalLoss).
     """
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 1.0, batch: bool = False, use_focal: bool = False, focal_alpha: float = 0.25, focal_gamma: float = 2.0):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 1.0, batch: bool = False, use_focal: bool = False, focal_alpha: float = 0.25, focal_gamma: float = 2.0, reduction: str = 'mean'):
         super().__init__()
-        self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth, batch=batch)
+        self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth, batch=batch, reduction=reduction)
         self.use_focal = use_focal
+        self.reduction = reduction
         if use_focal:
-            self.focal = BinaryFocalLoss(alpha=focal_alpha, gamma=focal_gamma)
+            self.focal = BinaryFocalLoss(alpha=focal_alpha, gamma=focal_gamma, reduction=reduction)
         else:
             self.register_buffer("pos_weight", torch.tensor([pos_weight]))
 
@@ -279,7 +291,12 @@ class CompoundDiceBCELoss(nn.Module):
         if self.use_focal:
             bce_loss = self.focal(logits, targets)
         else:
-            bce_loss = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=self.pos_weight)
+            if self.reduction == 'none':
+                # Compute per-pixel BCE, then average over spatial dimensions (1, 2, 3) to get (B,)
+                bce_loss = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=self.pos_weight, reduction='none')
+                bce_loss = bce_loss.view(bce_loss.size(0), -1).mean(dim=1)
+            else:
+                bce_loss = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=self.pos_weight)
         
         return 0.5 * dice_loss + 0.5 * bce_loss
 
@@ -294,11 +311,22 @@ class MultiTaskLoss(nn.Module):
         self.init_w = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
 
         # 1. Lesion Task
-        self.lesion_main_loss = TverskyLoss(
-            alpha=l_cfg["lesion"].get("alpha", 0.3),
-            beta=l_cfg["lesion"].get("beta", 0.7),
-            batch=l_cfg["lesion"].get("dice_batch", False)
-        )
+        lesion_loss_type = l_cfg["lesion"].get("type", "tversky")
+        if lesion_loss_type == "compound":
+            self.lesion_main_loss = CompoundDiceBCELoss(
+                alpha=l_cfg["lesion"].get("alpha", 0.3),
+                beta=l_cfg["lesion"].get("beta", 0.7),
+                pos_weight=l_cfg["lesion"].get("pos_weight", 2.0),
+                batch=l_cfg["lesion"].get("dice_batch", False),
+                reduction='none'
+            )
+        else:
+            self.lesion_main_loss = TverskyLoss(
+                alpha=l_cfg["lesion"].get("alpha", 0.3),
+                beta=l_cfg["lesion"].get("beta", 0.7),
+                batch=l_cfg["lesion"].get("dice_batch", False),
+                reduction='none'
+            )
         l_l_cls_pos_w = l_cfg["lesion"].get("cls_pos_weight", 2.0)
         self.lesion_cls_loss_fn = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([l_l_cls_pos_w])
@@ -312,12 +340,14 @@ class MultiTaskLoss(nn.Module):
             self.lvo_loss_fn = FocalTverskyLoss(
                 alpha=l_v_cfg.get("alpha", 0.7),
                 beta=l_v_cfg.get("beta", 0.3),
-                gamma=l_v_cfg.get("gamma", 2.0)
+                gamma=l_v_cfg.get("gamma", 2.0),
+                reduction='none'
             )
         else:
             self.lvo_loss_fn = ModifiedFocalLoss(
                 alpha=l_v_cfg.get("mfl_alpha", 2.0),
-                beta=l_v_cfg.get("mfl_beta", 4.0)
+                beta=l_v_cfg.get("mfl_beta", 4.0),
+                reduction='none'
             )
         # [T2.1] LVO Binary Classification Loss
         # [FIX] Hạ pos_weight từ 5.0 xuống 1.5 để dập tắt ảo giác (giảm >1200 FPs)
@@ -339,7 +369,7 @@ class MultiTaskLoss(nn.Module):
         self.cow_cl_w = l_cfg["cow"].get("cl_weight", 0.0)
 
         # ── Performance Gap Weighting (PGW) ────────────────────────────────────
-        # Thay thế DWA+: điều chỉnh trọng số dựa trên khoảng cách đến target metric,
+        # Điều chỉnh trọng số dựa trên khoảng cách đến target metric,
         # không phải tốc độ thay đổi loss — tránh failure mode "đầu hàng task khó".
         pgw_cfg = t_cfg.get("pgw", {})
         perf_tgt = pgw_cfg.get("performance_targets", {})
@@ -387,121 +417,125 @@ class MultiTaskLoss(nn.Module):
     def update_weights_from_metrics(self, val_metrics: dict, epoch: int):
         """Cập nhật current_weights theo Performance Gap Weighting (PGW).
 
-        Gọi 1 lần/epoch từ trainer.py (rank 0) SAU KHI validate() xong.
+        Gọi 1 lần/epoch từ trainer.py (tất cả các rank) SAU KHI validate() xong.
         current_weights được cập nhật in-place → forward() chỉ đọc, không tính lại.
-
-        Nguyên lý:
-            gap_i = max(0, target_i - current_i)   # Khoảng cách còn lại đến mục tiêu
-            w_i   = softmax(gap / T) * N            # Task kém nhất → weight cao nhất
-            Sau clamp(w_min) → renormalize sum=N    # Giữ gradient scale ổn định
         """
         if epoch < self.pgw_start_epoch:
             return  # Giữ initial_weights trong giai đoạn warmup
 
-        current = torch.tensor([
-            # [FIX C] Dùng dice_lesion_pos (chỉ trên Lesion-positive slice) thay vì dice_lesion (inflate bởi background)
-            # dice_lesion ≈ 0.57 nhưng thực chất Lesion-positive Dice ≈ 0.40 — PGW cần thấy đúng gap thực sự
-            val_metrics.get("dice_lesion_pos", val_metrics.get("dice_lesion", 0.0)),
-            val_metrics.get("f1_lvo",    0.0) / 100.0,  # F1 → [0,1]
-            val_metrics.get("dice_cow",  0.0),
-        ], device=self.current_weights.device)
+        rank = dist.get_rank() if dist.is_initialized() else 0
 
-        # Stall Detection cho Lesion (Bệnh 4)
-        # Chỉ kích hoạt từ Epoch 25+ (sau khi mở băng encoder 5 epoch) để tránh nhiễu
-        is_stalled = False
-        if epoch >= 25:
-            current_lesion_metric = current[0].item()
-            best_val = self.best_lesion_metric.item()
-            if current_lesion_metric < 0.05:
-                is_stalled = True
-            else:
-                if current_lesion_metric > best_val + 0.002:
-                    self.best_lesion_metric.fill_(current_lesion_metric)
-                    self.lesion_stall_epochs.fill_(0)
-                else:
-                    self.lesion_stall_epochs.add_(1)
-                
-                if self.lesion_stall_epochs.item() >= 10:
+        if rank == 0:
+            current = torch.tensor([
+                # [FIX C] Dùng dice_lesion_pos (chỉ trên Lesion-positive slice) thay vì dice_lesion (inflate bởi background)
+                # dice_lesion ≈ 0.57 nhưng thực chất Lesion-positive Dice ≈ 0.40 — PGW cần thấy đúng gap thực sự
+                val_metrics.get("dice_lesion_pos", val_metrics.get("dice_lesion", 0.0)),
+                val_metrics.get("f1_lvo",    0.0) / 100.0,  # F1 → [0,1]
+                val_metrics.get("dice_cow",  0.0),
+            ], device=self.current_weights.device)
+
+            # Stall Detection cho Lesion (Bệnh 4)
+            # Chỉ kích hoạt từ Epoch 25+ (sau khi mở băng encoder 5 epoch) để tránh nhiễu
+            is_stalled = False
+            if epoch >= 25:
+                current_lesion_metric = current[0].item()
+                best_val = self.best_lesion_metric.item()
+                if current_lesion_metric < 0.05:
                     is_stalled = True
+                else:
+                    if current_lesion_metric > best_val + 0.002:
+                        self.best_lesion_metric.fill_(current_lesion_metric)
+                        self.lesion_stall_epochs.fill_(0)
+                    else:
+                        self.lesion_stall_epochs.add_(1)
+                    
+                    if self.lesion_stall_epochs.item() >= 10:
+                        is_stalled = True
 
-        target = self.perf_targets.to(current.device)
-        gap = torch.clamp(target - current, min=0.0)  # Chỉ tính gap âm (chưa đạt)
+            target = self.perf_targets.to(current.device)
+            gap = torch.clamp(target - current, min=0.0)  # Chỉ tính gap âm (chưa đạt)
 
-        # Nếu stalled, triệt tiêu gap của Lesion để coi như task này đã đạt/không ưu tiên nữa
-        if is_stalled:
-            gap[0] = 0.0
+            # Nếu stalled, triệt tiêu gap của Lesion để coi như task này đã đạt/không ưu tiên nữa
+            if is_stalled:
+                gap[0] = 0.0
 
-        if gap.sum() < 1e-6:
-            # Tất cả task đã vượt target → dùng lại initial_weights (không có task nào cần ưu tiên đặc biệt)
-            init = torch.tensor(
-                [self.init_w['lesion'], self.init_w['lvo'], self.init_w['cow']],
-                device=self.current_weights.device
-            )
-            self.current_weights.copy_(init)
-            stall_info = " (stalled)" if is_stalled else ""
-            print(f"    [PGW] Tất cả task đạt target hoặc Lesion bị stall -> reset về initial_weights{stall_info}")
-            return
+            if gap.sum() < 1e-6:
+                # Tất cả task đã vượt target → dùng lại initial_weights (không có task nào cần ưu tiên đặc biệt)
+                init = torch.tensor(
+                    [self.init_w['lesion'], self.init_w['lvo'], self.init_w['cow']],
+                    device=self.current_weights.device
+                )
+                self.current_weights.copy_(init)
+                self._pgw_epoch.fill_(epoch)
+                stall_info = " (stalled)" if is_stalled else ""
+                print(f"    [PGW] Tất cả task đạt target hoặc Lesion bị stall -> reset về initial_weights{stall_info}")
+            else:
+                # [FIX 1.2] Tách task ĐÃ đạt target (gap≈0) và CHƯA đạt.
+                # Task đã đạt → giữ cố định ở w_min, KHÔNG tham gia softmax.
+                # Ngăn CoW nhận weight 0.57 khi gap_C≈0.
+                active_mask = gap > 1e-3
+                n_active   = int(active_mask.sum().item())
+                n_inactive = self.n_tasks - n_active
 
-        # [FIX 1.2] Tách task ĐÃ đạt target (gap≈0) và CHƯA đạt.
-        # Task đã đạt → giữ cố định ở w_min, KHÔNG tham gia softmax.
-        # Ngăn CoW nhận weight 0.57 khi gap_C≈0.
-        active_mask = gap > 1e-3
-        n_active   = int(active_mask.sum().item())
-        n_inactive = self.n_tasks - n_active
+                if n_active == 0:
+                    init = torch.tensor(
+                        [self.init_w['lesion'], self.init_w['lvo'], self.init_w['cow']],
+                        device=self.current_weights.device
+                    )
+                    self.current_weights.copy_(init)
+                    self._pgw_epoch.fill_(epoch)
+                else:
+                    # Softmax chỉ trên active tasks; budget = N - sum(w_min for inactive tasks)
+                    inactive_w_min_sum = (self.pgw_w_min * (~active_mask).float()).sum()
+                    weight_budget = self.n_tasks - inactive_w_min_sum
+                    active_gap    = gap * active_mask.float()
+                    # [FIX NaN] Subtract max before exp (Softmax stability trick) để tránh nổ Inf khi gap lớn hoặc temp nhỏ
+                    max_gap       = torch.max(active_gap) if n_active > 0 else 0.0
+                    exp_gap       = torch.exp((active_gap - max_gap) / self.pgw_temperature) * active_mask.float()
+                    raw_w = torch.where(
+                        active_mask,
+                        (exp_gap / (exp_gap.sum() + 1e-8)) * weight_budget,
+                        self.pgw_w_min
+                    )
 
-        if n_active == 0:
-            init = torch.tensor(
-                [self.init_w['lesion'], self.init_w['lvo'], self.init_w['cow']],
-                device=self.current_weights.device
-            )
-            self.current_weights.copy_(init)
-            return
+                    # Momentum + Phân bổ lại phần thừa (Projected Simplex với Box Constraints)
+                    blended_w = self.pgw_momentum * self.current_weights + (1.0 - self.pgw_momentum) * raw_w
+                    
+                    w = blended_w.clone()
+                    w_min = self.pgw_w_min.to(w.device)
+                    w_max = self.pgw_w_max.to(w.device)
+                    
+                    # Phân bổ phần thừa tuần tự (tối đa N bước cho N tasks)
+                    for _ in range(self.n_tasks):
+                        w = torch.clamp(w, min=w_min, max=w_max)
+                        not_at_bounds = (w > w_min) & (w < w_max)
+                        if not not_at_bounds.any():
+                            break
+                        excess = self.n_tasks - w.sum()
+                        if abs(excess.item()) < 1e-4:
+                            break
+                        n_free = not_at_bounds.sum().float()
+                        w[not_at_bounds] += excess / n_free
+                        
+                    final_w = torch.clamp(w, min=w_min, max=w_max)
+                    self.current_weights.copy_(final_w)
+                    self._pgw_epoch.fill_(epoch)
 
-        # Softmax chỉ trên active tasks; budget = N - sum(w_min for inactive tasks)
-        inactive_w_min_sum = (self.pgw_w_min * (~active_mask).float()).sum()
-        weight_budget = self.n_tasks - inactive_w_min_sum
-        active_gap    = gap * active_mask.float()
-        # [FIX NaN] Subtract max before exp (Softmax stability trick) để tránh nổ Inf khi gap lớn hoặc temp nhỏ
-        max_gap       = torch.max(active_gap) if n_active > 0 else 0.0
-        exp_gap       = torch.exp((active_gap - max_gap) / self.pgw_temperature) * active_mask.float()
-        raw_w = torch.where(
-            active_mask,
-            (exp_gap / (exp_gap.sum() + 1e-8)) * weight_budget,
-            self.pgw_w_min
-        )
+                    fixed_tag = "".join([
+                        "L" if not active_mask[0] else "",
+                        "V" if not active_mask[1] else "",
+                        "C" if not active_mask[2] else "",
+                    ]) or "none"
+                    stall_info = f" (stalled, {self.lesion_stall_epochs.item()} eps)" if is_stalled else ""
+                    print(f"    [PGW]: Gap L={gap[0]:.3f} V={gap[1]:.3f} C={gap[2]:.3f} "
+                          f"-> Weights: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f} "
+                          f"(fixed: {fixed_tag}){stall_info}")
 
-        # Momentum + Phân bổ lại phần thừa (Projected Simplex với Box Constraints)
-        blended_w = self.pgw_momentum * self.current_weights + (1.0 - self.pgw_momentum) * raw_w
-        
-        w = blended_w.clone()
-        w_min = self.pgw_w_min.to(w.device)
-        w_max = self.pgw_w_max.to(w.device)
-        
-        # Phân bổ phần thừa tuần tự (tối đa N bước cho N tasks)
-        for _ in range(self.n_tasks):
-            w = torch.clamp(w, min=w_min, max=w_max)
-            not_at_bounds = (w > w_min) & (w < w_max)
-            if not not_at_bounds.any():
-                break
-            excess = self.n_tasks - w.sum()
-            if abs(excess.item()) < 1e-4:
-                break
-            n_free = not_at_bounds.sum().float()
-            w[not_at_bounds] += excess / n_free
-            
-        final_w = torch.clamp(w, min=w_min, max=w_max)
-        self.current_weights.copy_(final_w)
-        self._pgw_epoch.fill_(epoch)
-
-        fixed_tag = "".join([
-            "L" if not active_mask[0] else "",
-            "V" if not active_mask[1] else "",
-            "C" if not active_mask[2] else "",
-        ]) or "none"
-        stall_info = f" (stalled, {self.lesion_stall_epochs.item()} eps)" if is_stalled else ""
-        print(f"    [PGW]: Gap L={gap[0]:.3f} V={gap[1]:.3f} C={gap[2]:.3f} "
-              f"-> Weights: L={final_w[0]:.2f} V={final_w[1]:.2f} C={final_w[2]:.2f} "
-              f"(fixed: {fixed_tag}){stall_info}")
+        if dist.is_initialized():
+            dist.broadcast(self.current_weights, src=0)
+            dist.broadcast(self.best_lesion_metric, src=0)
+            dist.broadcast(self.lesion_stall_epochs, src=0)
+            dist.broadcast(self._pgw_epoch, src=0)
 
     def forward(self, preds: dict, targets: torch.Tensor, epoch: int, **kwargs) -> dict:
         cur_ep = int(epoch)
@@ -528,53 +562,62 @@ class MultiTaskLoss(nn.Module):
             l_v_m = self.lvo_loss_fn(preds['lvo'], heatmap_gt)
             if _debug_lvo:
                 num_pos = (targets[:, 1:2] > 0.5).sum().item()
-                print(f"      [LVO_DEBUG] PosPixels: {int(num_pos)} | FTL_Loss: {l_v_m.item():.4f}")
+                print(f"      [LVO_DEBUG] PosPixels: {int(num_pos)} | FTL_Loss: {l_v_m.mean().item():.4f}")
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
-        # [T2.1] LVO Binary Classification Loss
-        # has_lvo = 1 nếu slice này có bất kỳ pixel LVO GT nào (global max > 0)
-        has_lvo = (targets[:, 1:2].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
+        # Slice indicators (1.0 if there is any GT pixel, else 0.0)
+        has_lesion = (targets[:, 0:1].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
+        has_lvo = (targets[:, 1:2].amax(dim=(1, 2, 3), keepdim=False) > 0).float()      # (B,)
+
+        # [T2.1] LVO Binary Classification Loss (per-slice vector)
         lvo_cls_logit = preds.get('lvo_cls', None)
         if lvo_cls_logit is not None:
             lvo_cls_logit_flat = lvo_cls_logit.view(-1)  # (B,)
             pos_w = self.lvo_cls_loss_fn.pos_weight.to(targets.device)
             l_v_cls = nn.functional.binary_cross_entropy_with_logits(
                 lvo_cls_logit_flat, has_lvo,
-                pos_weight=pos_w
+                pos_weight=pos_w,
+                reduction='none'
             )
             l_v_m = (1.0 - self.lvo_cls_w) * l_v_m + self.lvo_cls_w * l_v_cls
 
         # 2. Additional Task-specific Losses (Boundary & Topology - CoW only)
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) if self.cow_cl_w > 0.0 else torch.tensor(0.0, device=targets.device)
 
-        # Lesion Slice-level Classification Loss
-        has_lesion = (targets[:, 0:1].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
+        # Lesion Slice-level Classification Loss (per-slice vector)
         lesion_cls_logit = preds.get('lesion_cls', None)
         if lesion_cls_logit is not None:
             lesion_cls_logit_flat = lesion_cls_logit.view(-1)  # (B,)
             pos_w = self.lesion_cls_loss_fn.pos_weight.to(targets.device)
             l_l_cls = nn.functional.binary_cross_entropy_with_logits(
                 lesion_cls_logit_flat, has_lesion,
-                pos_weight=pos_w
+                pos_weight=pos_w,
+                reduction='none'
             )
             combined_lesion_loss = (1.0 - self.lesion_cls_w) * l_l_m + self.lesion_cls_w * l_l_cls
         else:
             combined_lesion_loss = l_l_m
 
+        # Dynamic slice-level weights (3.0 for positive slices, 1.0 for negative slices)
+        lesion_slice_weights = has_lesion * 2.0 + 1.0
+        lvo_slice_weights = has_lvo * 2.0 + 1.0
+
+        # Apply weights and take mean to get scalar losses
+        combined_lesion_loss_scalar = (combined_lesion_loss * lesion_slice_weights).mean()
+        l_v_m_scalar = (l_v_m * lvo_slice_weights).mean()
+
         # 3. Final Task Weighting
-        loss_l = combined_lesion_loss * p_l
-        loss_v = l_v_m * p_v
+        loss_l = combined_lesion_loss_scalar * p_l
+        loss_v = l_v_m_scalar * p_v
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
 
         # Unweighted task losses (dùng để logging/monitoring độ hội tụ thực tế)
-        unweighted_lesion = combined_lesion_loss
-        unweighted_lvo = l_v_m
+        unweighted_lesion = combined_lesion_loss_scalar
+        unweighted_lvo = l_v_m_scalar
         unweighted_cow = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl)
         unweighted_main = unweighted_lesion + unweighted_lvo + unweighted_cow
 
         main_loss = loss_l + loss_v + loss_c
-
-        # (running_loss không còn dùng cho DWA — giữ lại để debug nếu cần)
 
         aux_l = torch.tensor(0.0, device=targets.device)
         aux_v = torch.tensor(0.0, device=targets.device)
@@ -609,9 +652,11 @@ class MultiTaskLoss(nn.Module):
             if num_active > 0:
                 # Trọng số Aux = 0.5 * TaskWeight, đã chia trung bình qua các tầng
                 if task_key == "lesion":
-                    aux_l = (task_aux_loss / num_active) * p_l * 0.5
+                    task_aux_loss_weighted = (task_aux_loss * lesion_slice_weights).mean()
+                    aux_l = (task_aux_loss_weighted / num_active) * p_l * 0.5
                 elif task_key == "lvo":
-                    aux_v = (task_aux_loss / num_active) * p_v * 0.5
+                    task_aux_loss_weighted = (task_aux_loss * lvo_slice_weights).mean()
+                    aux_v = (task_aux_loss_weighted / num_active) * p_v * 0.5
                 elif task_key == "cow":
                     aux_c = (task_aux_loss / num_active) * p_c * 0.5
 
