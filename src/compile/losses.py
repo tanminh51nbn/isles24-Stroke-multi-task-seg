@@ -321,11 +321,11 @@ class MultiTaskLoss(nn.Module):
             )
         # [T2.1] LVO Binary Classification Loss
         # [FIX] Hạ pos_weight từ 5.0 xuống 1.5 để dập tắt ảo giác (giảm >1200 FPs)
-        lvo_cls_pos_w = l_v_cfg.get("lvo_cls_pos_weight", 1.5)
+        lvo_cls_pos_w = l_v_cfg.get("cls_pos_weight", l_v_cfg.get("lvo_cls_pos_weight", 1.5))
         self.lvo_cls_loss_fn = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([lvo_cls_pos_w])
         )
-        self.lvo_cls_w = l_v_cfg.get("lvo_cls_weight", 0.3)  # Tỷ lệ cls trong tổng LVO loss
+        self.lvo_cls_w = l_v_cfg.get("cls_weight", l_v_cfg.get("lvo_cls_weight", 0.3))  # Tỷ lệ cls trong tổng LVO loss
 
         # 3. CoW Task
         # [FIX] Dùng TverskyLoss (linear gradient) thay FocalTverskyLoss (gamma=2, gradient²)

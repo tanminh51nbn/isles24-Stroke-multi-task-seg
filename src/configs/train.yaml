@@ -19,8 +19,8 @@ loss:
     mfl_alpha: 2.0
     mfl_beta: 4.0
     weight: 0.43
-    lvo_cls_weight: 0.25
-    lvo_cls_pos_weight: 2.0
+    cls_weight: 0.25
+    cls_pos_weight: 2.0
 
   cow:
     type: "cl_tversky"
