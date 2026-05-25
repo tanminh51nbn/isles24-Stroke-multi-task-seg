@@ -51,14 +51,14 @@ class ChannelAttention(nn.Module):
 # Cho model học task dễ hơn trước: "có LVO không?" (binary)
 # Signal này dày đặc hơn heatmap loss (BCE trên 1 scalar, không phụ thuộc num_pos)
 class LVOClassificationHead(nn.Module):
-    """Global Average Pooling → FC → sigmoid → scalar per batch item."""
+    """Global Avg + Max Pooling → FC → scalar per batch item."""
     def __init__(self, in_ch: int):
         super().__init__()
         mid_ch = max(16, in_ch // 4)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
         self.cls = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),   # (B, C, 1, 1)
-            nn.Flatten(),              # (B, C)
-            nn.Linear(in_ch, mid_ch),
+            nn.Linear(in_ch * 2, mid_ch),
             nn.GELU(),
             nn.Dropout(p=0.3),
             nn.Linear(mid_ch, 1),     # (B, 1)
@@ -68,7 +68,10 @@ class LVOClassificationHead(nn.Module):
         nn.init.constant_(self.cls[-1].bias, -1.386)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.cls(x)  # (B, 1) raw logit
+        avg_out = self.avg_pool(x).view(x.shape[0], -1)
+        max_out = self.max_pool(x).view(x.shape[0], -1)
+        out = torch.cat([avg_out, max_out], dim=1)
+        return self.cls(out)  # (B, 1) raw logit
 
 
 class ResidualBlock(nn.Module):
@@ -112,14 +115,14 @@ class SegmentationHead(nn.Module):
 
 
 class LesionClassificationHead(nn.Module):
-    """Global Average Pooling → FC → scalar per batch item."""
+    """Global Avg + Max Pooling → FC → scalar per batch item."""
     def __init__(self, in_ch: int):
         super().__init__()
         mid_ch = max(16, in_ch // 4)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
         self.cls = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),   # (B, C, 1, 1)
-            nn.Flatten(),              # (B, C)
-            nn.Linear(in_ch, mid_ch),
+            nn.Linear(in_ch * 2, mid_ch),
             nn.GELU(),
             nn.Dropout(p=0.3),
             nn.Linear(mid_ch, 1),     # (B, 1)
@@ -128,7 +131,10 @@ class LesionClassificationHead(nn.Module):
         nn.init.constant_(self.cls[-1].bias, 0.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.cls(x)  # (B, 1) raw logit
+        avg_out = self.avg_pool(x).view(x.shape[0], -1)
+        max_out = self.max_pool(x).view(x.shape[0], -1)
+        out = torch.cat([avg_out, max_out], dim=1)
+        return self.cls(out)  # (B, 1) raw logit
 
 
 class MultiTaskHeads(nn.Module):
