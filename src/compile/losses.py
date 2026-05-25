@@ -580,6 +580,7 @@ class MultiTaskLoss(nn.Module):
         aux_v = torch.tensor(0.0, device=targets.device)
         aux_c = torch.tensor(0.0, device=targets.device)
         
+        aux_dict = preds.get("aux_masks", {})
         # Duyệt qua từng task trong dictionary AUX
         for task_key, aux_list in aux_dict.items():
             task_aux_loss = 0.0
