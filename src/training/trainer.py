@@ -52,8 +52,9 @@ class Trainer:
             if not torch.isfinite(inp).all(): inp = torch.nan_to_num(inp, nan=0.0)
 
             self.optimizer.zero_grad(set_to_none=True)
+            raw_model = self.model.module if hasattr(self.model, "module") else self.model
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
-                preds = self.model(inp, epoch=epoch)
+                preds = raw_model(inp, epoch=epoch)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
 
             task_losses = [losses["total_lesion"], losses["total_lvo"], losses["total_cow"]]
