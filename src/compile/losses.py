@@ -294,33 +294,16 @@ class MultiTaskLoss(nn.Module):
         self.init_w = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
 
         # 1. Lesion Task
-        lesion_type = l_cfg["lesion"].get("type", "tversky")
-        if lesion_type == "focal_tversky":
-            self.lesion_main_loss = FocalTverskyLoss(
-                alpha=l_cfg["lesion"].get("alpha", 0.45),
-                beta=l_cfg["lesion"].get("beta", 0.55),
-                gamma=l_cfg["lesion"].get("gamma", 2.0)
-            )
-        elif lesion_type == "compound_dice_bce":
-            self.lesion_main_loss = CompoundDiceBCELoss(
-                alpha=l_cfg["lesion"].get("alpha", 0.5),
-                beta=l_cfg["lesion"].get("beta", 0.5),
-                pos_weight=l_cfg["lesion"].get("bce_pos_weight", 1.0),
-                batch=l_cfg["lesion"].get("dice_batch", False),
-                use_focal=l_cfg["lesion"].get("use_focal", False),
-                focal_alpha=l_cfg["lesion"].get("focal_alpha", 0.25),
-                focal_gamma=l_cfg["lesion"].get("focal_gamma", 2.0)
-            )
-        else:  # default: plain TverskyLoss — gradient tuyến tính, không bị bình phương
-            self.lesion_main_loss = TverskyLoss(
-                alpha=l_cfg["lesion"].get("alpha", 0.45),
-                beta=l_cfg["lesion"].get("beta", 0.55)
-            )
-        self.lesion_hd_loss = SDFBoundaryLoss(fg_weight=l_cfg["lesion"].get("hd_fg_weight", 0.1))
-        self.lesion_hd_w   = l_cfg["lesion"].get("hd_weight", 0.0)
-        # [FIX Vấn đề 3] CLDice cho Lesion — penalize fragmentation qua topology
-        self.lesion_cl_loss = SoftCLDiceLoss(iters=l_cfg["lesion"].get("cl_iters", 3))
-        self.lesion_cl_w   = l_cfg["lesion"].get("cl_weight", 0.0)
+        self.lesion_main_loss = TverskyLoss(
+            alpha=l_cfg["lesion"].get("alpha", 0.3),
+            beta=l_cfg["lesion"].get("beta", 0.7),
+            batch=l_cfg["lesion"].get("dice_batch", False)
+        )
+        l_l_cls_pos_w = l_cfg["lesion"].get("cls_pos_weight", 2.0)
+        self.lesion_cls_loss_fn = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor([l_l_cls_pos_w])
+        )
+        self.lesion_cls_w = l_cfg["lesion"].get("cls_weight", 0.3)
 
         # 2. LVO Task
         l_v_cfg = l_cfg.get("lvo", {})
@@ -561,24 +544,30 @@ class MultiTaskLoss(nn.Module):
             )
             l_v_m = (1.0 - self.lvo_cls_w) * l_v_m + self.lvo_cls_w * l_v_cls
 
-        # 2. Additional Task-specific Losses (Boundary & Topology)
-        l_l_hd = self.lesion_hd_loss(preds['lesion'], targets[:, 3:4], targets[:, 0:1])
-        w_cl_l = self.lesion_cl_w
-        l_l_cl = self.lesion_cl_loss(preds['lesion'], targets[:, 0:1]) if w_cl_l > 0.0 else torch.tensor(0.0, device=targets.device)
+        # 2. Additional Task-specific Losses (Boundary & Topology - CoW only)
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) if self.cow_cl_w > 0.0 else torch.tensor(0.0, device=targets.device)
 
-        # [T2.3] Asymmetric FP penalty nhỏ cho Lesion (phạt nặng pixel FP confident)
-        probs_l = torch.sigmoid(preds['lesion'].float())
-        afl_fp = -(1 - targets[:, 0:1]) * torch.pow(probs_l, 2.0) * torch.log(1 - probs_l + 1e-6)
-        l_l_afl = 0.1 * afl_fp.mean()
+        # Lesion Slice-level Classification Loss
+        has_lesion = (targets[:, 0:1].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
+        lesion_cls_logit = preds.get('lesion_cls', None)
+        if lesion_cls_logit is not None:
+            lesion_cls_logit_flat = lesion_cls_logit.view(-1)  # (B,)
+            pos_w = self.lesion_cls_loss_fn.pos_weight.to(targets.device)
+            l_l_cls = nn.functional.binary_cross_entropy_with_logits(
+                lesion_cls_logit_flat, has_lesion,
+                pos_weight=pos_w
+            )
+            combined_lesion_loss = (1.0 - self.lesion_cls_w) * l_l_m + self.lesion_cls_w * l_l_cls
+        else:
+            combined_lesion_loss = l_l_m
 
         # 3. Final Task Weighting
-        loss_l = ((1.0 - self.lesion_hd_w - w_cl_l) * l_l_m + self.lesion_hd_w * l_l_hd + w_cl_l * l_l_cl) * p_l + l_l_afl
+        loss_l = combined_lesion_loss * p_l
         loss_v = l_v_m * p_v
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
 
         # Unweighted task losses (dùng để logging/monitoring độ hội tụ thực tế)
-        unweighted_lesion = ((1.0 - self.lesion_hd_w - w_cl_l) * l_l_m + self.lesion_hd_w * l_l_hd + w_cl_l * l_l_cl) + l_l_afl
+        unweighted_lesion = combined_lesion_loss
         unweighted_lvo = l_v_m
         unweighted_cow = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl)
         unweighted_main = unweighted_lesion + unweighted_lvo + unweighted_cow

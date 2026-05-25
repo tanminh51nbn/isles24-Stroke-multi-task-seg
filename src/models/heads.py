@@ -111,6 +111,26 @@ class SegmentationHead(nn.Module):
         return self.conv_out(x)
 
 
+class LesionClassificationHead(nn.Module):
+    """Global Average Pooling → FC → scalar per batch item."""
+    def __init__(self, in_ch: int):
+        super().__init__()
+        mid_ch = max(16, in_ch // 4)
+        self.cls = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),   # (B, C, 1, 1)
+            nn.Flatten(),              # (B, C)
+            nn.Linear(in_ch, mid_ch),
+            nn.GELU(),
+            nn.Dropout(p=0.3),
+            nn.Linear(mid_ch, 1),     # (B, 1)
+        )
+        # Bias init: pi=0.50 → bias = 0.0
+        nn.init.constant_(self.cls[-1].bias, 0.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.cls(x)  # (B, 1) raw logit
+
+
 class MultiTaskHeads(nn.Module):
     """
     Tập hợp 3 heads độc lập cho Lesion, LVO, CoW.
@@ -125,6 +145,9 @@ class MultiTaskHeads(nn.Module):
 
         # [T2.1] LVO Classification Head (binary: có LVO hay không)
         self.lvo_cls_head = LVOClassificationHead(in_ch)
+        
+        # [NEW] Lesion Classification Head (binary: có Lesion hay không)
+        self.lesion_cls_head = LesionClassificationHead(in_ch)
 
         # [QUAN TRỌNG] Bias Initialization (Chống sụp đổ màn hình)
         # 1. LVO: [T2] Đổi bias -4.595 → -2.0: σ(-2.0)=0.12
@@ -143,12 +166,14 @@ class MultiTaskHeads(nn.Module):
             features: Dictionary chứa feature maps từ MultiHeadDecoder
                       {"lesion": Tensor, "lvo": Tensor, "cow": Tensor}
         Returns:
-            Dictionary chứa predicted masks/logits + lvo_cls scalar
+            Dictionary chứa predicted masks/logits + lvo_cls, lesion_cls
         """
         f_lvo = features["lvo"]
+        f_lesion = features["lesion"]
         return {
-            "lesion":  self.lesion_head(features["lesion"]),
+            "lesion":  self.lesion_head(f_lesion),
             "lvo":     self.lvo_head(f_lvo),
             "cow":     self.cow_head(features["cow"]),
-            "lvo_cls": self.lvo_cls_head(f_lvo),  # [T2.1] (B, 1) binary cls logit
+            "lvo_cls": self.lvo_cls_head(f_lvo),  # [T2.1] (B, 1) binary LVO cls logit
+            "lesion_cls": self.lesion_cls_head(f_lesion),  # [NEW] (B, 1) binary Lesion cls logit
         }

@@ -130,7 +130,13 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
 
     # Pred
     lvo_t = thresholds.get("lvo", 0.05)
-    sig_lesion = torch.sigmoid(preds["lesion"].squeeze()).float().cpu().numpy()
+    sig_lesion_t = torch.sigmoid(preds["lesion"].squeeze()).float().cpu()
+    lesion_cls = preds.get("lesion_cls", None)
+    if lesion_cls is not None:
+        l_cls_prob = torch.sigmoid(lesion_cls).cpu().squeeze().item()
+        sig_lesion_t = sig_lesion_t * l_cls_prob
+    sig_lesion = sig_lesion_t.numpy()
+    
     sig_lvo_t = torch.sigmoid(preds["lvo"].squeeze()).float().cpu()
     lvo_cls = preds.get("lvo_cls", None)
     if lvo_cls is not None:

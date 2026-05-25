@@ -6,19 +6,13 @@
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
-    type: "compound_dice_bce"
-    use_focal: true
-    focal_alpha: 0.25
-    focal_gamma: 2.0
+    type: "tversky"
     alpha: 0.3
     beta: 0.7
     weight: 0.43
-    hd_weight: 0.30
-    hd_fg_weight: 1.0
-    cl_weight: 0.2
-    bce_pos_weight: 1.0
+    cls_weight: 0.3
+    cls_pos_weight: 2.0
     dice_batch: false
-    cl_iters: 3
 
   lvo:
     type: "modified_focal"

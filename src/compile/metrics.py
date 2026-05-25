@@ -38,8 +38,12 @@ def get_lvo_threshold(epoch: int, cfg: dict) -> float:
         return thresh_freeze + t * (thresh_unfreeze - thresh_freeze)
 
 
-def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, smooth: float = 1e-6) -> torch.Tensor:
-    preds = (torch.sigmoid(logits) > threshold).float()
+def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, smooth: float = 1e-6, cls_logits: torch.Tensor = None) -> torch.Tensor:
+    probs = torch.sigmoid(logits)
+    if cls_logits is not None:
+        probs_cls = torch.sigmoid(cls_logits).view(-1, 1, 1, 1)
+        probs = probs * probs_cls
+    preds = (probs > threshold).float()
     preds   = preds.view(preds.size(0), -1)
     targets = targets.view(targets.size(0), -1)
     intersection = (preds * targets).sum(dim=1)
@@ -263,12 +267,12 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
 
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None, epoch: int = 999) -> dict:
     t = weights.get("thresholds", {"lesion": 0.45, "lvo": 0.05, "cow": 0.5})
-    # Tách gating khỏi training metrics trước epoch 25 (chỉ gating ở validation từ epoch 25 trở đi)
+    lesion_cls = preds.get("lesion_cls", None) if epoch >= 25 else None
     lvo_cls = preds.get("lvo_cls", None) if epoch >= 25 else None
 
     # Lesion Metrics
-    d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]).item()
-    aad_lesion = aad_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"])
+    d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"], cls_logits=lesion_cls).item()
+    aad_lesion = aad_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]) # Note: AAD doesn't support gating, which is fine as it's auxiliary
     alcd_lesion = alcd_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"])
 
     # [FIX C] Dice chỉ trên các slice có GT Lesion > 0 (loại bỏ background-only slice inflate metric)
@@ -279,7 +283,8 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
         d_lesion_pos = dice_score(
             preds["lesion"][has_lesion_gt],
             targets[:, 0:1][has_lesion_gt],
-            threshold=t["lesion"]
+            threshold=t["lesion"],
+            cls_logits=lesion_cls[has_lesion_gt] if lesion_cls is not None else None
         ).item()
     else:
         d_lesion_pos = 1.0  # batch này toàn background — không trừng phạt
