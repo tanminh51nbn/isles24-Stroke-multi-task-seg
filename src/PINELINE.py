@@ -123,6 +123,8 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
     # ── Model ─────────────────────────────────────────────────────
     model = build_model(config)
     model = model.to(device)
+    if dist.is_initialized():
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model = DDP(
         model, 
         device_ids=[rank], 
