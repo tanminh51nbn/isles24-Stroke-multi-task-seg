@@ -28,12 +28,13 @@ class PCGrad:
         context = model.no_sync() if is_ddp else contextlib.nullcontext()
         
         with context:
-            for loss in losses:
+            for idx, loss in enumerate(losses):
                 self.optimizer.zero_grad(set_to_none=True)
+                retain = (idx < len(losses) - 1)
                 if scaler is not None and self.use_amp:
-                    scaler.scale(loss).backward(retain_graph=True)
+                    scaler.scale(loss).backward(retain_graph=retain)
                 else:
-                    loss.backward(retain_graph=True)
+                    loss.backward(retain_graph=retain)
                 
                 # Lưu gradient dưới dạng list của từng tensor
                 grads = []
