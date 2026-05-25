@@ -55,10 +55,13 @@ class PCGrad:
         # 3. Phẫu thuật Gradient (PCGrad Projection)
         num_tasks = len(losses)
         
-        # Flatten gradients của từng task để tính tích vô hướng toàn cục (Global Dot Product)
+        # Flatten gradients của từng task và đồng bộ hóa qua DDP trước khi phẫu thuật
         task_flat_grads = []
         for grads in task_grads:
             flat_g = torch.cat([g.view(-1) for g in grads])
+            if torch.distributed.is_initialized():
+                torch.distributed.all_reduce(flat_g, op=torch.distributed.ReduceOp.SUM)
+                flat_g /= torch.distributed.get_world_size()
             task_flat_grads.append(flat_g)
 
         projected_flat_grads = []
@@ -80,11 +83,6 @@ class PCGrad:
 
         # 4. Cộng dồn các gradient đã qua phẫu thuật
         final_flat_grad = torch.stack(projected_flat_grads).sum(dim=0)
-
-        # Nếu chạy DDP, thực hiện đồng bộ thủ công (all-reduce) cho gradient cuối cùng
-        if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(final_flat_grad, op=torch.distributed.ReduceOp.SUM)
-            final_flat_grad /= torch.distributed.get_world_size()
 
         # 5. Khôi phục (Unflatten) gradient về lại thuộc tính p.grad của từng tham số
         offset = 0
