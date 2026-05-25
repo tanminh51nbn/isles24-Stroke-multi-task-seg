@@ -587,9 +587,9 @@ class MultiTaskLoss(nn.Module):
 
         # (running_loss không còn dùng cho DWA — giữ lại để debug nếu cần)
 
-        aux_loss = 0.0
-        # 2. Auxiliary Losses (Multi-Level)
-        aux_dict = preds.get("aux_masks", {})
+        aux_l = torch.tensor(0.0, device=targets.device)
+        aux_v = torch.tensor(0.0, device=targets.device)
+        aux_c = torch.tensor(0.0, device=targets.device)
         
         # Duyệt qua từng task trong dictionary AUX
         for task_key, aux_list in aux_dict.items():
@@ -619,15 +619,23 @@ class MultiTaskLoss(nn.Module):
             if num_active > 0:
                 # Trọng số Aux = 0.5 * TaskWeight, đã chia trung bình qua các tầng
                 if task_key == "lesion":
-                    aux_loss += (task_aux_loss / num_active) * p_l * 0.5
+                    aux_l = (task_aux_loss / num_active) * p_l * 0.5
                 elif task_key == "lvo":
-                    aux_loss += (task_aux_loss / num_active) * p_v * 0.5
+                    aux_v = (task_aux_loss / num_active) * p_v * 0.5
                 elif task_key == "cow":
-                    aux_loss += (task_aux_loss / num_active) * p_c * 0.5
+                    aux_c = (task_aux_loss / num_active) * p_c * 0.5
 
+        aux_loss = aux_l + aux_v + aux_c
         total = main_loss + aux_loss
+        
+        # Tính tổng loss của từng nhiệm vụ
+        total_lesion = loss_l + aux_l
+        total_lvo = loss_v + aux_v
+        total_cow = loss_c + aux_c
+
         return {
             'total': total, 'main': main_loss, 'aux': aux_loss,
+            'total_lesion': total_lesion, 'total_lvo': total_lvo, 'total_cow': total_cow,
             'l_lesion': loss_l.item() if isinstance(loss_l, torch.Tensor) else loss_l, 
             'l_lvo': loss_v.item() if isinstance(loss_v, torch.Tensor) else loss_v, 
             'l_cow': loss_c.item() if isinstance(loss_c, torch.Tensor) else loss_c,

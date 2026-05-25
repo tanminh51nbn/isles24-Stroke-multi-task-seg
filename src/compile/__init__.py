@@ -1,6 +1,7 @@
 from .losses import TverskyLoss, FocalTverskyLoss, MultiTaskLoss
 from .optimizer import build_optimizer
 from .scheduler import build_scheduler
+from .pcgrad import PCGrad
 from .metrics import (
     dice_score, f1_lvo_score, aad_score, alcd_score,
     compute_all_metrics, accumulate_lvo_stats, finalize_lvo_f1,
@@ -13,6 +14,7 @@ __all__ = [
     "MultiTaskLoss",
     "build_optimizer",
     "build_scheduler",
+    "PCGrad",
     "dice_score",
     "f1_lvo_score",
     "aad_score",

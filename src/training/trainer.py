@@ -37,6 +37,8 @@ class Trainer:
 
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.amp_enabled)
         self.history = []
+        from compile import PCGrad
+        self.pcgrad = PCGrad(self.optimizer, use_amp=self.amp_enabled)
 
     def train_one_epoch(self, epoch: int) -> dict:
         self.model.train()
@@ -54,7 +56,8 @@ class Trainer:
                 preds = self.model(inp, epoch=epoch)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
 
-            is_finite = torch.tensor(1.0 if torch.isfinite(losses["total"]) else 0.0, device=self.device)
+            task_losses = [losses["total_lesion"], losses["total_lvo"], losses["total_cow"]]
+            is_finite = torch.tensor(1.0 if all(torch.isfinite(l) for l in task_losses) else 0.0, device=self.device)
             if dist.is_initialized():
                 dist.all_reduce(is_finite, op=dist.ReduceOp.MIN)
             
@@ -63,7 +66,8 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 continue
 
-            self.scaler.scale(losses["total"]).backward()
+            # Phẫu thuật Gradient bằng PCGrad
+            self.pcgrad.backward(task_losses, self.model, scaler=self.scaler)
             self.scaler.unscale_(self.optimizer)
             
             if batch_idx % self.log_interval == 0 and self.rank == 0:
