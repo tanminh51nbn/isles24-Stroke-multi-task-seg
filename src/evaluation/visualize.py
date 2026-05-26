@@ -165,50 +165,46 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     else:
         lvo_msg = "LVO: N/A (Sạch)"
 
-    # 3. Layout 2x4
-    fig, axes = plt.subplots(2, 4, figsize=(24, 12))
+    # 3. Layout 2x3
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     plt.subplots_adjust(wspace=0.1, hspace=0.2)
     
     title = f"Epoch {epoch} | Sample Dice_L: {dice_l:.4f} | {lvo_msg}"
     fig.suptitle(title, fontsize=16, fontweight="bold")
 
-    # --- Hàng 1: Tham chiếu & Tổng hợp ---
-    axes[0, 0].imshow(cta_img, cmap="bone"); axes[0, 0].set_title("CTA (Anatomy Map)"); axes[0, 0].axis("off")
-    axes[0, 1].imshow(perf_img, cmap="inferno"); axes[0, 1].set_title("Perfusion (Physiology)"); axes[0, 1].axis("off")
+    # --- Hàng 1: CTA, Nhãn gốc, AI phân vùng ---
+    axes[0, 0].imshow(cta_img, cmap="bone"); axes[0, 0].set_title("CTA"); axes[0, 0].axis("off")
     
-    # [1.3] GT Overlay
-    axes[0, 2].imshow(cta_img, cmap="bone")
+    # Nhãn gốc (GT Overlay trên CTA)
+    axes[0, 1].imshow(cta_img, cmap="bone")
     gt_overlay = np.zeros((*gt_lesion.shape, 3))
     gt_overlay[..., 0] = gt_lesion * 0.7  # Đỏ: Lesion
     gt_overlay[..., 1] = gt_cow * 0.4     # Xanh lá: CoW
     gt_overlay[..., 2] = (gt_lvo > 0.1).astype(float) * 0.9 # Xanh dương: LVO (Hạ ngưỡng để thấy rõ)
-    axes[0, 2].imshow(gt_overlay, alpha=0.5)
-    axes[0, 2].set_title("BÁC SĨ (Ground Truth)"); axes[0, 2].axis("off")
+    axes[0, 1].imshow(gt_overlay, alpha=0.5)
+    axes[0, 1].set_title("Nhãn gốc"); axes[0, 1].axis("off")
 
-    # [1.4] Pred Overlay
-    axes[0, 3].imshow(cta_img, cmap="bone")
+    # AI phân vùng (Pred Overlay trên CTA)
+    axes[0, 2].imshow(cta_img, cmap="bone")
     pr_overlay = np.zeros((*pr_lesion_bin.shape, 3))
     pr_overlay[..., 0] = pr_lesion_bin * 0.7
     pr_overlay[..., 1] = pr_cow_bin * 0.4
     pr_overlay[..., 2] = pr_lvo_bin * 0.9
-    axes[0, 3].imshow(pr_overlay, alpha=0.5)
-    axes[0, 3].set_title("AI DỰ ĐOÁN (Tổng hợp)"); axes[0, 3].axis("off")
+    axes[0, 2].imshow(pr_overlay, alpha=0.5)
+    axes[0, 2].set_title("AI phân vùng"); axes[0, 2].axis("off")
 
-    # --- Hàng 2: Chi tiết từng Task ---
-    axes[1, 0].imshow(sig_lesion, cmap="Reds", vmin=0, vmax=1)
-    axes[1, 0].set_title("Lesion Probability Map"); axes[1, 0].axis("off")
+    # --- Hàng 2: Perfusion, LVO Heatmap (AI), Lesion Heatmap (AI) ---
+    axes[1, 0].imshow(perf_img, cmap="inferno"); axes[1, 0].set_title("Perfusion"); axes[1, 0].axis("off")
 
-    # [2.2] LVO Heatmap (Dự đoán)
+    # LVO Heatmap (AI)
     axes[1, 1].imshow(cta_img, cmap="bone")
     axes[1, 1].imshow(sig_lvo, cmap="jet", alpha=0.6, vmin=0, vmax=1)
-    axes[1, 1].set_title("LVO Heatmap (AI Prediction)"); axes[1, 1].axis("off")
+    axes[1, 1].set_title("LVO Heatmap (AI)"); axes[1, 1].axis("off")
 
-    axes[1, 2].imshow(sig_cow, cmap="Greens", vmin=0, vmax=1)
-    axes[1, 2].set_title("CoW Anatomy Map"); axes[1, 2].axis("off")
-
-    error_map = np.abs(pr_lesion_bin - gt_lesion)
-    axes[1, 3].imshow(error_map, cmap="magma")
-    axes[1, 3].set_title("Lesion Error Map"); axes[1, 3].axis("off")
+    # Lesion Heatmap (AI) - Heatmap như LVO mà là của Lesion
+    axes[1, 2].imshow(cta_img, cmap="bone")
+    axes[1, 2].imshow(sig_lesion, cmap="jet", alpha=0.6, vmin=0, vmax=1)
+    axes[1, 2].set_title("Lesion Heatmap (AI)"); axes[1, 2].axis("off")
 
     # Legend
     patches = [
@@ -224,3 +220,4 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
         plt.savefig(save_path, dpi=120, bbox_inches="tight")
     if show: plt.show()
     plt.close()
+
