@@ -6,19 +6,25 @@
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
-    type: "compound"
-    alpha: 0.3
-    beta: 0.7
-    pos_weight: 2.0
+    type: "modified_focal"
+    mfl_alpha: 1.5
+    mfl_beta: 2.0
+    sigma_init: 9.0
+    sigma_floor: 4.0
+    sigma_decay: 0.97
+    slice_pos_weight: 3.0       # Trọng số lát cắt dương tính cho Lesion (phạt nặng x3)
     weight: 0.43
     cls_weight: 0.25
     cls_pos_weight: 2.0
-    dice_batch: false
 
   lvo:
     type: "modified_focal"
     mfl_alpha: 2.0
     mfl_beta: 4.0
+    sigma_init: 7.5             # Bắt đầu sigma cho LVO
+    sigma_floor: 2.0            # Sàn sigma cho LVO
+    sigma_decay: 0.96           # Tốc độ decay cho LVO
+    slice_pos_weight: 5.0       # Trọng số lát cắt dương tính cho LVO (phạt nặng x3)
     weight: 0.43
     cls_weight: 0.25
     cls_pos_weight: 2.0
@@ -53,8 +59,8 @@ optimizer:
   eps: 1.0e-7
 
 scheduler:
-  warmup_epochs: 7
-  hold_epochs: 8
+  warmup_epochs: 6
+  hold_epochs: 6
   min_lr: 2.5e-6
 
 # ── Training ────────────────────────────────────────────────────
@@ -75,8 +81,8 @@ training:
     temperature: 1.0
     momentum: 0.8
     w_min:
-      lesion: 0.15
-      lvo: 0.15
+      lesion: 0.50   # Tăng từ 0.15 → 0.50: Lesion luôn là mỏ neo không gian cho Encoder
+      lvo: 0.30      # Tăng từ 0.15 → 0.30: Bảo vệ LVO khỏi sụp đổ khi cạnh tranh
       cow: 0.20
     w_max:
       lesion: 4.8
