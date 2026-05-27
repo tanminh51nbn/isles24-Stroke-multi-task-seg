@@ -101,7 +101,7 @@ class ResNet50Encoder(nn.Module):
     Input resolution 256×256 → feature maps: [128, 64, 32, 16, 8]
     """
 
-    def __init__(self, in_channels: int = 6, weights_path: str = None):
+    def __init__(self, in_channels: int = 6, weights_path: str = None, enc_dropout: list = None):
         super().__init__()
         self.skip_channels = [64, 256, 512, 1024, 2048]
         # Load backbone chuẩn (ImageNet) để lấy cấu trúc
@@ -141,6 +141,14 @@ class ResNet50Encoder(nn.Module):
         self.stage3 = backbone.layer3   # 1024ch, /16
         self.stage4 = backbone.layer4   # 2048ch, /32
 
+        # 3. Encoder Dropout (tăng dần theo chiều sâu: sâu hơn → semantic hơn → overfitting hơn)
+        # Mặc định [0.0]*4 = không dropout khi không cấu hình
+        dp = enc_dropout if enc_dropout is not None else [0.0, 0.0, 0.0, 0.0]
+        self.drop1 = nn.Dropout2d(p=dp[0])  # Sau stage1 (256ch, nông)
+        self.drop2 = nn.Dropout2d(p=dp[1])  # Sau stage2 (512ch)
+        self.drop3 = nn.Dropout2d(p=dp[2])  # Sau stage3 (1024ch)
+        self.drop4 = nn.Dropout2d(p=dp[3])  # Sau stage4 (2048ch, sâu nhất)
+
     def _load_radimagenet(self, path: str, in_channels: int):
         """Load RadImageNet checkpoint, thực hiện inflate conv1 từ trọng số y tế."""
         state_dict = torch.load(path, map_location="cpu", weights_only=False)
@@ -172,12 +180,12 @@ class ResNet50Encoder(nn.Module):
             List 5 feature maps từ nông → sâu:
             [s1(64ch), s2(256ch), s3(512ch), s4(1024ch), s5(2048ch)]
         """
-        s1 = self.stage0(x)        # (B, 64,  H/2,  W/2)
-        x  = self.pool(s1)         # (B, 64,  H/4,  W/4)
-        s2 = self.stage1(x)        # (B, 256, H/4,  W/4)
-        s3 = self.stage2(s2)       # (B, 512, H/8,  W/8)
-        s4 = self.stage3(s3)       # (B, 1024,H/16, W/16)
-        s5 = self.stage4(s4)       # (B, 2048,H/32, W/32)
+        s1 = self.stage0(x)              # (B, 64,  H/2,  W/2)  — không dropout (low-level)
+        x  = self.pool(s1)               # (B, 64,  H/4,  W/4)
+        s2 = self.drop1(self.stage1(x))  # (B, 256, H/4,  W/4)  — p=dp[0]
+        s3 = self.drop2(self.stage2(s2)) # (B, 512, H/8,  W/8)  — p=dp[1]
+        s4 = self.drop3(self.stage3(s3)) # (B, 1024,H/16, W/16) — p=dp[2]
+        s5 = self.drop4(self.stage4(s4)) # (B, 2048,H/32, W/32) — p=dp[3]
         return [s1, s2, s3, s4, s5]
 
 
@@ -191,7 +199,7 @@ class DenseNet121Encoder(nn.Module):
     giúp giữ lại thông tin gradient màu sắc mờ nhạt của Tmax/CBF.
     """
 
-    def __init__(self, in_channels: int = 12, weights_path: str = None):
+    def __init__(self, in_channels: int = 12, weights_path: str = None, enc_dropout: list = None):
         super().__init__()
         self.skip_channels = [64, 256, 512, 1024, 1024]
         backbone = models.densenet121(weights=None)
@@ -240,6 +248,13 @@ class DenseNet121Encoder(nn.Module):
             features.denseblock4, features.norm5
         )                                          # 1024ch, /32
 
+        # 3. Encoder Dropout (tăng dần theo chiều sâu)
+        dp = enc_dropout if enc_dropout is not None else [0.0, 0.0, 0.0, 0.0]
+        self.drop1 = nn.Dropout2d(p=dp[0])  # Sau denseblock1 (nông)
+        self.drop2 = nn.Dropout2d(p=dp[1])  # Sau denseblock2
+        self.drop3 = nn.Dropout2d(p=dp[2])  # Sau denseblock3
+        self.drop4 = nn.Dropout2d(p=dp[3])  # Sau denseblock4 (sâu nhất)
+
     def _load_radimagenet(self, path: str, in_channels: int):
         """Load RadImageNet cho DenseNet, thực hiện inflate conv0 từ trọng số y tế."""
         state_dict = torch.load(path, map_location="cpu", weights_only=False)
@@ -265,25 +280,26 @@ class DenseNet121Encoder(nn.Module):
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         """
         Skip connections được lấy TRƯỚC Transition layers (trước khi downsample).
-        Đảm bảo spatial size khớp với ResNet encoder ở mỗi level.
+        Dropout áp dụng sau mỗi denseblock — cùng một tensor dropout'd dùng cho cả
+        skip connection lẫn tiếp tục vào transition layer.
 
         Returns:
             List 5 feature maps từ nông → sâu:
             [d1(64,H/2), d2(128,H/4), d3(256,H/8), d4(512,H/16), d5(1024,H/32)]
         """
-        d1 = self.stage0(x)         # (B, 64,   H/2,  W/2)
-        x  = self.pool(d1)          # (B, 64,   H/4,  W/4)
+        d1 = self.stage0(x)               # (B, 64,   H/2,  W/2) — không dropout
+        x  = self.pool(d1)                # (B, 64,   H/4,  W/4)
 
-        d2 = self.stage1(x)         # (B, 256,  H/4,  W/4) ← skip trước trans1
-        x  = self.trans1(d2)        # (B, 128,  H/8,  W/8)
+        d2 = self.drop1(self.stage1(x))   # (B, 256,  H/4,  W/4) — p=dp[0]
+        x  = self.trans1(d2)              # (B, 128,  H/8,  W/8)
 
-        d3 = self.stage2(x)         # (B, 512,  H/8,  W/8) ← skip trước trans2
-        x  = self.trans2(d3)        # (B, 256,  H/16, W/16)
+        d3 = self.drop2(self.stage2(x))   # (B, 512,  H/8,  W/8) — p=dp[1]
+        x  = self.trans2(d3)              # (B, 256,  H/16, W/16)
 
-        d4 = self.stage3(x)         # (B, 1024, H/16, W/16) ← skip trước trans3
-        x  = self.trans3(d4)        # (B, 512,  H/32, W/32)
+        d4 = self.drop3(self.stage3(x))   # (B, 1024, H/16, W/16) — p=dp[2]
+        x  = self.trans3(d4)              # (B, 512,  H/32, W/32)
 
-        d5 = self.stage4(x)         # (B, 1024, H/32, W/32)
+        d5 = self.drop4(self.stage4(x))   # (B, 1024, H/32, W/32) — p=dp[3]
 
         return [d1, d2, d3, d4, d5]
 
@@ -299,28 +315,34 @@ def build_encoders(config: dict):
         (cta_encoder, perfusion_encoder)
     """
     cta_name = config["cta_encoder"].get("name", "resnet50").lower()
+    cta_dropout = config["cta_encoder"].get("enc_dropout", [0.0, 0.0, 0.0, 0.0])
     if cta_name == "densenet121":
         cta_enc = DenseNet121Encoder(
             in_channels=config["cta_encoder"]["in_channels"],
             weights_path=config["cta_encoder"]["weights"],
+            enc_dropout=cta_dropout,
         )
     else:
         cta_enc = ResNet50Encoder(
             in_channels=config["cta_encoder"]["in_channels"],
             weights_path=config["cta_encoder"]["weights"],
+            enc_dropout=cta_dropout,
         )
 
     perf_name = config["perfusion_encoder"].get("name", "densenet121").lower()
+    perf_dropout = config["perfusion_encoder"].get("enc_dropout", [0.0, 0.0, 0.0, 0.0])
     if perf_name == "densenet121":
         perf_enc = DenseNet121Encoder(
             in_channels=config["perfusion_encoder"]["in_channels"],
             weights_path=config["perfusion_encoder"]["weights"],
+            enc_dropout=perf_dropout,
         )
     else:
         # Fallback to ResNet50 if somehow specified
         perf_enc = ResNet50Encoder(
             in_channels=config["perfusion_encoder"]["in_channels"],
             weights_path=config["perfusion_encoder"]["weights"],
+            enc_dropout=perf_dropout,
         )
         
     return cta_enc, perf_enc
