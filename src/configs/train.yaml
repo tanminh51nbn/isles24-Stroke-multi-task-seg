@@ -12,19 +12,20 @@ loss:
     sigma_init: 9.0
     sigma_floor: 4.0
     sigma_decay: 0.97
-    slice_pos_weight: 3.0       # Trọng số lát cắt dương tính cho Lesion (phạt nặng x3)
+    slice_pos_weight: 3.0
     weight: 0.43
     cls_weight: 0.25
     cls_pos_weight: 2.0
+    dice_weight: 0.5
 
   lvo:
     type: "modified_focal"
     mfl_alpha: 2.0
     mfl_beta: 4.0
-    sigma_init: 7.5             # Bắt đầu sigma cho LVO
-    sigma_floor: 2.0            # Sàn sigma cho LVO
-    sigma_decay: 0.96           # Tốc độ decay cho LVO
-    slice_pos_weight: 5.0       # Trọng số lát cắt dương tính cho LVO (phạt nặng x3)
+    sigma_init: 7.5
+    sigma_floor: 2.0
+    sigma_decay: 0.96
+    slice_pos_weight: 5.0
     weight: 0.43
     cls_weight: 0.25
     cls_pos_weight: 2.0
