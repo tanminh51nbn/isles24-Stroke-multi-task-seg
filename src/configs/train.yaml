@@ -7,10 +7,10 @@
 loss:
   lesion:
     type: "modified_focal"
-    mfl_alpha: 1.5
-    mfl_beta: 2.0
-    sigma_init: 9.0
-    sigma_floor: 4.0
+    mfl_alpha: 1.4
+    mfl_beta: 2.2
+    sigma_init: 8.0
+    sigma_floor: 3.0
     sigma_decay: 0.97
     slice_pos_weight: 5.0
     cls_weight: 0.20
