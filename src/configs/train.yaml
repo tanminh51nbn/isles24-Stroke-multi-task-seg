@@ -13,7 +13,6 @@ loss:
     sigma_floor: 4.0
     sigma_decay: 0.97
     slice_pos_weight: 5.0
-    weight: 0.43
     cls_weight: 0.20
     cls_pos_weight: 2.5
     dice_weight: 0.3
@@ -26,7 +25,6 @@ loss:
     sigma_floor: 2.0
     sigma_decay: 0.96
     slice_pos_weight: 6.0
-    weight: 0.43
     cls_weight: 0.25
     cls_pos_weight: 2.0
 
@@ -34,7 +32,6 @@ loss:
     type: "cl_tversky"
     alpha: 0.2
     beta: 0.8
-    weight: 0.14
     cl_weight: 0.45
     iters: 4
 
@@ -47,7 +44,7 @@ composite_score:
   dice_cow_weight: 0.1
   thresholds:
     lesion: 0.5
-    lvo: 0.23      # Cố định suốt quá trình training (không dùng ramp)
+    lvo: 0.23
     cow: 0.5
 
 
