@@ -328,6 +328,16 @@ class MultiTaskLoss(nn.Module):
         )
         self.lesion_cls_w = l_cfg["lesion"].get("cls_weight", 0.25)
 
+        # Soft Dice Loss (TverskyLoss with alpha=0.5, beta=0.5) to optimize volumetric overlap directly
+        self.lesion_dice_loss_fn = TverskyLoss(
+            alpha=0.5,
+            beta=0.5,
+            smooth=1.0,
+            batch=False,
+            reduction='none'
+        )
+        self.lesion_dice_w = l_cfg["lesion"].get("dice_weight", 0.5)
+
         # 2. LVO Task
         l_v_cfg = l_cfg.get("lvo", {})
         lvo_type = l_v_cfg.get("type", "modified_focal")
@@ -524,8 +534,10 @@ class MultiTaskLoss(nn.Module):
 
         # 1. Main Losses
         _debug = (kwargs.get('batch_idx', -1) == 0) and (not dist.is_initialized() or dist.get_rank() == 0)
-        # Lesion: ModifiedFocalLoss với Gaussian Heatmap Curriculum
-        l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1], sigma=lesion_sigma)
+        # Lesion: Hybrid Loss (ModifiedFocalLoss + Soft Dice Loss)
+        l_l_m_focal = self.lesion_main_loss(preds['lesion'], targets[:, 0:1], sigma=lesion_sigma)
+        l_l_m_dice = self.lesion_dice_loss_fn(preds['lesion'], targets[:, 0:1])
+        l_l_m = (1.0 - self.lesion_dice_w) * l_l_m_focal + self.lesion_dice_w * l_l_m_dice
 
         if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
             l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=dynamic_sigma, debug=_debug)
@@ -610,7 +622,9 @@ class MultiTaskLoss(nn.Module):
                 if task_key == "lesion":
                     t_l = F.interpolate(targets[:, 0:1].float(), (h, w), mode='area')
                     # Dùng sigma_floor cho aux (không cần curriculum, chỉ cần gradient ổn định)
-                    task_aux_loss += self.lesion_main_loss(a_p, t_l, sigma=self.lesion_sigma_floor)
+                    aux_focal = self.lesion_main_loss(a_p, t_l, sigma=self.lesion_sigma_floor)
+                    aux_dice = self.lesion_dice_loss_fn(a_p, t_l)
+                    task_aux_loss += (1.0 - self.lesion_dice_w) * aux_focal + self.lesion_dice_w * aux_dice
                 
                 elif task_key == "lvo":
                     t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
