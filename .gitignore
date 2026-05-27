@@ -4,7 +4,7 @@ notebooks/*
 script-check/
 Notebook.py
 # Bỏ qua các file nháp và tài liệu thiết kế (theo yêu cầu "bỏ hết")
-
+test*.py
 # Bỏ qua thư viện và biến môi trường
 venv/
 .env
