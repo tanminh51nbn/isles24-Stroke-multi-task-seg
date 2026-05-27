@@ -267,7 +267,11 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
 
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None, epoch: int = 999) -> dict:
     t = weights.get("thresholds", {"lesion": 0.45, "lvo": 0.05, "cow": 0.5})
-    lesion_cls = preds.get("lesion_cls", None) if epoch >= 25 else None
+    # [Solution B] Tắt lesion_cls gating trong evaluation.
+    # Cls head vẫn được train (cung cấp gradient qua loss) nhưng KHÔNG nhân vào
+    # segmentation probability khi đánh giá. Loại bỏ multiplicative bottleneck:
+    # sigmoid(cls_logit=1.0) = 0.73 → pixel 0.55 bị kéo xuống 0.40 (dưới ngưỡng 0.45).
+    lesion_cls = None
     lvo_cls = preds.get("lvo_cls", None) if epoch >= 25 else None
 
     # Lesion Metrics
