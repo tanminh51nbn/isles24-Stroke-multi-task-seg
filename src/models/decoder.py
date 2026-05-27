@@ -184,29 +184,43 @@ class DecoderBlock(nn.Module):
 
 # ─── Specialized Decoder Paths ──────────────────────────────────────────────
 
-class DecoupledPath(nn.Module):
+class SharedPath(nn.Module):
     """
-    Một nhánh Decoder chuyên biệt đi từ level 4 đến level 1.
+    Nhánh giải mã dùng chung (Shared) cho các tầng sâu (16x16, 32x32).
+    Ép mô hình học chung bối cảnh giải phẫu tổng thể.
     """
-    def __init__(self, config: dict, task_name: str, cta_skip_channels: List[int], perf_skip_channels: List[int], aux_ch: int = 1, active_aux_levels: List[bool] = [True, True, True, True], guidance_ch: int = 0):
+    def __init__(self, config: dict, cta_skip_channels: List[int], perf_skip_channels: List[int]):
         super().__init__()
-        self.active_aux_levels = active_aux_levels
+        dec_ch = config["decoder"]["out_channels"]
+        attn_type = config["decoder"].get("attention_type", "dual")
+
+        self.dec4 = DecoderBlock(1024, cta_skip_channels[0], perf_skip_channels[0], dec_ch[0], attn_type, use_aux=False, aux_ch=0)
+        self.dec3 = DecoderBlock(dec_ch[0], cta_skip_channels[1], perf_skip_channels[1], dec_ch[1], attn_type, use_aux=False, aux_ch=0)
+
+    def forward(self, x_bottleneck, cta_skips_shared, perf_skips_shared):
+        s4, s3 = cta_skips_shared
+        d4, d3 = perf_skips_shared
+        x, _ = self.dec4(x_bottleneck, s4, d4, prev_mask=None)
+        x, _ = self.dec3(x, s3, d3, prev_mask=None)
+        return x
+
+class TaskPath(nn.Module):
+    """
+    Một nhánh Decoder chuyên biệt đi từ level 2 đến level 1.
+    """
+    def __init__(self, in_ch: int, config: dict, task_name: str, cta_skip_channels: List[int], perf_skip_channels: List[int], aux_ch: int = 1, active_aux_levels: List[bool] = [True, True], guidance_ch: int = 0):
+        super().__init__()
         self.task_name = task_name
         dec_ch = config["decoder"]["out_channels"]
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
-        # cta_skip_channels: [s4, s3, s2, s1]
-        # perf_skip_channels: [d4, d3, d2, d1]
-        self.dec4 = DecoderBlock(1024, cta_skip_channels[0], perf_skip_channels[0], dec_ch[0], attn_type, use_aux=active_aux_levels[0], task_name=task_name, aux_ch=aux_ch)
-        self.dec3 = DecoderBlock(dec_ch[0], cta_skip_channels[1], perf_skip_channels[1], dec_ch[1], attn_type, use_aux=active_aux_levels[1], task_name=task_name, aux_ch=aux_ch)
-        self.dec2 = DecoderBlock(dec_ch[1], cta_skip_channels[2], perf_skip_channels[2], dec_ch[2], attn_type, use_aux=active_aux_levels[2], task_name=task_name, aux_ch=aux_ch)
-        self.dec1 = DecoderBlock(dec_ch[2], cta_skip_channels[3], perf_skip_channels[3], dec_ch[3], attn_type, use_aux=active_aux_levels[3], task_name=task_name, aux_ch=aux_ch)
+        self.dec2 = DecoderBlock(in_ch, cta_skip_channels[0], perf_skip_channels[0], dec_ch[2], attn_type, use_aux=active_aux_levels[0], task_name=task_name, aux_ch=aux_ch)
+        self.dec1 = DecoderBlock(dec_ch[2], cta_skip_channels[1], perf_skip_channels[1], dec_ch[3], attn_type, use_aux=active_aux_levels[1], task_name=task_name, aux_ch=aux_ch)
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
         
-        # [NEW] Cầu nối tri thức: Tiếp nhận thông tin từ các nhánh khác bằng Concatenation
         if guidance_ch > 0:
             self.guidance_fusion = nn.Sequential(
                 nn.Conv2d(final_ch + guidance_ch, final_ch, kernel_size=1),
@@ -216,33 +230,28 @@ class DecoupledPath(nn.Module):
         else:
             self.guidance_fusion = None
 
-    def forward(self, x_bottleneck, cta_skips, perf_skips, guidance: Optional[torch.Tensor] = None, epoch: int = 0):
-        # skips: s1..s5
-        s1, s2, s3, s4, _ = cta_skips
-        d1, d2, d3, d4, _ = perf_skips
+    def forward(self, x_shared, cta_skips_task, perf_skips_task, guidance: Optional[torch.Tensor] = None):
+        s2, s1 = cta_skips_task
+        d2, d1 = perf_skips_task
 
-        x, aux4 = self.dec4(x_bottleneck, s4, d4)
-        x, aux3 = self.dec3(x, s3, d3, prev_mask=aux4)
-        x, aux2 = self.dec2(x, s2, d2, prev_mask=aux3)
+        x, aux2 = self.dec2(x_shared, s2, d2, prev_mask=None)
         x, aux1 = self.dec1(x, s1, d1, prev_mask=aux2)
 
         x = self.up_final(x)
         x = self.final_conv(x)
         
-        # Ghép nối không gian (Concatenation) tri thức từ nhánh khác nếu có (Guidance)
         if guidance is not None and self.guidance_fusion is not None:
             g_interp = F.interpolate(guidance, size=x.shape[2:], mode='bilinear', align_corners=False)
             x = self.guidance_fusion(torch.cat([x, g_interp], dim=1))
 
-        return x, [aux4, aux3, aux2, aux1]
+        return x, [None, None, aux2, aux1]
 
 
 class MultiHeadDecoder(nn.Module):
     """
-    Multi-Head Decoder (LVO Sát Thủ v4):
-    - Tách biệt hoàn toàn hai nhánh xử lý từ sau Bottleneck.
-    - Nhánh 1 (LVO_Path): Chuyên gia soi điểm nhỏ (Heatmap).
-    - Nhánh 2 (LesionAnatomy_Path): Chuyên gia phân vùng lớn (Lesion + CoW).
+    Multi-Head Decoder (Partially Shared v5):
+    - Khối SharedPath: Dùng chung ở độ phân giải thấp (bối cảnh giải phẫu).
+    - Khối TaskPath: Tách nhánh chuyên gia ở độ phân giải cao (Cow, Lesion, LVO).
     """
     def __init__(self, config: dict, cta_channels: List[int], perf_channels: List[int]):
         super().__init__()
@@ -255,36 +264,40 @@ class MultiHeadDecoder(nn.Module):
             ConvBnGelu(bottleneck_ch, bottleneck_ch),
         )
 
-        # 2. Ba lộ trình tách biệt hoàn toàn (Triple-Head Specialist)
-        cta_skips_dec = [cta_channels[3], cta_channels[2], cta_channels[1], cta_channels[0]]
-        perf_skips_dec = [perf_channels[3], perf_channels[2], perf_channels[1], perf_channels[0]]
+        cta_skips_shared = [cta_channels[3], cta_channels[2]]  # s4, s3
+        perf_skips_shared = [perf_channels[3], perf_channels[2]] # d4, d3
         
-        # [FIX] Cấu hình AUX: LVO tắt 2 tầng sâu (16x16, 32x32) để giảm nhiễu
-        self.cow_path    = DecoupledPath(config, "cow", cta_skips_dec, perf_skips_dec, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=0)
-        # [FIX] Đảo ngược luồng: Lesion nhận 16 ch (từ CoW), LVO nhận 32 ch (từ CoW + Lesion)
-        self.lesion_path = DecoupledPath(config, "lesion", cta_skips_dec, perf_skips_dec, aux_ch=1, active_aux_levels=[True, True, True, True], guidance_ch=16)
-        self.lvo_path    = DecoupledPath(config, "lvo", cta_skips_dec, perf_skips_dec, aux_ch=1, active_aux_levels=[False, False, True, True], guidance_ch=32)
+        cta_skips_task = [cta_channels[1], cta_channels[0]]    # s2, s1
+        perf_skips_task = [perf_channels[1], perf_channels[0]]   # d2, d1
+        
+        self.shared_path = SharedPath(config, cta_skips_shared, perf_skips_shared)
+        
+        dec_ch = config["decoder"]["out_channels"]
+        in_ch_task = dec_ch[1] # out of dec3
+        
+        self.cow_path    = TaskPath(in_ch_task, config, "cow", cta_skips_task, perf_skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=0)
+        self.lesion_path = TaskPath(in_ch_task, config, "lesion", cta_skips_task, perf_skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
+        self.lvo_path    = TaskPath(in_ch_task, config, "lvo", cta_skips_task, perf_skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=32)
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor], epoch: int = 0):
-        s5, d5 = cta_skips[4], perf_skips[4]
+        s1, s2, s3, s4, s5 = cta_skips
+        d1, d2, d3, d4, d5 = perf_skips
 
         # 1. Shared Bottleneck
         x_bottleneck = torch.cat([s5, d5], dim=1)
         x_bottleneck = self.shared_bottleneck(x_bottleneck)
         
-        # 2. DÒNG CHẢY TRI THỨC (Knowledge Cascade) - [FIX] Đảo ngược thứ tự
-        # Bước 1: Nhánh CoW chạy trước (Xây dựng bản đồ giải phẫu mạch máu)
-        f_cow, cow_auxs = self.cow_path(x_bottleneck, cta_skips, perf_skips, epoch=epoch)
+        # 2. Shared Path (dec4, dec3)
+        x_shared = self.shared_path(x_bottleneck, [s4, s3], [d4, d3])
         
-        # Bước 2: Nhánh Lesion chạy thứ hai.
-        f_lesion, lesion_auxs = self.lesion_path(x_bottleneck, cta_skips, perf_skips, guidance=f_cow.detach(), epoch=epoch)
+        # 3. DÒNG CHẢY TRI THỨC (Knowledge Cascade)
+        f_cow, cow_auxs = self.cow_path(x_shared, [s2, s1], [d2, d1])
         
-        # Bước 3: Nhánh LVO chạy cuối cùng. Nhận dẫn đường từ CẢ HAI (CoW và Lesion).
-        # [FIX] Phải detach() cả f_cow và f_lesion để gradient khổng lồ từ LVO Classification không xé rách trọng số của CoW và Lesion
+        f_lesion, lesion_auxs = self.lesion_path(x_shared, [s2, s1], [d2, d1], guidance=f_cow.detach())
+        
         guidance_for_lvo = torch.cat([f_cow.detach(), f_lesion.detach()], dim=1)
-        f_lvo, lvo_auxs = self.lvo_path(x_bottleneck, cta_skips, perf_skips, guidance=guidance_for_lvo, epoch=epoch)
+        f_lvo, lvo_auxs = self.lvo_path(x_shared, [s2, s1], [d2, d1], guidance=guidance_for_lvo)
 
-        # Trả về Dictionary AUX để losses.py xử lý chọn lọc
         aux_masks = {
             "lesion": lesion_auxs,
             "lvo":    lvo_auxs,
