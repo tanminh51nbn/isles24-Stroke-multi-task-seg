@@ -37,7 +37,6 @@ loss:
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*F1_LVO + w3*Dice_CoW
-# Tập trung vào F1-Score cho LVO để cân bằng giữa Recall và Precision
 composite_score:
   dice_lesion_weight: 0.45
   f1_lvo_weight: 0.45
@@ -79,8 +78,8 @@ training:
     temperature: 1.0
     momentum: 0.8
     w_min:
-      lesion: 0.50   # Tăng từ 0.15 → 0.50: Lesion luôn là mỏ neo không gian cho Encoder
-      lvo: 0.30      # Tăng từ 0.15 → 0.30: Bảo vệ LVO khỏi sụp đổ khi cạnh tranh
+      lesion: 0.50
+      lvo: 0.30
       cow: 0.20
     w_max:
       lesion: 5.0
@@ -94,7 +93,7 @@ training:
   # Checkpointing
   checkpoint:
     dir: "checkpoints"
-    start_epoch: 20 # Lưu sau khi đã mở băng Encoder
+    start_epoch: 20
     save_best_overall: true
     save_best_lesion: true
     save_best_lvo: true
