@@ -84,7 +84,7 @@ class Trainer:
 
             # [FIX 1.3] Per-task gradient clip cho các nhánh để bảo vệ encoder (Bệnh 3)
             raw = self.model.module if hasattr(self.model, "module") else self.model
-            for task, max_norm in [("lesion", 5.0), ("lvo", 10.0), ("cow", 10.0)]:
+            for task, max_norm in [("lesion", 10.0), ("lvo", 10.0), ("cow", 10.0)]:
                 task_params = [p for n, p in raw.named_parameters()
                                if task in n.lower() and p.grad is not None]
                 if task_params:

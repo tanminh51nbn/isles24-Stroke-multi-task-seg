@@ -116,7 +116,12 @@ def run_compare_mode(args, model, train_cfg, device):
                 elif name == "lesion":
                     # Lesion hiển thị Mask nhị phân
                     thresh = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
-                    mask = (torch.sigmoid(preds["lesion"]) > thresh).cpu().numpy()[0, 0]
+                    sig_lesion_tensor = torch.sigmoid(preds["lesion"])
+                    lesion_cls = preds.get("lesion_cls", None)
+                    if lesion_cls is not None:
+                        cls_prob = torch.sigmoid(lesion_cls).view(-1, 1, 1, 1)
+                        sig_lesion_tensor = sig_lesion_tensor * cls_prob
+                    mask = (sig_lesion_tensor > thresh).cpu().numpy()[0, 0]
                     
                     if mask.sum() > 0:
                         ov = np.zeros((*mask.shape, 4))
@@ -127,7 +132,13 @@ def run_compare_mode(args, model, train_cfg, device):
                     thresh_l = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
                     thresh_c = train_cfg["composite_score"]["thresholds"].get("cow", 0.5)
                     
-                    m_lesion = (torch.sigmoid(preds["lesion"]) > thresh_l).cpu().numpy()[0, 0]
+                    sig_lesion_tensor = torch.sigmoid(preds["lesion"])
+                    lesion_cls = preds.get("lesion_cls", None)
+                    if lesion_cls is not None:
+                        cls_prob = torch.sigmoid(lesion_cls).view(-1, 1, 1, 1)
+                        sig_lesion_tensor = sig_lesion_tensor * cls_prob
+                    m_lesion = (sig_lesion_tensor > thresh_l).cpu().numpy()[0, 0]
+                    
                     m_cow    = (torch.sigmoid(preds["cow"]) > thresh_c).cpu().numpy()[0, 0]
                     sig_lvo_tensor = torch.sigmoid(preds["lvo"])
                     lvo_cls = preds.get("lvo_cls", None)

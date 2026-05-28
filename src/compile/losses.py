@@ -534,10 +534,33 @@ class MultiTaskLoss(nn.Module):
 
         # 1. Main Losses
         _debug = (kwargs.get('batch_idx', -1) == 0) and (not dist.is_initialized() or dist.get_rank() == 0)
+
+        # Slice indicators — tính TRƯỚC để dùng cho Dice gating
+        has_lesion = (targets[:, 0:1].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
+        has_lvo = (targets[:, 1:2].amax(dim=(1, 2, 3), keepdim=False) > 0).float()      # (B,)
+
         # Lesion: Hybrid Loss (ModifiedFocalLoss + Soft Dice Loss)
+        # MFL luôn tính trên toàn bộ batch (cả slice trống — để phạt FP trên neg slice)
         l_l_m_focal = self.lesion_main_loss(preds['lesion'], targets[:, 0:1], sigma=lesion_sigma)
-        l_l_m_dice = self.lesion_dice_loss_fn(preds['lesion'], targets[:, 0:1])
+
+        # Dice Loss: CHỈ tính trên slice CÓ GT Lesion để tránh bias "predict 0"
+        # Trên slice trống, Dice=1.0 khi predict 0 → gradient đẩy model tránh predict Lesion
+        # → xung đột trực tiếp với MFL đang cố dạy model tìm Lesion
+        has_lesion_mask = has_lesion.bool()  # (B,)
+        if has_lesion_mask.any():
+            l_l_m_dice_pos = self.lesion_dice_loss_fn(
+                preds['lesion'][has_lesion_mask],
+                targets[:, 0:1][has_lesion_mask]
+            )  # per-sample vector trên subset có lesion
+            # Tạo vector đầy đủ: slice trống lấy 0.0 (không đóng góp)
+            l_l_m_dice = torch.zeros(targets.shape[0], device=targets.device)
+            l_l_m_dice[has_lesion_mask] = l_l_m_dice_pos
+        else:
+            # Batch toàn slice trống — chỉ dùng MFL
+            l_l_m_dice = torch.zeros(targets.shape[0], device=targets.device)
+
         l_l_m = (1.0 - self.lesion_dice_w) * l_l_m_focal + self.lesion_dice_w * l_l_m_dice
+
 
         if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
             l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=dynamic_sigma, debug=_debug)
@@ -549,10 +572,6 @@ class MultiTaskLoss(nn.Module):
                 num_pos = (targets[:, 1:2] > 0.5).sum().item()
                 print(f"      [LVO_DEBUG] PosPixels: {int(num_pos)} | FTL_Loss: {l_v_m.mean().item():.4f}")
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
-
-        # Slice indicators (1.0 if there is any GT pixel, else 0.0)
-        has_lesion = (targets[:, 0:1].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
-        has_lvo = (targets[:, 1:2].amax(dim=(1, 2, 3), keepdim=False) > 0).float()      # (B,)
 
         # [T2.1] LVO Binary Classification Loss (per-slice vector)
         lvo_cls_logit = preds.get('lvo_cls', None)
