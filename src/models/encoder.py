@@ -223,10 +223,13 @@ class DenseNet121Encoder(nn.Module):
         self.norm0 = features.norm0
         self.gelu0 = nn.GELU()
 
+        import os
         # Load RadImageNet weights
-        if weights_path is not None:
+        if weights_path is not None and os.path.exists(weights_path):
             self._load_radimagenet(weights_path, in_channels)
         else:
+            if weights_path is not None:
+                print(f"[DenseNet121Encoder] Weights not found at {weights_path}. Fallback to ImageNet inflation.")
             # Fallback: Inflate từ ImageNet
             with torch.no_grad():
                 self.conv0.weight.copy_(

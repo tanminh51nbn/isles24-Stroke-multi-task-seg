@@ -12,25 +12,15 @@ channel_split:
   cta_indices: [0, 1, 6, 7, 12, 13]         # CTA_w1, CTA_w2 from each slice
   perfusion_indices: [2, 3, 4, 5, 8, 9, 10, 11, 14, 15, 16, 17]  # Tmax,CBF,CBV,MTT from each slice
 
-# ── CTA Encoder (ResNet-50) ──────────────────────────────────────────
-cta_encoder:
-  name: "resnet50"
-  in_channels: 6
-  # RadImageNet PyTorch weights
-  weights: "/kaggle/input/datasets/muynhmuynh/radimagenet-pytorch/ResNet50.pt"
-  output_channels: [64, 256, 512, 1024, 2048]  # Skip levels 1-5
-  # Encoder Dropout: tăng dần theo chiều sâu (stage1→stage4)
-  # Stage nông (low-level) dropout thấp, stage sâu (semantic) dropout cao
-  enc_dropout: [0.05, 0.10, 0.15, 0.20]
-
-# ── Perfusion Encoder (DenseNet-121) ────────────────────────────
-perfusion_encoder:
+# ── Single Encoder (DenseNet-121) ──────────────────────────────────
+encoder:
   name: "densenet121"
-  in_channels: 12
+  in_channels: 18
+  # RadImageNet PyTorch weights
   weights: "/kaggle/input/datasets/muynhmuynh/radimagenet-pytorch/DenseNet121.pt"
-  # Conv0 inflation: same formula, repeat 4x (12/3=4)
-  output_channels: [64, 128, 256, 512, 1024]   # Skip levels 1-5
-  # Encoder Dropout: tăng dần theo chiều sâu (denseblock1→denseblock4)
+  # Skip levels 1-5
+  output_channels: [64, 128, 256, 512, 1024]
+  # Encoder Dropout: tăng dần theo chiều sâu
   enc_dropout: [0.05, 0.10, 0.15, 0.20]
 
 # ── Decoder ─────────────────────────────────────────────────────
