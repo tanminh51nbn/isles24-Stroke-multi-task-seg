@@ -19,7 +19,7 @@ import argparse
 # Tự động thêm thư mục 'src' vào hệ thống để import module
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from models.dual_unet import build_model
+from models import build_model
 from data.dataset import ISLES24Dataset
 from evaluation.visualize import overlay_predictions
 

@@ -21,7 +21,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from glob import glob
 from torch.utils.data import DataLoader
 
-from models.dual_unet import build_model
+from models import build_model
 from data.dataset import ISLES24Dataset
 from evaluation.visualize import overlay_predictions
 
