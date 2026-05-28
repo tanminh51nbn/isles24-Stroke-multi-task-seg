@@ -10,7 +10,7 @@ loss:
     mfl_alpha: 1.5
     mfl_beta: 1.8
     sigma_init: 9.0
-    sigma_floor: 5.0
+    sigma_floor: 4.0
     sigma_decay: 0.97
     slice_pos_weight: 5.0
     cls_weight: 0.20
@@ -20,9 +20,9 @@ loss:
   lvo:
     type: "modified_focal"
     mfl_alpha: 2.0
-    mfl_beta: 2.5       # Giảm từ 4.0 xuống 2.5 để bớt trừng phạt False Positive (blobs)
+    mfl_beta: 2.5
     sigma_init: 8.0
-    sigma_floor: 4.5    # Tăng từ 2.0 lên 4.5 để tránh LVO biến thành 1 chấm quá nhỏ
+    sigma_floor: 3.0
     sigma_decay: 0.97
     slice_pos_weight: 6.0
     cls_weight: 0.25

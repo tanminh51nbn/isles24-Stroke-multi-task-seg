@@ -69,3 +69,10 @@ augmentation:
   intensity_scale:
     prob: 0.4
     factor: 0.1
+
+  modality_dropout:
+    prob: 0.15
+
+  channel_dropout:
+    prob: 0.3
+    max_drop: 3

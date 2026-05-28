@@ -238,6 +238,46 @@ class RandomGamma:
         return sample
 
 
+class RandomModalityDropout:
+    """
+    Tắt ngẫu nhiên toàn bộ kênh CTA hoặc toàn bộ kênh Perfusion.
+    Ép mô hình không được phụ thuộc vào 1 nhánh duy nhất, giúp chống overfitting mạnh.
+    """
+    def __init__(self, prob: float = 0.15):
+        self.prob = prob
+        # Index theo cấu hình channel_split của ISLES24
+        self.cta_idx  = [0, 1, 6, 7, 12, 13]
+        self.perf_idx = [2, 3, 4, 5, 8, 9, 10, 11, 14, 15, 16, 17]
+
+    def __call__(self, sample: dict) -> dict:
+        if random.random() < self.prob:
+            if random.random() < 0.5:
+                # Tắt CTA (50% của prob)
+                sample["input"][self.cta_idx, :, :] = 0.0
+            else:
+                # Tắt Perfusion (50% của prob)
+                sample["input"][self.perf_idx, :, :] = 0.0
+        return sample
+
+
+class RandomChannelDropout:
+    """
+    Tắt ngẫu nhiên từ 1 đến max_drop kênh độc lập (ví dụ: mất Tmax ở Z-1, mất CBV ở Z).
+    Mô phỏng nhiễu cục bộ và ép mô hình phải nội suy từ các kênh còn lại hoặc các lát cắt liền kề.
+    """
+    def __init__(self, prob: float = 0.2, max_drop: int = 3):
+        self.prob = prob
+        self.max_drop = max_drop
+
+    def __call__(self, sample: dict) -> dict:
+        if random.random() < self.prob:
+            num_channels = sample["input"].shape[0]  # Thường là 18
+            n_drop = random.randint(1, self.max_drop)
+            drop_indices = random.sample(range(num_channels), n_drop)
+            sample["input"][drop_indices, :, :] = 0.0
+        return sample
+
+
 class RandomGridDistortion:
     """Biến dạng lưới (Grid Distortion) đồng bộ cho input và label."""
     def __init__(self, prob: float = 0.4, num_steps: int = 5, distort_limit: float = 0.2):
@@ -341,6 +381,19 @@ def build_train_transforms(config: dict) -> Callable:
             prob=aug["intensity_scale"]["prob"],
             factor=aug["intensity_scale"]["factor"],
         ))
+        
+        # [Giải pháp B] Modality Dropout (Tắt toàn bộ nhánh)
+        if "modality_dropout" in aug:
+            transforms.append(RandomModalityDropout(
+                prob=aug["modality_dropout"]["prob"]
+            ))
+
+        # [Giải pháp B mở rộng] Channel Dropout (Tắt ngẫu nhiên 1-3 kênh độc lập)
+        if "channel_dropout" in aug:
+            transforms.append(RandomChannelDropout(
+                prob=aug["channel_dropout"]["prob"],
+                max_drop=aug["channel_dropout"]["max_drop"]
+            ))
 
     return Compose(transforms)
 
