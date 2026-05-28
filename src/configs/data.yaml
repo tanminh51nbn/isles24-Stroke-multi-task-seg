@@ -71,8 +71,8 @@ augmentation:
     factor: 0.1
 
   modality_dropout:
-    prob: 0.15
+    prob: 0.1
 
   channel_dropout:
-    prob: 0.3
+    prob: 0.2
     max_drop: 3
