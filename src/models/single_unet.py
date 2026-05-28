@@ -183,6 +183,26 @@ class SingleEncoderUNet(nn.Module):
             param.requires_grad = True
         print("[SingleEncoderUNet] Encoder UNFROZEN")
 
+    def get_param_groups(self, encoder_lr: float, decoder_lr: float) -> List[dict]:
+        """
+        Trả về param groups cho AdamW với Differential LR:
+            - Encoder: encoder_lr (thấp hơn để bảo vệ RadImageNet weights)
+            - Decoder + Heads: decoder_lr (cao hơn để học nhanh)
+        """
+        return [
+            {
+                "params": list(self.encoder.parameters()),
+                "lr": encoder_lr,
+                "name": "encoders",
+            },
+            {
+                "params": list(self.decoder.parameters()) +
+                          list(self.heads.parameters()),
+                "lr": decoder_lr,
+                "name": "decoder_heads",
+            },
+        ]
+
 def build_model(config: dict) -> nn.Module:
     """Tự động trả về mô hình tương ứng"""
     if "perfusion_encoder" in config:
