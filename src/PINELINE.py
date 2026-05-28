@@ -91,10 +91,18 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
     config = load_configs(config_dir)
 
     # Ghi đè đường dẫn từ CLI
-    if args.cta_weights:
-        config["cta_encoder"]["weights"] = args.cta_weights
-    if args.perf_weights:
-        config["perfusion_encoder"]["weights"] = args.perf_weights
+    if "encoder" in config:
+        if args.encoder_weights:
+            config["encoder"]["weights"] = args.encoder_weights
+        elif args.perf_weights:
+            # Fallback nếu dùng lệnh cũ (DenseNet121 ở Single Encoder)
+            config["encoder"]["weights"] = args.perf_weights
+    else:
+        if args.cta_weights:
+            config["cta_encoder"]["weights"] = args.cta_weights
+        if args.perf_weights:
+            config["perfusion_encoder"]["weights"] = args.perf_weights
+
     if args.metadata_path:
         config["sampling"]["metadata_csv"] = args.metadata_path
 
@@ -228,6 +236,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default="/kaggle/working/outputs")
     parser.add_argument("--cta_weights",   type=str, default=None)
     parser.add_argument("--perf_weights",  type=str, default=None)
+    parser.add_argument("--encoder_weights", type=str, default=None,
+        help="Đường dẫn weights cho Single Encoder (DenseNet-121)")
     parser.add_argument("--metadata_path", type=str,
         default="/kaggle/working/dataset_metadata.csv")
     parser.add_argument("--resume_from", type=str, default=None, 
