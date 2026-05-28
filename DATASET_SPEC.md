@@ -70,16 +70,17 @@ Chứa 3 lớp mặt nạ (Mask) nhị phân (Giá trị 0 hoặc 1), tương �
 
 Dưới đây là bảng thống kê chi tiết sự xuất hiện đồng thời của các nhãn trên từng lát cắt (Slice-level co-occurrence) được tính trên toàn bộ bộ dữ liệu:
 
-| Lesion | LVO | CoW | Số lượng Slices | Tỷ lệ (%) | Phân loại & Chiến lược Sampling |
-| :---: | :---: | :---: | :---: | :---: | :--- |
-| ✗ | ✗ | ✗ | 5,191 | 43.9% | Ảnh nền thuần túy (Plain Negative). Sample một phần nhỏ (~30%) để ổn định nền. |
-| ✗ | ✗ | ✓ | 1,500 | 12.7% | Mỏ neo giải phẫu (CoW only). Giữ nguyên 100% để làm neo giải phẫu. |
-| ✗ | ✓ | ✗ | 54 | 0.5% | LVO đơn thuần (LVO only). Oversample mạnh mẽ (ví dụ: 6x) để bù đắp sự cực kỳ hiếm hoi. |
-| ✗ | ✓ | ✓ | 120 | 1.0% | LVO và mạch máu (LVO + CoW). Oversample mạnh mẽ (6x). |
-| ✓ | ✗ | ✗ | 3,249 | 27.5% | Tổn thương đơn thuần (Lesion only). Áp dụng **Cyclic Stride 50%** để tránh lấn át batch huấn luyện. |
-| ✓ | ✗ | ✓ | 1,502 | 12.7% | Tổn thương và mạch máu (Lesion + CoW). Giữ nguyên 100% để học bối cảnh phối hợp. |
-| ✓ | ✓ | ✗ | 42 | 0.4% | Tổn thương và LVO (Lesion + LVO). Oversample mạnh mẽ (6x). |
-| ✓ | ✓ | ✓ | 163 | 1.4% | Đầy đủ cả 3 nhãn (Lesion + LVO + CoW). Oversample mạnh mẽ (6x). |
+| Lesion | LVO | CoW | Số lượng lát cắt ban đầu | Số lượng lát cắt sau khi Upsampling
+| :---: | :---: | :---: | :---: | :---: |
+| ✗ | ✗ | ✗ | 4552 | 1365
+| ✗ | ✗ | ✓ | 672 | 672
+| ✗ | ✓ | ✗ | 26 | 468
+| ✗ | ✓ | ✓ | 46 | 414
+| ✓ | ✗ | ✗ | 3215 | 1,607 (Cyclic Stride)
+| ✓ | ✗ | ✓ | 711 | 711  
+| ✓ | ✓ | ✗ | 14 | 420
+| ✓ | ✓ | ✓ | 74 | 444
+|| **Tổng** || **9441** | **5701 (Max=7309)**
 
 > [!NOTE]
 > Nhóm **Lesion only** (`lesion=✓ lvo=✗ cow=✗`) chiếm tới 27.5% tổng số lát cắt. Nếu giữ nguyên 100%, chúng sẽ chiếm đa số và lấn át các nhãn hiếm như LVO trong batch. Do đó, việc giảm 50% lượng Lesion-only (Cyclic Stride 50%) là bắt buộc để cân bằng tỷ lệ phân bổ lớp.
