@@ -43,6 +43,7 @@ class Trainer:
     def train_one_epoch(self, epoch: int) -> dict:
         self.model.train()
         total_loss, main_loss, raw_loss, n_batches, nan_batches = 0.0, 0.0, 0.0, 0, 0
+        sum_t_les, sum_t_lvo, sum_t_cow = 0.0, 0.0, 0.0
         max_lvo_spike = 0.0  # [FIX 1.3] Track spike lớn nhất, log 1 lần / epoch
         print(f"\nStarting Epoch {epoch + 1}:")
         
@@ -101,6 +102,9 @@ class Trainer:
             total_loss += losses["total"].item()
             main_loss += losses["main"].item()
             raw_loss += losses.get("unweighted_main", losses["main"].item())
+            sum_t_les += losses["l_lesion"]
+            sum_t_lvo += losses["l_lvo"]
+            sum_t_cow += losses["l_cow"]
             n_batches += 1
 
         if self.rank == 0:
@@ -112,21 +116,28 @@ class Trainer:
                 print(f"    [WARN] Đã skip {nan_batches} batches do lỗi NaN/Inf.")
         
         if dist.is_initialized():
-            sync = torch.tensor([total_loss, main_loss, float(n_batches), raw_loss], device=self.device)
+            sync = torch.tensor([total_loss, main_loss, float(n_batches), raw_loss, sum_t_les, sum_t_lvo, sum_t_cow], device=self.device)
             dist.all_reduce(sync, op=dist.ReduceOp.SUM)
             avg_loss = sync[0].item() / max(sync[2].item(), 1)
             avg_main = sync[1].item() / max(sync[2].item(), 1)
             avg_raw = sync[3].item() / max(sync[2].item(), 1)
+            avg_t_les = sync[4].item() / max(sync[2].item(), 1)
+            avg_t_lvo = sync[5].item() / max(sync[2].item(), 1)
+            avg_t_cow = sync[6].item() / max(sync[2].item(), 1)
         else:
             avg_loss = total_loss / max(n_batches, 1)
             avg_main = main_loss / max(n_batches, 1)
             avg_raw = raw_loss / max(n_batches, 1)
-        return {"train_loss": avg_loss, "train_main": avg_main, "train_raw": avg_raw}
+            avg_t_les = sum_t_les / max(n_batches, 1)
+            avg_t_lvo = sum_t_lvo / max(n_batches, 1)
+            avg_t_cow = sum_t_cow / max(n_batches, 1)
+        return {"train_loss": avg_loss, "train_main": avg_main, "train_raw": avg_raw, "t_les_loss": avg_t_les, "t_lvo_loss": avg_t_lvo, "t_cow_loss": avg_t_cow}
 
     @torch.no_grad()
     def validate(self, epoch: int) -> dict:
         self.model.eval()
         total_loss, main_loss, raw_loss = 0.0, 0.0, 0.0
+        sum_v_les, sum_v_lvo, sum_v_cow = 0.0, 0.0, 0.0
         sum_d_l, sum_d_l_pos, sum_d_c = 0.0, 0.0, 0.0  # [FIX C] sum_d_l_pos: Lesion-positive slice only
         sum_aad, sum_alcd = 0.0, 0.0
         sum_p_v = 0.0
@@ -157,6 +168,9 @@ class Trainer:
             total_loss += losses["total"].item()
             main_loss += losses["main"].item()
             raw_loss += losses.get("unweighted_main", losses["main"].item())
+            sum_v_les += losses["l_lesion"]
+            sum_v_lvo += losses["l_lvo"]
+            sum_v_cow += losses["l_cow"]
             sum_p_v += losses.get("p_lvo", 1.0)
             
             # Override thresholds.lvo = lvo_thr (dynamic ramp) cho batch này
@@ -205,7 +219,8 @@ class Trainer:
             # Đồng bộ các chỉ số slice bao gồm cả sum_d_l_pos và n_b_pos
             sync = torch.tensor([
                 total_loss, main_loss, sum_d_l, sum_d_c, sum_aad, sum_alcd, 
-                sum_p_v, float(n_b), raw_loss, sum_d_l_pos, float(n_b_pos)
+                sum_p_v, float(n_b), raw_loss, sum_d_l_pos, float(n_b_pos),
+                sum_v_les, sum_v_lvo, sum_v_cow
             ], device=self.device)
             dist.all_reduce(sync, op=dist.ReduceOp.SUM)
             v = sync.cpu().numpy()
@@ -214,6 +229,9 @@ class Trainer:
             a_aad, a_alcd, ap_v = v[4]/max(v[7],1), v[5]/max(v[7],1), v[6]/max(v[7],1)
             avg_raw = v[8]/max(v[7],1)
             ad_l_pos = v[9]/max(v[10], 1)
+            avg_v_les = v[11]/max(v[7],1)
+            avg_v_lvo = v[12]/max(v[7],1)
+            avg_v_cow = v[13]/max(v[7],1)
 
             # Thu thập và gộp patient_stats từ tất cả các rank
             world_size = dist.get_world_size()
@@ -243,6 +261,9 @@ class Trainer:
             a_alcd = sum_alcd/max(n_b,1)
             ap_v  = sum_p_v/max(n_b,1)
             ad_l_pos = sum_d_l_pos / max(n_b_pos, 1)
+            avg_v_les = sum_v_les / max(n_b, 1)
+            avg_v_lvo = sum_v_lvo / max(n_b, 1)
+            avg_v_cow = sum_v_cow / max(n_b, 1)
 
         # Tính F1 Global một lần duy nhất sau khi đã gom toàn bộ Val set
         af1_v = finalize_lvo_f1(lvo_stats)
@@ -278,13 +299,12 @@ class Trainer:
             "val_loss": avg_l, "val_main": avg_m, "val_raw": avg_raw, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
             "f1_lvo": af1_v, "dice_cow": ad_c,
             "f1_lvo_patient": pat.get("f1", 0.0) * 100.0,
-            "bal_acc_lvo": pat.get("bal_acc", 0.0) * 100.0,
-            "aad_lesion": a_aad,
-            "alcd_lesion": a_alcd,
+            "p_lesion": self.metric_weights.get("pgw", {}).get("lesion", 1.0),
+            "p_lvo": self.metric_weights.get("pgw", {}).get("lvo", 1.0),
+            "p_cow": self.metric_weights.get("pgw", {}).get("cow", 1.0),
+            "aad_lesion": a_aad, "alcd_lesion": a_alcd,
             "composite": comp,
-            "p_lesion": float(losses.get("p_lesion", 1.0)),
-            "p_lvo": ap_v,
-            "p_cow": float(losses.get("p_cow", 1.0))
+            "v_les_loss": avg_v_les, "v_lvo_loss": avg_v_lvo, "v_cow_loss": avg_v_cow
         }
 
     def load_checkpoint(self, path: str):

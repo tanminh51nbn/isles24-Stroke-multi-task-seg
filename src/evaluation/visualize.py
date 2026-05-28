@@ -30,32 +30,53 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     dice_cow     = [h["dice_cow"]     for h in history]
     composite    = [h["composite"]    for h in history]
 
-    fig, axes = plt.subplots(1, 4, figsize=(22, 5))
-    fig.suptitle("ISLES'24 — Training Progress & Multi-Task Dynamics", fontsize=14, fontweight="bold")
+    t_les_loss   = [h.get("t_les_loss", 0.0) for h in history]
+    v_les_loss   = [h.get("v_les_loss", 0.0) for h in history]
+    t_lvo_loss   = [h.get("t_lvo_loss", 0.0) for h in history]
+    v_lvo_loss   = [h.get("v_lvo_loss", 0.0) for h in history]
+    t_cow_loss   = [h.get("t_cow_loss", 0.0) for h in history]
+    v_cow_loss   = [h.get("v_cow_loss", 0.0) for h in history]
 
-    axes[0].plot(epochs, train_losses, color="#E74C3C", linewidth=2, label="Train Loss (Weighted)")
-    axes[0].plot(epochs, train_raw,    color="#E74C3C", linewidth=1.5, label="Train Loss (Raw)", linestyle="--", alpha=0.7)
-    axes[0].plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss (Weighted)")
-    axes[0].plot(epochs, val_raw,      color="#3498DB", linewidth=1.5, label="Val Loss (Raw)", linestyle="--", alpha=0.7)
-    axes[0].set_title("Loss Curves"); axes[0].legend(); axes[0].grid(True, alpha=0.3)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle("ISLES'24 — Training Progress & Multi-Task Dynamics", fontsize=16, fontweight="bold")
+    
+    ax_loss = axes[0, 0]
+    ax_les = axes[0, 1]
+    ax_lvo = axes[0, 2]
+    ax_cow = axes[1, 0]
+    ax_metrics = axes[1, 1]
+    ax_pgw = axes[1, 2]
 
-    axes[1].plot(epochs, dice_lesion, color="#3498DB", linewidth=2, label="Dice Lesion")
-    axes[1].plot(epochs, dice_lesion_pos, color="#3498DB", linewidth=1.5, label="Dice Lesion (Pos)", linestyle="--")
-    axes[1].plot(epochs, f1_lvo,       color="#E74C3C", linewidth=2, label="F1 LVO")
-    axes[1].plot(epochs, dice_cow,    color="#2ECC71", linewidth=2, label="Dice CoW")
-    axes[1].set_title("Validation Metrics"); axes[1].legend(); axes[1].set_ylim(0, 1); axes[1].grid(True, alpha=0.3)
+    ax_loss.plot(epochs, train_losses, color="#E74C3C", linewidth=2, label="Train Loss (Weighted)")
+    ax_loss.plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss (Weighted)")
+    ax_loss.set_title("1. Overall Loss"); ax_loss.legend(); ax_loss.grid(True, alpha=0.3)
+
+    ax_les.plot(epochs, t_les_loss, color="#E74C3C", linewidth=1.5, label="Train Lesion", linestyle="--")
+    ax_les.plot(epochs, v_les_loss, color="#3498DB", linewidth=2, label="Val Lesion")
+    ax_les.set_title("2. Lesion Loss (Train vs Val)"); ax_les.legend(); ax_les.grid(True, alpha=0.3)
+
+    ax_lvo.plot(epochs, t_lvo_loss, color="#E74C3C", linewidth=1.5, label="Train LVO", linestyle="--")
+    ax_lvo.plot(epochs, v_lvo_loss, color="#3498DB", linewidth=2, label="Val LVO")
+    ax_lvo.set_title("3. LVO Loss (Train vs Val)"); ax_lvo.legend(); ax_lvo.grid(True, alpha=0.3)
+
+    ax_cow.plot(epochs, t_cow_loss, color="#E74C3C", linewidth=1.5, label="Train CoW", linestyle="--")
+    ax_cow.plot(epochs, v_cow_loss, color="#3498DB", linewidth=2, label="Val CoW")
+    ax_cow.set_title("4. CoW Loss (Train vs Val)"); ax_cow.legend(); ax_cow.grid(True, alpha=0.3)
+
+    ax_metrics.plot(epochs, dice_lesion, color="#3498DB", linewidth=2, label="Dice Lesion")
+    ax_metrics.plot(epochs, dice_lesion_pos, color="#E67E22", linewidth=2, label="Dice Lesion (Pos)", linestyle="-.")
+    ax_metrics.plot(epochs, f1_lvo,       color="#E74C3C", linewidth=2, label="F1 LVO")
+    ax_metrics.plot(epochs, dice_cow,    color="#2ECC71", linewidth=2, label="Dice CoW")
+    ax_metrics.plot(epochs, composite, color="#9B59B6", linewidth=3.0, label="Composite", alpha=0.8)
+    ax_metrics.set_title("5. Validation Metrics"); ax_metrics.legend(); ax_metrics.set_ylim(0, 1); ax_metrics.grid(True, alpha=0.3)
 
     p_l = [h.get("p_lesion", 1.0) for h in history]
     p_v = [h.get("p_lvo", 1.0) for h in history]
     p_c = [h.get("p_cow", 1.0) for h in history]
-    axes[2].plot(epochs, p_l, color="#3498DB", alpha=0.8, label="P_Lesion")
-    axes[2].plot(epochs, p_v, color="#E74C3C", alpha=0.8, label="P_LVO")
-    axes[2].plot(epochs, p_c, color="#2ECC71", alpha=0.8, label="P_CoW")
-    axes[2].set_title("Competition Weights (P)"); axes[2].legend(); axes[2].grid(True, alpha=0.3)
-
-    axes[3].plot(epochs, composite, color="#9B59B6", linewidth=2.5, label="Composite")
-    axes[3].fill_between(epochs, composite, alpha=0.15, color="#9B59B6")
-    axes[3].set_title("Overall Performance"); axes[3].legend(); axes[3].set_ylim(0, 1); axes[3].grid(True, alpha=0.3)
+    ax_pgw.plot(epochs, p_l, color="#3498DB", linewidth=2, label="P_Lesion")
+    ax_pgw.plot(epochs, p_v, color="#E74C3C", linewidth=2, label="P_LVO")
+    ax_pgw.plot(epochs, p_c, color="#2ECC71", linewidth=2, label="P_CoW")
+    ax_pgw.set_title("6. Competition Weights (PGW)"); ax_pgw.legend(); ax_pgw.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_path: plt.savefig(save_path, dpi=150, bbox_inches="tight")
