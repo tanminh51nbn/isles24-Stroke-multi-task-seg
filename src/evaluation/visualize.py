@@ -49,22 +49,24 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
 
     ax_loss.plot(epochs, train_losses, color="#E74C3C", linewidth=2, label="Train Loss (Weighted)")
     ax_loss.plot(epochs, val_losses,   color="#3498DB", linewidth=2, label="Val Loss (Weighted)")
+    ax_loss.plot(epochs, train_raw,    color="#E74C3C", linewidth=1.5, linestyle="--", alpha=0.6, label="Train Loss (Raw)")
+    ax_loss.plot(epochs, val_raw,      color="#3498DB", linewidth=1.5, linestyle="--", alpha=0.6, label="Val Loss (Raw)")
     ax_loss.set_title("1. Overall Loss"); ax_loss.legend(); ax_loss.grid(True, alpha=0.3)
 
-    ax_les.plot(epochs, t_les_loss, color="#E74C3C", linewidth=1.5, label="Train Lesion", linestyle="--")
-    ax_les.plot(epochs, v_les_loss, color="#3498DB", linewidth=2, label="Val Lesion")
+    ax_les.plot(epochs, t_les_loss, color="#E74C3C", linewidth=1.5, label="Train Loss - Lesion", linestyle="--")
+    ax_les.plot(epochs, v_les_loss, color="#3498DB", linewidth=2, label="Val Loss - Lesion")
     ax_les.set_title("2. Lesion Loss (Train vs Val)"); ax_les.legend(); ax_les.grid(True, alpha=0.3)
 
-    ax_lvo.plot(epochs, t_lvo_loss, color="#E74C3C", linewidth=1.5, label="Train LVO", linestyle="--")
-    ax_lvo.plot(epochs, v_lvo_loss, color="#3498DB", linewidth=2, label="Val LVO")
+    ax_lvo.plot(epochs, t_lvo_loss, color="#E74C3C", linewidth=1.5, label="Train Loss - LVO", linestyle="--")
+    ax_lvo.plot(epochs, v_lvo_loss, color="#3498DB", linewidth=2, label="Val Loss - LVO")
     ax_lvo.set_title("3. LVO Loss (Train vs Val)"); ax_lvo.legend(); ax_lvo.grid(True, alpha=0.3)
 
-    ax_cow.plot(epochs, t_cow_loss, color="#E74C3C", linewidth=1.5, label="Train CoW", linestyle="--")
-    ax_cow.plot(epochs, v_cow_loss, color="#3498DB", linewidth=2, label="Val CoW")
+    ax_cow.plot(epochs, t_cow_loss, color="#E74C3C", linewidth=1.5, label="Train Loss - CoW", linestyle="--")
+    ax_cow.plot(epochs, v_cow_loss, color="#3498DB", linewidth=2, label="Val Loss - CoW")
     ax_cow.set_title("4. CoW Loss (Train vs Val)"); ax_cow.legend(); ax_cow.grid(True, alpha=0.3)
 
     ax_metrics.plot(epochs, dice_lesion, color="#3498DB", linewidth=2, label="Dice Lesion")
-    ax_metrics.plot(epochs, dice_lesion_pos, color="#E67E22", linewidth=2, label="Dice Lesion (Pos)", linestyle="-.")
+    ax_metrics.plot(epochs, dice_lesion_pos, color="#3498DB", linewidth=2, label="Dice Lesion (Pos)", linestyle="-.")
     ax_metrics.plot(epochs, f1_lvo,       color="#E74C3C", linewidth=2, label="F1 LVO")
     ax_metrics.plot(epochs, dice_cow,    color="#2ECC71", linewidth=2, label="Dice CoW")
     ax_metrics.plot(epochs, composite, color="#9B59B6", linewidth=3.0, label="Composite", alpha=0.8)
