@@ -15,10 +15,10 @@ split:
 # ── DataLoader ───────────────────────────────────────────────────
 dataloader:
   batch_size: 32
-  num_workers: 4
+  num_workers: 2
   pin_memory: true
-  persistent_workers: true
-  prefetch_factor: 2
+  persistent_workers: false
+  prefetch_factor: 1
   drop_last: true
 
 # ── Sampling Strategy ────────────────────────────────────────────
