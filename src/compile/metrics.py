@@ -272,7 +272,7 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
     # segmentation probability khi đánh giá. Loại bỏ multiplicative bottleneck:
     # sigmoid(cls_logit=1.0) = 0.73 → pixel 0.55 bị kéo xuống 0.40 (dưới ngưỡng 0.45).
     lesion_cls = None
-    lvo_cls = preds.get("lvo_cls", None) if epoch >= 25 else None
+    lvo_cls = preds.get("lvo_cls", None) if epoch >= 18 else None
 
     # Lesion Metrics
     d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"], cls_logits=lesion_cls).item()
