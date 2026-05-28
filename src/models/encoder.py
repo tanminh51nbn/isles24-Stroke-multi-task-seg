@@ -331,7 +331,7 @@ def build_encoders(config: dict):
             weights_path=config["cta_encoder"]["weights"],
             enc_dropout=cta_dropout,
         )
-
+ 
     perf_name = config["perfusion_encoder"].get("name", "densenet121").lower()
     perf_dropout = config["perfusion_encoder"].get("enc_dropout", [0.0, 0.0, 0.0, 0.0])
     if perf_name == "densenet121":
