@@ -83,8 +83,8 @@ class SingleHeadDecoder(nn.Module):
         """
         x = skips[-1] # Bắt đầu từ stage4
         
-        aux_masks = []
-        g_maps = []
+        aux_masks = {}
+        g_maps = {}
         
         for i, block in enumerate(self.blocks):
             # Upsample current features
@@ -207,6 +207,13 @@ def build_model(config: dict) -> nn.Module:
     """Tự động trả về mô hình tương ứng"""
     if "perfusion_encoder" in config:
         from models.dual_unet import DualEncoderUNet
-        return DualEncoderUNet(config)
+        model = DualEncoderUNet(config)
+        model_name = "DualEncoderUNet"
     else:
-        return SingleEncoderUNet(config)
+        model = SingleEncoderUNet(config)
+        model_name = "SingleEncoderUNet"
+        
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable    = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"[{model_name}] Total params: {total_params:,} | Trainable: {trainable:,}")
+    return model
