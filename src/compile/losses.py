@@ -539,27 +539,9 @@ class MultiTaskLoss(nn.Module):
         has_lesion = (targets[:, 0:1].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
         has_lvo = (targets[:, 1:2].amax(dim=(1, 2, 3), keepdim=False) > 0).float()      # (B,)
 
-        # Lesion: Hybrid Loss (ModifiedFocalLoss + Soft Dice Loss)
+        # Lesion: Hiện tại tạm thời BỎ QUA Dice Loss, chỉ dùng ModifiedFocalLoss
         # MFL luôn tính trên toàn bộ batch (cả slice trống — để phạt FP trên neg slice)
-        l_l_m_focal = self.lesion_main_loss(preds['lesion'], targets[:, 0:1], sigma=lesion_sigma)
-
-        # Dice Loss: CHỈ tính trên slice CÓ GT Lesion để tránh bias "predict 0"
-        # Trên slice trống, Dice=1.0 khi predict 0 → gradient đẩy model tránh predict Lesion
-        # → xung đột trực tiếp với MFL đang cố dạy model tìm Lesion
-        has_lesion_mask = has_lesion.bool()  # (B,)
-        if has_lesion_mask.any():
-            l_l_m_dice_pos = self.lesion_dice_loss_fn(
-                preds['lesion'][has_lesion_mask],
-                targets[:, 0:1][has_lesion_mask]
-            )  # per-sample vector trên subset có lesion
-            # Tạo vector đầy đủ: slice trống lấy 0.0 (không đóng góp)
-            l_l_m_dice = torch.zeros(targets.shape[0], device=targets.device)
-            l_l_m_dice[has_lesion_mask] = l_l_m_dice_pos
-        else:
-            # Batch toàn slice trống — chỉ dùng MFL
-            l_l_m_dice = torch.zeros(targets.shape[0], device=targets.device)
-
-        l_l_m = (1.0 - self.lesion_dice_w) * l_l_m_focal + self.lesion_dice_w * l_l_m_dice
+        l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1], sigma=lesion_sigma)
 
 
         if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
