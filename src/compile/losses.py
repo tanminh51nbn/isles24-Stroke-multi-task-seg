@@ -287,7 +287,23 @@ class CompoundDiceBCELoss(nn.Module):
         logits = logits.float()
         targets = targets.float()
         
-        dice_loss = self.dice(logits, targets)
+        if self.dice.batch:
+            # If batch=True, compute globally. Empty slices safely add to global FP.
+            dice_loss = self.dice(logits, targets)
+        else:
+            # If batch=False, compute per-slice. Mask out empty slices to prevent gradient spikes,
+            # allowing the model to focus on Focal Loss for empty slices.
+            has_pos = (targets.amax(dim=(1, 2, 3)) > 0)
+            if self.reduction == 'none':
+                dice_loss = torch.zeros(logits.size(0), device=logits.device, dtype=logits.dtype)
+                if has_pos.any():
+                    dice_loss[has_pos] = self.dice(logits[has_pos], targets[has_pos])
+            else:
+                if has_pos.any():
+                    dice_loss = self.dice(logits[has_pos], targets[has_pos])
+                else:
+                    dice_loss = torch.tensor(0.0, device=logits.device)
+                    
         if self.use_focal:
             bce_loss = self.focal(logits, targets)
         else:
@@ -315,7 +331,7 @@ class MultiTaskLoss(nn.Module):
         self.lesion_main_loss = CompoundDiceBCELoss(
             alpha=l_cfg["lesion"].get("alpha", 0.3),                 # Phạt False Positive nhẹ hơn (cho phép vươn vòi tìm kiếm)
             beta=l_cfg["lesion"].get("beta", 0.7),                   # Phạt False Negative nặng hơn (ngăn chặn bỏ sót vùng mờ)
-            batch=True,                                              # Tính trên toàn batch để tránh gradient nhiễu từ các slice có lesion li ti
+            batch=l_cfg["lesion"].get("batch_dice", False),          # Tính per-slice để chống vanishing gradient từ mẫu số Tversky khổng lồ
             use_focal=True,                                          # Dùng Focal Loss thay BCE
             focal_gamma=l_cfg["lesion"].get("focal_gamma", 2.0),     # Ép dẹp loss của não khỏe, tập trung vào ranh giới
             reduction='none'                                         # Trả về per-slice vector để áp dụng slice_weights
