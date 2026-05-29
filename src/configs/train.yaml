@@ -101,8 +101,8 @@ training:
   # Early Stopping
   early_stopping:
     enabled: true
-    start_epoch: 20   # Reduced from 25: protect earlier after encoder unfreeze (epoch 11)
-    patience: 15      # Reduced from 20: stop faster if no improvement
+    start_epoch: 20
+    patience: 15
     min_delta: 0.0001
 
   # Logging
