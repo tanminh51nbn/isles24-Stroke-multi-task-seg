@@ -112,9 +112,10 @@ class Trainer:
                     print(f"    [ENC_GRAD] Lesion→Enc: {_n['Lesion']:.3f} | LVO→Enc: {_n['LVO']:.3f} | CoW→Enc: {_n['CoW']:.3f}")
                     print(f"    [ENC_COS]  cos(L,V)={_c['L,V']:+.4f} | cos(L,C)={_c['L,C']:+.4f} | cos(V,C)={_c['V,C']:+.4f}")
                     
-                if hasattr(self.model.decoder, "_lvo_guidance_grad_norm"):
+                raw = self.model.module if hasattr(self.model, "module") else self.model
+                if hasattr(raw.decoder, "_lvo_guidance_grad_norm"):
                     # Unscale guidance grad
-                    g_norm = self.model.decoder._lvo_guidance_grad_norm
+                    g_norm = raw.decoder._lvo_guidance_grad_norm
                     if self.scaler is not None:
                         g_norm /= self.scaler.get_scale()
                     print(f"    [GUIDANCE] LVO Guidance Flow Norm: {g_norm:.4f}")
