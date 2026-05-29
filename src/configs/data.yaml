@@ -34,7 +34,7 @@ sampling:
 augmentation:
   enabled: true
   horizontal_flip:
-    prob: 0.025     # Tạm hạ xuống 0.05 để Lesion không bị nhiễu loạn không gian (Lazy Learner)
+    prob: 0.2     # Tạm hạ xuống 0.05 để Lesion không bị nhiễu loạn không gian (Lazy Learner)
 
   affine:
     prob: 0.3
@@ -62,7 +62,7 @@ augmentation:
     gamma_range: [0.8, 1.2] # Thu hẹp từ [0.7, 1.3]
 
   grid_distortion:
-    prob: 0.0        # TẮT HẲN (Vì đã có elastic_transform. Dùng cả 2 sẽ làm hỏng hoàn toàn cấu trúc mạch máu)
+    prob: 0.1
     num_steps: 5
     distort_limit: 0.2
 
