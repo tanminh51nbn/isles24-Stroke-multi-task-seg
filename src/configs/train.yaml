@@ -6,16 +6,13 @@
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
-    type: "modified_focal"
-    mfl_alpha: 1.5
-    mfl_beta: 3.0
-    sigma_init: 9.0
-    sigma_floor: 4.0
-    sigma_decay: 0.97
+    type: "compound_focal_tversky"
+    alpha: 0.3
+    beta: 0.7
+    focal_gamma: 2.0
     slice_pos_weight: 3.0
-    cls_weight: 0.20
-    cls_pos_weight: 2.5
-    dice_weight: 0.3
+    cls_weight: 0.25
+    cls_pos_weight: 2.0
 
   lvo:
     type: "modified_focal"
