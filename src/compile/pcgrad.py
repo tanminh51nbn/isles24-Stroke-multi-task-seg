@@ -68,7 +68,7 @@ class PCGrad:
 
         # [DEBUG] Phân tích gradient per-task trên Encoder (trước PCGrad projection)
         if encoder_debug_ids is not None:
-            self._analyze_encoder_grads(params, task_flat_grads, encoder_debug_ids)
+            self._analyze_encoder_grads(params, task_flat_grads, encoder_debug_ids, scaler)
 
         # [MAGNITUDE BALANCING] Cắt gọt độ lớn (Gradient Clipping) trên từng task riêng biệt
         # Ngăn chặn một task (như LVO) dùng độ lớn khổng lồ để lấn át các task khác trước khi xét hướng.
@@ -117,7 +117,7 @@ class PCGrad:
                 p.grad.copy_(grad_slice)
             offset += numel
 
-    def _analyze_encoder_grads(self, params, task_flat_grads, enc_ids):
+    def _analyze_encoder_grads(self, params, task_flat_grads, enc_ids, scaler=None):
         """Phân tích gradient per-task trên Encoder params (trước PCGrad projection)."""
         enc_ranges = []
         offset = 0
@@ -131,13 +131,15 @@ class PCGrad:
             self._enc_debug = None
             return
 
+        scale = scaler.get_scale() if scaler is not None else 1.0
+        
         task_enc_grads = []
         for flat_g in task_flat_grads:
             parts = [flat_g[start:end] for start, end in enc_ranges]
             task_enc_grads.append(torch.cat(parts))
 
         names = ["Lesion", "LVO", "CoW"]
-        norms = {n: g.norm(2).item() for n, g in zip(names, task_enc_grads)}
+        norms = {n: (g.norm(2).item() / scale) for n, g in zip(names, task_enc_grads)}
 
         cosine = {}
         for i, j, key in [(0, 1, "L,V"), (0, 2, "L,C"), (1, 2, "V,C")]:
