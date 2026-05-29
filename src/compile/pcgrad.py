@@ -72,11 +72,19 @@ class PCGrad:
 
         # [MAGNITUDE BALANCING] Cắt gọt độ lớn (Gradient Clipping) trên từng task riêng biệt
         # Ngăn chặn một task (như LVO) dùng độ lớn khổng lồ để lấn át các task khác trước khi xét hướng.
+        scale = scaler.get_scale() if scaler is not None else 1.0
+
         if self.max_norm is not None and self.max_norm > 0:
             for i in range(num_tasks):
-                norm = task_flat_grads[i].norm(2)
-                if norm > self.max_norm:
-                    task_flat_grads[i] = task_flat_grads[i] * (self.max_norm / (norm + 1e-8))
+                scaled_norm = task_flat_grads[i].norm(2)
+                unscaled_norm = scaled_norm / scale
+                
+                # Nếu gradient bị overflow (inf/nan), bỏ qua clip để Scaler của PyTorch tự bắt lỗi và skip batch
+                if not torch.isfinite(unscaled_norm):
+                    continue
+                    
+                if unscaled_norm > self.max_norm:
+                    task_flat_grads[i] = task_flat_grads[i] * (self.max_norm / (unscaled_norm + 1e-8))
 
         projected_flat_grads = []
         for i in range(num_tasks):
