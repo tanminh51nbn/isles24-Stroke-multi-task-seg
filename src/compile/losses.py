@@ -123,7 +123,8 @@ class ModifiedFocalLoss(nn.Module):
         slice_num_neg = neg_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
         
         # Trừng phạt thiết quân luật cục bộ trên từng lát cắt
-        slice_weight_pos = (slice_num_neg / slice_num_pos).clamp(max=200)
+        # [FIX] Nâng trần lên 20000 để phản ánh đúng tỷ lệ mất cân bằng (65536 background : 5 foreground)
+        slice_weight_pos = (slice_num_neg / slice_num_pos).clamp(max=20000)
         
         slice_loss_pos = slice_pos_loss * slice_weight_pos
         slice_loss = (slice_loss_pos + slice_neg_loss) / (slice_num_neg + slice_num_pos * slice_weight_pos)
