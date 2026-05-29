@@ -160,12 +160,22 @@ class SingleEncoderTripleDecoder(nn.Module):
         # 2. Shared Path (dec4, dec3)
         x_shared = self.shared_path(x_bottleneck, [s4, s3])
         
-        # 3. Knowledge Cascade (Dòng chảy tri thức)
         f_cow, cow_auxs = self.cow_path(x_shared, [s2, s1])
         
         f_lesion, lesion_auxs = self.lesion_path(x_shared, [s2, s1], guidance=f_cow.detach())
         
         guidance_for_lvo = torch.cat([f_cow.detach(), f_lesion.detach()], dim=1)
+        if self.training:
+            guidance_for_lvo.requires_grad_(True)
+            
+            def lvo_guidance_hook(grad):
+                # Ghi lại norm của gradient chảy qua guidance của LVO
+                norm = grad.norm(2).item()
+                # Lưu vào thuộc tính tạm để in ra ở cấp trainer nếu cần
+                self._lvo_guidance_grad_norm = norm
+                
+            guidance_for_lvo.register_hook(lvo_guidance_hook)
+            
         f_lvo, lvo_auxs = self.lvo_path(x_shared, [s2, s1], guidance=guidance_for_lvo)
 
         aux_masks = {

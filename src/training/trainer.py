@@ -55,11 +55,27 @@ class Trainer:
             lbl = batch["label"].to(self.device, non_blocking=True)
             if not torch.isfinite(inp).all(): inp = torch.nan_to_num(inp, nan=0.0)
 
+            # DIAGNOSTIC TRACKING
+            if not hasattr(self, "_diag_lvo_tp"):
+                self._diag_lvo_tp = self._diag_lvo_fp = self._diag_lvo_fn = 0
+                self._diag_lvo_max = 0.0
+
             self.optimizer.zero_grad(set_to_none=True)
             raw_model = self.model.module if hasattr(self.model, "module") else self.model
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 preds = raw_model(inp, epoch=epoch)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
+                
+                # Accumulate diagnostics
+                with torch.no_grad():
+                    lvo_p = torch.sigmoid(preds["lvo"])
+                    self._diag_lvo_max = max(self._diag_lvo_max, lvo_p.max().item())
+                    l_thr = 0.23 # default threshold for metric
+                    pred_m = (lvo_p > l_thr).float()
+                    gt_lvo = lbl[:, 1:2]
+                    self._diag_lvo_tp += (pred_m * gt_lvo).sum().item()
+                    self._diag_lvo_fp += (pred_m * (1 - gt_lvo)).sum().item()
+                    self._diag_lvo_fn += ((1 - pred_m) * gt_lvo).sum().item()
 
             task_losses = [losses["total_lesion"], losses["total_lvo"], losses["total_cow"]]
             is_finite = torch.tensor(1.0 if all(torch.isfinite(l) for l in task_losses) else 0.0, device=self.device)
@@ -95,6 +111,13 @@ class Trainer:
                     _c = _ed['cosine']
                     print(f"    [ENC_GRAD] Lesion→Enc: {_n['Lesion']:.3f} | LVO→Enc: {_n['LVO']:.3f} | CoW→Enc: {_n['CoW']:.3f}")
                     print(f"    [ENC_COS]  cos(L,V)={_c['L,V']:+.4f} | cos(L,C)={_c['L,C']:+.4f} | cos(V,C)={_c['V,C']:+.4f}")
+                    
+                if hasattr(self.model.decoder, "_lvo_guidance_grad_norm"):
+                    # Unscale guidance grad
+                    g_norm = self.model.decoder._lvo_guidance_grad_norm
+                    if self.scaler is not None:
+                        g_norm /= self.scaler.get_scale()
+                    print(f"    [GUIDANCE] LVO Guidance Flow Norm: {g_norm:.4f}")
 
             # [FIX 1.3] Per-task gradient clip cho các nhánh để bảo vệ encoder (Bệnh 3)
             raw = self.model.module if hasattr(self.model, "module") else self.model
@@ -128,6 +151,14 @@ class Trainer:
                 print(f"    [WARN] LVO max grad spike: {spike_str} -> clipped to 10.0")
             if nan_batches > 0:
                 print(f"    [WARN] Đã skip {nan_batches} batches do lỗi NaN/Inf.")
+                
+            # Compute and print diagnostic stats
+            denom = self._diag_lvo_tp + 0.5 * (self._diag_lvo_fp + self._diag_lvo_fn)
+            lvo_train_f1 = (self._diag_lvo_tp / denom) if denom > 0 else 0.0
+            print(f"    [LVO DIAGNOSTICS] Train F1: {lvo_train_f1*100:.2f}% (TP={int(self._diag_lvo_tp)} FP={int(self._diag_lvo_fp)} FN={int(self._diag_lvo_fn)}) | Max Prob: {self._diag_lvo_max:.4f}")
+            # Reset diagnostics for next epoch
+            self._diag_lvo_tp = self._diag_lvo_fp = self._diag_lvo_fn = 0
+            self._diag_lvo_max = 0.0
         
         if dist.is_initialized():
             sync = torch.tensor([total_loss, main_loss, float(n_batches), raw_loss, sum_t_les, sum_t_lvo, sum_t_cow], device=self.device)
