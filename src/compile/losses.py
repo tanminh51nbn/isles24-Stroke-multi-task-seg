@@ -310,33 +310,23 @@ class MultiTaskLoss(nn.Module):
         t_cfg  = config.get("training", {})
         self.init_w = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
 
-        # 1. Lesion Task — ModifiedFocalLoss với Gaussian Heatmap Curriculum
-        # Giống LVO nhưng tuned cho region: alpha nhỏ hơn, beta nhỏ hơn, sigma sàn cao hơn.
-        self.lesion_main_loss = ModifiedFocalLoss(
-            alpha=l_cfg["lesion"].get("mfl_alpha", 1.5),
-            beta=l_cfg["lesion"].get("mfl_beta",  2.0),
-            reduction='none'
+        # 1. Lesion Task — Stroke-Optimized Compound Loss (Focal Loss + Asymmetric Tversky)
+        # Thay thế hoàn toàn MFL bằng Compound Loss chuyên biệt cho vùng nhồi máu đa dạng kích thước
+        self.lesion_main_loss = CompoundDiceBCELoss(
+            alpha=0.3,           # Phạt False Positive nhẹ hơn (cho phép vươn vòi tìm kiếm)
+            beta=0.7,            # Phạt False Negative nặng hơn (ngăn chặn bỏ sót vùng mờ)
+            batch=True,          # Tính trên toàn batch để tránh gradient nhiễu từ các slice có lesion li ti
+            use_focal=True,      # Dùng Focal Loss thay BCE
+            focal_gamma=2.0,     # Ép dẹp loss của não khỏe, tập trung vào ranh giới
+            reduction='none'     # Trả về per-slice vector để áp dụng slice_weights
         )
-        # Sigma curriculum: bắt đầu mờ (dạy vị trí), dần sharp (dạy biên)
-        self.lesion_sigma_init  = l_cfg["lesion"].get("sigma_init",  9.0)
-        self.lesion_sigma_floor = l_cfg["lesion"].get("sigma_floor", 4.0)
-        self.lesion_sigma_decay = l_cfg["lesion"].get("sigma_decay", 0.97)
+
         self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 3.0)
         l_l_cls_pos_w = l_cfg["lesion"].get("cls_pos_weight", 2.0)
         self.lesion_cls_loss_fn = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([l_l_cls_pos_w])
         )
         self.lesion_cls_w = l_cfg["lesion"].get("cls_weight", 0.25)
-
-        # Soft Dice Loss (TverskyLoss with alpha=0.5, beta=0.5) to optimize volumetric overlap directly
-        self.lesion_dice_loss_fn = TverskyLoss(
-            alpha=0.5,
-            beta=0.5,
-            smooth=1.0,
-            batch=False,
-            reduction='none'
-        )
-        self.lesion_dice_w = l_cfg["lesion"].get("dice_weight", 0.5)
 
         # 2. LVO Task
         l_v_cfg = l_cfg.get("lvo", {})
@@ -524,13 +514,12 @@ class MultiTaskLoss(nn.Module):
         p_l, p_v, p_c = w[0], w[1], w[2]
 
         dynamic_sigma  = max(self.lvo_sigma_floor, self.lvo_sigma_init * (self.lvo_sigma_decay ** cur_ep))
-        lesion_sigma   = max(self.lesion_sigma_floor, self.lesion_sigma_init * (self.lesion_sigma_decay ** cur_ep))
         _log = kwargs.get('batch_idx', 0) == 0 and (not dist.is_initialized() or dist.get_rank() == 0)
         if _log:
             pgw_active = self._pgw_epoch.item() >= 0
             tag = "[PGW]" if pgw_active else "[INIT]"
             print(f"    {tag}: Weights [Lesion={p_l:.2f}, LVO={p_v:.2f}, CoW={p_c:.2f}] "
-                  f"| LVO_Sigma={dynamic_sigma:.2f} | Les_Sigma={lesion_sigma:.2f}")
+                  f"| LVO_Sigma={dynamic_sigma:.2f}")
 
         # 1. Main Losses
         _debug = (kwargs.get('batch_idx', -1) == 0) and (not dist.is_initialized() or dist.get_rank() == 0)
@@ -539,9 +528,9 @@ class MultiTaskLoss(nn.Module):
         has_lesion = (targets[:, 0:1].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
         has_lvo = (targets[:, 1:2].amax(dim=(1, 2, 3), keepdim=False) > 0).float()      # (B,)
 
-        # Lesion: Hiện tại tạm thời BỎ QUA Dice Loss, chỉ dùng ModifiedFocalLoss
-        # MFL luôn tính trên toàn bộ batch (cả slice trống — để phạt FP trên neg slice)
-        l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1], sigma=lesion_sigma)
+        # Lesion: Stroke-Optimized Compound Loss (Focal Loss + Asymmetric Tversky)
+        # Tính trên toàn bộ batch (batch=True), trả về vector (B,)
+        l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
 
 
         if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
@@ -622,10 +611,7 @@ class MultiTaskLoss(nn.Module):
                 
                 if task_key == "lesion":
                     t_l = F.interpolate(targets[:, 0:1].float(), (h, w), mode='area')
-                    # Dùng sigma_floor cho aux (không cần curriculum, chỉ cần gradient ổn định)
-                    aux_focal = self.lesion_main_loss(a_p, t_l, sigma=self.lesion_sigma_floor)
-                    aux_dice = self.lesion_dice_loss_fn(a_p, t_l)
-                    task_aux_loss += (1.0 - self.lesion_dice_w) * aux_focal + self.lesion_dice_w * aux_dice
+                    task_aux_loss += self.lesion_main_loss(a_p, t_l)
                 
                 elif task_key == "lvo":
                     t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
