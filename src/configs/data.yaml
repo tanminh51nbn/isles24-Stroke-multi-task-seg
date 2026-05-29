@@ -34,7 +34,7 @@ sampling:
 augmentation:
   enabled: true
   horizontal_flip:
-    prob: 0.05     # Tạm hạ xuống 0.05 để Lesion không bị nhiễu loạn không gian (Lazy Learner)
+    prob: 0.025     # Tạm hạ xuống 0.05 để Lesion không bị nhiễu loạn không gian (Lazy Learner)
 
   affine:
     prob: 0.3
