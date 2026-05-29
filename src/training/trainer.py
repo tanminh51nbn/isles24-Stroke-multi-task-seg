@@ -78,14 +78,17 @@ class Trainer:
             self.scaler.unscale_(self.optimizer)
             
             if batch_idx % self.log_interval == 0 and self.rank == 0:
-                gn = {"l": 0.0, "v": 0.0, "c": 0.0}
+                gn = {"l": 0.0, "v": 0.0, "c": 0.0, "e": 0.0}
                 for n, p in self.model.named_parameters():
                     if p.grad is not None:
                         val = p.grad.detach().norm(2).item()
-                        if "lesion" in n.lower(): gn["l"] += val
-                        elif "lvo" in n.lower(): gn["v"] += val
-                        elif "cow" in n.lower(): gn["c"] += val
-                print(f"    [GRAD] B{batch_idx:03d} | 🎯 LVO: {gn['v']:.3f} | 🔴 Lesion: {gn['l']:.3f} | 🟢 CoW: {gn['c']:.3f}")
+                        sq_val = val * val
+                        if "lesion" in n.lower(): gn["l"] += sq_val
+                        elif "lvo" in n.lower(): gn["v"] += sq_val
+                        elif "cow" in n.lower(): gn["c"] += sq_val
+                        elif "encoder" in n.lower() or "features" in n.lower(): gn["e"] += sq_val
+                
+                print(f"    [GRAD] B{batch_idx:03d} | 🎯 LVO: {gn['v']**0.5:.3f} | 🔴 Lesion: {gn['l']**0.5:.3f} | 🟢 CoW: {gn['c']**0.5:.3f} | 🧠 Enc: {gn['e']**0.5:.3f}")
                 if hasattr(self.pcgrad, '_enc_debug') and self.pcgrad._enc_debug is not None:
                     _ed = self.pcgrad._enc_debug
                     _n = _ed['norms']
