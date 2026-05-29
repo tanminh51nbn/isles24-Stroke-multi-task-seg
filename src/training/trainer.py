@@ -39,6 +39,9 @@ class Trainer:
         self.history = []
         from compile import PCGrad
         self.pcgrad = PCGrad(self.optimizer, use_amp=self.amp_enabled)
+        # [DEBUG] Encoder param IDs cho phân tích gradient
+        _raw = self.model.module if hasattr(self.model, "module") else self.model
+        self._enc_param_ids = {id(p) for p in _raw.encoder.parameters()} if hasattr(_raw, 'encoder') else set()
 
     def train_one_epoch(self, epoch: int) -> dict:
         self.model.train()
@@ -69,7 +72,9 @@ class Trainer:
                 continue
 
             # Phẫu thuật Gradient bằng PCGrad
-            self.pcgrad.backward(task_losses, self.model, scaler=self.scaler)
+            _log_enc = (batch_idx % self.log_interval == 0 and self.rank == 0)
+            self.pcgrad.backward(task_losses, self.model, scaler=self.scaler,
+                                 encoder_debug_ids=self._enc_param_ids if _log_enc else None)
             self.scaler.unscale_(self.optimizer)
             
             if batch_idx % self.log_interval == 0 and self.rank == 0:
@@ -81,6 +86,12 @@ class Trainer:
                         elif "lvo" in n.lower(): gn["v"] += val
                         elif "cow" in n.lower(): gn["c"] += val
                 print(f"    [GRAD] B{batch_idx:03d} | 🎯 LVO: {gn['v']:.3f} | 🔴 Lesion: {gn['l']:.3f} | 🟢 CoW: {gn['c']:.3f}")
+                if hasattr(self.pcgrad, '_enc_debug') and self.pcgrad._enc_debug is not None:
+                    _ed = self.pcgrad._enc_debug
+                    _n = _ed['norms']
+                    _c = _ed['cosine']
+                    print(f"    [ENC_GRAD] Lesion→Enc: {_n['Lesion']:.3f} | LVO→Enc: {_n['LVO']:.3f} | CoW→Enc: {_n['CoW']:.3f}")
+                    print(f"    [ENC_COS]  cos(L,V)={_c['L,V']:+.4f} | cos(L,C)={_c['L,C']:+.4f} | cos(V,C)={_c['V,C']:+.4f}")
 
             # [FIX 1.3] Per-task gradient clip cho các nhánh để bảo vệ encoder (Bệnh 3)
             raw = self.model.module if hasattr(self.model, "module") else self.model
@@ -295,13 +306,18 @@ class Trainer:
         slice_f1_lvo = af1_v / 100.0
         comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * slice_f1_lvo + w["dice_cow_weight"] * ad_c)
         
+        p_l, p_v, p_c = 1.0, 1.0, 1.0
+        if hasattr(self.loss_fn, "current_weights"):
+            cw = self.loss_fn.current_weights.tolist()
+            p_l, p_v, p_c = cw[0], cw[1], cw[2]
+
         return {
             "val_loss": avg_l, "val_main": avg_m, "val_raw": avg_raw, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
             "f1_lvo": af1_v, "dice_cow": ad_c,
             "f1_lvo_patient": pat.get("f1", 0.0) * 100.0,
-            "p_lesion": self.metric_weights.get("pgw", {}).get("lesion", 1.0),
-            "p_lvo": self.metric_weights.get("pgw", {}).get("lvo", 1.0),
-            "p_cow": self.metric_weights.get("pgw", {}).get("cow", 1.0),
+            "p_lesion": p_l,
+            "p_lvo": p_v,
+            "p_cow": p_c,
             "aad_lesion": a_aad, "alcd_lesion": a_alcd,
             "composite": comp,
             "v_les_loss": avg_v_les, "v_lvo_loss": avg_v_lvo, "v_cow_loss": avg_v_cow

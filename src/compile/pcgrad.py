@@ -7,8 +7,9 @@ class PCGrad:
     def __init__(self, optimizer, use_amp: bool = True):
         self.optimizer = optimizer
         self.use_amp = use_amp
+        self._enc_debug = None  # [DEBUG] Encoder gradient analysis
 
-    def backward(self, losses: List[torch.Tensor], model, scaler=None):
+    def backward(self, losses: List[torch.Tensor], model, scaler=None, encoder_debug_ids=None):
         """
         Thực hiện lan truyền ngược có phẫu thuật gradient (Gradient Surgery)
         để giải quyết xung đột hướng gradient giữa các task.
@@ -64,6 +65,10 @@ class PCGrad:
                 flat_g /= torch.distributed.get_world_size()
             task_flat_grads.append(flat_g)
 
+        # [DEBUG] Phân tích gradient per-task trên Encoder (trước PCGrad projection)
+        if encoder_debug_ids is not None:
+            self._analyze_encoder_grads(params, task_flat_grads, encoder_debug_ids)
+
         projected_flat_grads = []
         for i in range(num_tasks):
             g_i = task_flat_grads[i].clone()
@@ -94,3 +99,35 @@ class PCGrad:
             else:
                 p.grad.copy_(grad_slice)
             offset += numel
+
+    def _analyze_encoder_grads(self, params, task_flat_grads, enc_ids):
+        """Phân tích gradient per-task trên Encoder params (trước PCGrad projection)."""
+        enc_ranges = []
+        offset = 0
+        for p in params:
+            numel = p.numel()
+            if id(p) in enc_ids:
+                enc_ranges.append((offset, offset + numel))
+            offset += numel
+
+        if not enc_ranges:
+            self._enc_debug = None
+            return
+
+        task_enc_grads = []
+        for flat_g in task_flat_grads:
+            parts = [flat_g[start:end] for start, end in enc_ranges]
+            task_enc_grads.append(torch.cat(parts))
+
+        names = ["Lesion", "LVO", "CoW"]
+        norms = {n: g.norm(2).item() for n, g in zip(names, task_enc_grads)}
+
+        cosine = {}
+        for i, j, key in [(0, 1, "L,V"), (0, 2, "L,C"), (1, 2, "V,C")]:
+            cos = torch.nn.functional.cosine_similarity(
+                task_enc_grads[i].unsqueeze(0),
+                task_enc_grads[j].unsqueeze(0)
+            ).item()
+            cosine[key] = cos
+
+        self._enc_debug = {"norms": norms, "cosine": cosine}
