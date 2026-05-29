@@ -4,9 +4,10 @@ import contextlib
 from typing import List
 
 class PCGrad:
-    def __init__(self, optimizer, use_amp: bool = True):
+    def __init__(self, optimizer, use_amp: bool = True, max_norm: float = 10.0):
         self.optimizer = optimizer
         self.use_amp = use_amp
+        self.max_norm = max_norm
         self._enc_debug = None  # [DEBUG] Encoder gradient analysis
 
     def backward(self, losses: List[torch.Tensor], model, scaler=None, encoder_debug_ids=None):
@@ -68,6 +69,14 @@ class PCGrad:
         # [DEBUG] Phân tích gradient per-task trên Encoder (trước PCGrad projection)
         if encoder_debug_ids is not None:
             self._analyze_encoder_grads(params, task_flat_grads, encoder_debug_ids)
+
+        # [MAGNITUDE BALANCING] Cắt gọt độ lớn (Gradient Clipping) trên từng task riêng biệt
+        # Ngăn chặn một task (như LVO) dùng độ lớn khổng lồ để lấn át các task khác trước khi xét hướng.
+        if self.max_norm is not None and self.max_norm > 0:
+            for i in range(num_tasks):
+                norm = task_flat_grads[i].norm(2)
+                if norm > self.max_norm:
+                    task_flat_grads[i] = task_flat_grads[i] * (self.max_norm / (norm + 1e-8))
 
         projected_flat_grads = []
         for i in range(num_tasks):

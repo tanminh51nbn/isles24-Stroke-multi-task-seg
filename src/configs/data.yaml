@@ -34,7 +34,7 @@ sampling:
 augmentation:
   enabled: true
   horizontal_flip:
-    prob: 0.5     # Tăng từ 0.25 lên 0.5 vì não đối xứng, lật là cách x2 data an toàn nhất
+    prob: 0.05     # Tạm hạ xuống 0.05 để Lesion không bị nhiễu loạn không gian (Lazy Learner)
 
   affine:
     prob: 0.3

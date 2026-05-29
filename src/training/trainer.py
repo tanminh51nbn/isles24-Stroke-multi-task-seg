@@ -38,7 +38,7 @@ class Trainer:
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.amp_enabled)
         self.history = []
         from compile import PCGrad
-        self.pcgrad = PCGrad(self.optimizer, use_amp=self.amp_enabled)
+        self.pcgrad = PCGrad(self.optimizer, use_amp=self.amp_enabled, max_norm=self.grad_clip_norm)
         # [DEBUG] Encoder param IDs cho phân tích gradient
         _raw = self.model.module if hasattr(self.model, "module") else self.model
         self._enc_param_ids = {id(p) for p in _raw.encoder.parameters()} if hasattr(_raw, 'encoder') else set()
