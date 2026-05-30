@@ -27,15 +27,16 @@ from models.heads import MultiTaskHeads
 
 # ─── Módulo Guidance Mềm (Spatial Attention) ──────────────────────────────────
 
-class SpatialAttentionGuidance(nn.Module):
+class FusedSpatialAttention(nn.Module):
     """
-    Biến Đặc trưng thô (VD: từ nhánh CoW) thành một Bản đồ Không gian 1 kênh (Đèn pin).
-    Sử dụng cơ chế Residual: Đầu ra = Đặc trưng_Gốc * (1.0 + Đèn_pin).
+    Kết hợp Đặc trưng của Task hiện tại và Đặc trưng Hướng dẫn (CoW) 
+    để tự động sinh ra Bản đồ Không gian 1 kênh (Đèn pin) có khả năng Dập tắt (Masking).
+    Đầu ra = Đặc trưng_Gốc * Đèn_pin.
     """
-    def __init__(self, guidance_ch: int):
+    def __init__(self, task_ch: int, guidance_ch: int):
         super().__init__()
         self.attn_conv = nn.Sequential(
-            nn.Conv2d(guidance_ch, 16, kernel_size=3, padding=1),
+            nn.Conv2d(task_ch + guidance_ch, 16, kernel_size=3, padding=1),
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 1, kernel_size=1),
@@ -45,10 +46,12 @@ class SpatialAttentionGuidance(nn.Module):
     def forward(self, x_task, guidance_features):
         # 1. Resize guidance để khớp với x_task
         g_interp = F.interpolate(guidance_features, size=x_task.shape[2:], mode='bilinear', align_corners=False)
-        # 2. Tạo bản đồ Đèn pin (0 đến 1)
-        attn_map = self.attn_conv(g_interp)
-        # 3. Residual Soft Attention
-        out = x_task * (1.0 + attn_map)
+        # 2. Ghép nối để mạng nhìn thấy cả 2
+        fused = torch.cat([x_task, g_interp], dim=1)
+        # 3. Tạo bản đồ Đèn pin (0 đến 1)
+        attn_map = self.attn_conv(fused)
+        # 4. Hard Attention (cho phép dập tắt báo ảo)
+        out = x_task * attn_map
         return out, attn_map
 
 
@@ -130,7 +133,7 @@ class SingleTaskPath(nn.Module):
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
         
         if guidance_ch > 0:
-            self.guidance_attn = SpatialAttentionGuidance(guidance_ch)
+            self.guidance_attn = FusedSpatialAttention(task_ch=final_ch, guidance_ch=guidance_ch)
         else:
             self.guidance_attn = None
 
