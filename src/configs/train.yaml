@@ -38,7 +38,7 @@ loss:
 composite_score:
   dice_lesion_weight: 0.45
   dice_lvo_weight: 0.45
-  dice_cow_weight: 0.12
+  dice_cow_weight: 0.1
   thresholds:
     lesion: 0.5
     lvo: 0.3
