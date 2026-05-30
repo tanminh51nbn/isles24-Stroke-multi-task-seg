@@ -57,21 +57,54 @@ def run_single_mode(args, model, train_cfg, device):
             )
     print(f"[Xong] Lưu tại: {args.save_dir}")
 
-def run_compare_mode(args, model, train_cfg, device):
-    # 1. Chọn file
+def run_compare_mode(args, base_model, train_cfg, device):
     all_files = glob(os.path.join(args.data_dir, "*.npy"))
     if not all_files: return print("!!! Không tìm thấy dữ liệu")
+    np.random.shuffle(all_files)
     
-    random_file = random.choice(all_files)
-    dataset = ISLES24Dataset([random_file], transform=None)
-    sample = dataset[0]
-    inp = sample["input"].unsqueeze(0).to(device)
+    cases = {}
+    print("[Compare] Đang quét tìm 8 trường hợp (dựa trên sự xuất hiện của Lesion, LVO, CoW)...")
+    for f in all_files[:2000]:
+        if len(cases) == 8: break
+        try:
+            ds = ISLES24Dataset([f], transform=None)
+            lbl = ds[0]["label"]
+        except: continue
+        
+        has_lesion = bool(lbl[0].sum() > 300)
+        has_lvo    = bool(lbl[1].sum() > 3)
+        has_cow    = bool(lbl[2].sum() > 200)
+        key = (has_lesion, has_lvo, has_cow)
+        if key not in cases:
+            cases[key] = ds[0]
+            print(f"  + Tìm thấy: Lesion={has_lesion}, LVO={has_lvo}, CoW={has_cow}")
     
-    # 2. Chạy 3 mô hình và vẽ grid
+    keys_order = [
+        (False, False, False), (False, False, True),
+        (False, True, False), (False, True, True),
+        (True, False, False), (True, False, True),
+        (True, True, False), (True, True, True)
+    ]
+    
+    # Pre-compute predictions
     names = ["overall", "lesion", "lvo"]
-    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    all_preds = {name: {} for name in names}
     
-    # Helper chuẩn hóa nhanh
+    for name in names:
+        ckpt_path = os.path.join(args.checkpoint_dir, f"best_{name}.pt")
+        if os.path.exists(ckpt_path):
+            print(f"Đang chạy Inference mô hình: {name}")
+            model = load_model_from_ckpt(base_model, ckpt_path, device)
+            with torch.no_grad():
+                for key in keys_order:
+                    if key in cases:
+                        inp = cases[key]["input"].unsqueeze(0).to(device)
+                        all_preds[name][key] = {k: v.cpu() for k, v in model(inp).items() if torch.is_tensor(v)}
+                        
+    # Plotting 8x4
+    fig, axes = plt.subplots(8, 4, figsize=(20, 40))
+    plt.subplots_adjust(wspace=0.1, hspace=0.3)
+    
     def _norm(img):
         arr = img.cpu().numpy() if torch.is_tensor(img) else img
         p99 = np.percentile(arr, 99.9)
@@ -80,99 +113,93 @@ def run_compare_mode(args, model, train_cfg, device):
         if amax > amin: arr = (arr - amin) / (amax - amin)
         return (arr * 255).astype(np.uint8)
 
-    # Cột 1: Ảnh gốc + Ground Truth
-    bg_img = _norm(sample["input"][0:6].mean(dim=0)) # CTA Anatomy Map
-    axes[0].imshow(bg_img, cmap='bone')
-    
-    # Đè Ground Truth lên (nếu có)
-    gt = sample["label"].cpu().numpy()
-    if gt.max() > 0:
-        ov = np.zeros((*gt[0].shape, 4))
-        ov[..., 0] = gt[0] * 0.7  # Lesion: Đỏ
-        ov[..., 1] = gt[2] * 0.4  # CoW: Xanh lá
-        ov[..., 2] = (gt[1] > 0.1).astype(float) * 0.9 # LVO: Xanh dương
-        ov[..., 3] = (gt.max(axis=0) > 0.1) * 0.5
-        axes[0].imshow(ov)
+    for row, key in enumerate(keys_order):
+        if key not in cases:
+            for col in range(4):
+                axes[row, col].text(0.5, 0.5, f"Missing case:\nLesion={key[0]}\nLVO={key[1]}\nCoW={key[2]}", ha='center', va='center')
+                axes[row, col].axis("off")
+            continue
+            
+        sample = cases[key]
+        bg_img = _norm(sample["input"][0:6].mean(dim=0))
+        gt = sample["label"].cpu().numpy()
         
-    axes[0].set_title(f"Original (w/ GT)\n{os.path.basename(random_file)}")
-    
-    for i, name in enumerate(names):
-        ckpt_path = os.path.join(args.checkpoint_dir, f"best_{name}.pt")
-        if os.path.exists(ckpt_path):
-            model = load_model_from_ckpt(model, ckpt_path, device)
-            with torch.no_grad():
-                preds = model(inp)
-                axes[i+1].imshow(bg_img, cmap='bone')
+        # Col 0: Original + GT
+        axes[row, 0].imshow(bg_img, cmap='bone')
+        if gt.max() > 0:
+            ov = np.zeros((*gt[0].shape, 4))
+            ov[..., 0] = gt[0] * 0.7
+            ov[..., 1] = gt[2] * 0.4
+            ov[..., 2] = (gt[1] > 0.1).astype(float) * 0.9
+            ov[..., 3] = (gt.max(axis=0) > 0.1) * 0.5
+            axes[row, 0].imshow(ov)
+        
+        label_str = f"Les={key[0]}, LVO={key[1]}, CoW={key[2]}"
+        axes[row, 0].set_title(f"Original (w/ GT)\n{label_str}")
+        axes[row, 0].axis("off")
+        
+        # Col 1, 2, 3: Models
+        for i, name in enumerate(names):
+            ax = axes[row, i+1]
+            ax.axis("off")
+            
+            if key not in all_preds[name]:
+                ax.text(0.5, 0.5, f"Missing {name}.pt", ha='center', va='center')
+                continue
                 
-                if name == "lvo":
-                    # Hiển thị LVO dạng Heatmap rực rỡ (colormap hot)
-                    sig_lvo_tensor = torch.sigmoid(preds["lvo"])
-                    lvo_cls = preds.get("lvo_cls", None)
-                    if lvo_cls is not None:
-                        cls_prob = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
-                        sig_lvo_tensor = sig_lvo_tensor * cls_prob
-                    heat = sig_lvo_tensor.cpu().numpy()[0, 0]
-                    axes[i+1].imshow(heat, cmap='hot', alpha=0.6, vmin=0, vmax=1)
-                elif name == "lesion":
-                    # Lesion hiển thị Mask nhị phân
-                    thresh = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
-                    sig_lesion_tensor = torch.sigmoid(preds["lesion"])
-                    lesion_cls = preds.get("lesion_cls", None)
-                    if lesion_cls is not None:
-                        cls_prob = torch.sigmoid(lesion_cls).view(-1, 1, 1, 1)
-                        sig_lesion_tensor = sig_lesion_tensor * cls_prob
-                    mask = (sig_lesion_tensor > thresh).cpu().numpy()[0, 0]
+            preds = all_preds[name][key]
+            ax.imshow(bg_img, cmap='bone')
+            
+            if name == "lvo":
+                sig = torch.sigmoid(preds["lvo"])
+                cls = preds.get("lvo_cls", None)
+                if cls is not None: sig = sig * torch.sigmoid(cls).view(-1,1,1,1)
+                ax.imshow(sig.numpy()[0,0], cmap='hot', alpha=0.6, vmin=0, vmax=1)
+            elif name == "lesion":
+                thresh = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
+                sig = torch.sigmoid(preds["lesion"])
+                cls = preds.get("lesion_cls", None)
+                if cls is not None: sig = sig * torch.sigmoid(cls).view(-1,1,1,1)
+                mask = (sig > thresh).numpy()[0,0]
+                if mask.sum() > 0:
+                    ov = np.zeros((*mask.shape, 4))
+                    ov[..., 0] = 1.0; ov[..., 3] = mask * 0.5
+                    ax.imshow(ov)
+            elif name == "overall":
+                thresh_l = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
+                thresh_c = train_cfg["composite_score"]["thresholds"].get("cow", 0.5)
+                
+                sig_l = torch.sigmoid(preds["lesion"])
+                cls_l = preds.get("lesion_cls", None)
+                if cls_l is not None: sig_l = sig_l * torch.sigmoid(cls_l).view(-1,1,1,1)
+                m_l = (sig_l > thresh_l).numpy()[0,0]
+                
+                m_c = (torch.sigmoid(preds["cow"]) > thresh_c).numpy()[0,0]
+                
+                sig_v = torch.sigmoid(preds["lvo"])
+                cls_v = preds.get("lvo_cls", None)
+                if cls_v is not None: sig_v = sig_v * torch.sigmoid(cls_v).view(-1,1,1,1)
+                h_v = sig_v.numpy()[0,0]
+                
+                if m_l.sum() > 0:
+                    ov_l = np.zeros((*m_l.shape, 4))
+                    ov_l[..., 0] = 1.0; ov_l[..., 3] = m_l * 0.5
+                    ax.imshow(ov_l)
+                if m_c.sum() > 0:
+                    ov_c = np.zeros((*m_c.shape, 4))
+                    ov_c[..., 1] = 1.0; ov_c[..., 3] = m_c * 0.4
+                    ax.imshow(ov_c)
+                if h_v.max() > 0:
+                    ax.imshow(h_v, cmap='hot', alpha=0.6, vmin=0, vmax=1)
                     
-                    if mask.sum() > 0:
-                        ov = np.zeros((*mask.shape, 4))
-                        ov[..., 0] = 1.0; ov[..., 3] = mask * 0.5
-                        axes[i+1].imshow(ov)
-                elif name == "overall":
-                    # Overall hiển thị kết hợp cả 3 task (Lesion: Đỏ, LVO: Hot Heatmap, CoW: Xanh lá)
-                    thresh_l = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
-                    thresh_c = train_cfg["composite_score"]["thresholds"].get("cow", 0.5)
-                    
-                    sig_lesion_tensor = torch.sigmoid(preds["lesion"])
-                    lesion_cls = preds.get("lesion_cls", None)
-                    if lesion_cls is not None:
-                        cls_prob = torch.sigmoid(lesion_cls).view(-1, 1, 1, 1)
-                        sig_lesion_tensor = sig_lesion_tensor * cls_prob
-                    m_lesion = (sig_lesion_tensor > thresh_l).cpu().numpy()[0, 0]
-                    
-                    m_cow    = (torch.sigmoid(preds["cow"]) > thresh_c).cpu().numpy()[0, 0]
-                    sig_lvo_tensor = torch.sigmoid(preds["lvo"])
-                    lvo_cls = preds.get("lvo_cls", None)
-                    if lvo_cls is not None:
-                        cls_prob = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
-                        sig_lvo_tensor = sig_lvo_tensor * cls_prob
-                    h_lvo    = sig_lvo_tensor.cpu().numpy()[0, 0]
-                    
-                    if m_lesion.sum() > 0:
-                        ov_l = np.zeros((*m_lesion.shape, 4))
-                        ov_l[..., 0] = 1.0; ov_l[..., 3] = m_lesion * 0.5
-                        axes[i+1].imshow(ov_l)
-                        
-                    if m_cow.sum() > 0:
-                        ov_c = np.zeros((*m_cow.shape, 4))
-                        ov_c[..., 1] = 1.0; ov_c[..., 3] = m_cow * 0.4
-                        axes[i+1].imshow(ov_c)
-                        
-                    if h_lvo.max() > 0:
-                        axes[i+1].imshow(h_lvo, cmap='hot', alpha=0.6, vmin=0, vmax=1)
-                    
-                axes[i+1].set_title(f"Model: {name.upper()}")
-        else:
-            axes[i+1].text(0.5, 0.5, f"Missing {name}.pt", ha='center')
-    
-    save_path = os.path.join(args.save_dir, f"compare_{os.path.basename(random_file).replace('.npy','.png')}")
+            if row == 0:
+                ax.set_title(f"Model: {name.upper()}")
+
+    save_path = os.path.join(args.save_dir, f"compare_8_cases.png")
     os.makedirs(args.save_dir, exist_ok=True)
-    plt.tight_layout()
-    
     if not args.no_save:
-        plt.savefig(save_path)
-        print(f"[Compare] Đã lưu bảng so sánh tại: {save_path}")
-    
-    # Hiển thị ảnh trên log (Hoạt động với %run)
+        plt.savefig(save_path, bbox_inches='tight')
+        print(f"[Compare] Đã lưu bảng so sánh 8 trường hợp tại: {save_path}")
     plt.show()
 
 if __name__ == "__main__":

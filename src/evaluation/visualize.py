@@ -224,10 +224,23 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     axes[1, 1].imshow(sig_lvo, cmap="jet", alpha=0.6, vmin=0, vmax=1)
     axes[1, 1].set_title("LVO Heatmap (AI)"); axes[1, 1].axis("off")
 
-    # Lesion Heatmap (AI) - Heatmap như LVO mà là của Lesion
+    # Lesion Error Map (AI)
     axes[1, 2].imshow(cta_img, cmap="bone")
-    axes[1, 2].imshow(sig_lesion, cmap="jet", alpha=0.6, vmin=0, vmax=1)
-    axes[1, 2].set_title("Lesion Heatmap (AI)"); axes[1, 2].axis("off")
+    
+    # Tính toán TP, FP, FN cho Lesion
+    err_map = np.zeros((*pr_lesion_bin.shape, 3))
+    tp_mask = (pr_lesion_bin == 1) & (gt_lesion == 1)
+    fp_mask = (pr_lesion_bin == 1) & (gt_lesion == 0)
+    fn_mask = (pr_lesion_bin == 0) & (gt_lesion == 1)
+    
+    err_map[..., 0] = fp_mask * 1.0 # Báo ảo (FP) -> Đỏ
+    err_map[..., 1] = tp_mask * 1.0 # Bắt đúng (TP) -> Xanh lục
+    err_map[..., 2] = fn_mask * 1.0 # Bỏ sót (FN) -> Xanh dương
+    
+    alpha_mask = (tp_mask | fp_mask | fn_mask).astype(float) * 0.7
+    
+    axes[1, 2].imshow(err_map, alpha=alpha_mask)
+    axes[1, 2].set_title("Lesion Error Map (FP: Đỏ, FN: Xanh, TP: Lục)"); axes[1, 2].axis("off")
 
     # Legend
     patches = [
