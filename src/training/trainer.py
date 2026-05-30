@@ -103,27 +103,26 @@ class Trainer:
                         elif "cow" in n.lower(): gn["c"] += sq_val
                         elif "encoder" in n.lower() or "features" in n.lower(): gn["e"] += sq_val
                 
-                print(f"    [GRAD] B{batch_idx:03d} | 🎯 LVO: {gn['v']**0.5:.3f} | 🔴 Lesion: {gn['l']**0.5:.3f} | 🟢 CoW: {gn['c']**0.5:.3f} | 🧠 Enc: {gn['e']**0.5:.3f}")
+                print(f"    [GRAD] B{batch_idx:03d} | 🔴 Les: {gn['l']**0.5:.2f} 🎯 LVO: {gn['v']**0.5:.2f} 🟢 CoW: {gn['c']**0.5:.2f} 🧠 Enc: {gn['e']**0.5:.2f}")
+                
+                enc_str, guide_str = "", ""
                 if hasattr(self.pcgrad, '_enc_debug') and self.pcgrad._enc_debug is not None:
                     _ed = self.pcgrad._enc_debug
-                    _n = _ed['norms']
-                    _c = _ed['cosine']
-                    print(f"    [ENC_GRAD] Lesion→Enc: {_n['Lesion']:.3f} | LVO→Enc: {_n['LVO']:.3f} | CoW→Enc: {_n['CoW']:.3f}")
-                    print(f"    [ENC_COS]  cos(L,V)={_c['L,V']:+.4f} | cos(L,C)={_c['L,C']:+.4f} | cos(V,C)={_c['V,C']:+.4f}")
+                    _n, _c = _ed['norms'], _ed['cosine']
+                    enc_str = f"| Enc_Norm[L:{_n['Lesion']:.1f} V:{_n['LVO']:.1f} C:{_n['CoW']:.1f}] cos[LV:{_c['L,V']:+.2f} LC:{_c['L,C']:+.2f} VC:{_c['V,C']:+.2f}]"
                     
                 raw = self.model.module if hasattr(self.model, "module") else self.model
-                if hasattr(raw.decoder, "_lvo_guidance_grad_norm"):
-                    # Unscale guidance grad
-                    g_norm = raw.decoder._lvo_guidance_grad_norm
-                    if self.scaler is not None:
-                        g_norm /= self.scaler.get_scale()
-                    print(f"    [GUIDANCE] LVO Guidance Flow Norm: {g_norm:.4f}")
-                
                 if hasattr(raw.decoder, "_lesion_guidance_grad_norm"):
                     g_norm_l = raw.decoder._lesion_guidance_grad_norm
-                    if self.scaler is not None:
-                        g_norm_l /= self.scaler.get_scale()
-                    print(f"    [GUIDANCE] Lesion Guidance Flow Norm: {g_norm_l:.4f}")
+                    if self.scaler is not None: g_norm_l /= self.scaler.get_scale()
+                    guide_str += f" L:{g_norm_l:.3f}"
+                if hasattr(raw.decoder, "_lvo_guidance_grad_norm"):
+                    g_norm = raw.decoder._lvo_guidance_grad_norm
+                    if self.scaler is not None: g_norm /= self.scaler.get_scale()
+                    guide_str += f" V:{g_norm:.3f}"
+                
+                if enc_str or guide_str:
+                    print(f"    [INFO] Guide_Flow[{guide_str.strip()}] {enc_str}")
 
             # [FIX 1.3] Per-task gradient clip cho các nhánh để bảo vệ encoder (Bệnh 3)
             raw = self.model.module if hasattr(self.model, "module") else self.model
@@ -161,7 +160,7 @@ class Trainer:
             # Compute and print diagnostic stats
             denom = self._diag_lvo_tp + 0.5 * (self._diag_lvo_fp + self._diag_lvo_fn)
             lvo_train_dice = (self._diag_lvo_tp / denom) if denom > 0 else 0.0
-            print(f"    [LVO DIAGNOSTICS] Train Dice: {lvo_train_dice*100:.2f}% (TP={int(self._diag_lvo_tp)} FP={int(self._diag_lvo_fp)} FN={int(self._diag_lvo_fn)}) | Max Prob: {self._diag_lvo_max:.4f}")
+            print(f"    [LVO Train] Dice: {lvo_train_dice*100:.2f}% (TP={int(self._diag_lvo_tp)} FP={int(self._diag_lvo_fp)} FN={int(self._diag_lvo_fn)}) | Max_P: {self._diag_lvo_max:.3f}")
             # Reset diagnostics for next epoch
             self._diag_lvo_tp = self._diag_lvo_fp = self._diag_lvo_fn = 0
             self._diag_lvo_max = 0.0
@@ -328,8 +327,7 @@ class Trainer:
         
         if self.rank == 0:
             # Log LVO Summary (Global + Patient)
-            print(f"    [LVO Summary] Dice: {lvo_dice:.2f}% (TP={lvo_stats['tp']} FP={lvo_stats['fp']} FN={lvo_stats['fn']}) | Threshold={lvo_thr:.2f}")
-            print(f"    [LVO Patient] Acc: {pat['accuracy']*100:.1f}% ({pat['tp']+pat['tn']}/{pat['n']}) | TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']} | BalAcc={pat['bal_acc']*100:.1f}%")
+            print(f"    [LVO Val] Dice: {lvo_dice:.2f}% (TP={lvo_stats['tp']:.0f} FP={lvo_stats['fp']:.0f} FN={lvo_stats['fn']:.0f}) | Pat_Acc: {pat['accuracy']*100:.1f}% (TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']})")
             # Visualize sample tốt nhất (sau khi đã duyệt toàn bộ val loop)
             if should_vis and vis_candidates:
                 best = select_best_sample(vis_candidates)

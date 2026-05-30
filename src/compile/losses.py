@@ -129,8 +129,7 @@ class ModifiedFocalLoss(nn.Module):
         slice_loss = torch.nan_to_num(slice_loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=20000.0)
         
         if debug:
-            num_pos_val = int(pos_mask.sum().item())
-            print(f"      [MFL_DEBUG] pos_px={num_pos_val} mean_loss={slice_loss.mean().item():.4f}")
+            pass # Removed debug print
 
         if self.reduction == 'mean':
             return slice_loss.mean()
