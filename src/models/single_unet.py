@@ -176,6 +176,9 @@ class SingleEncoderTripleDecoder(nn.Module):
         self.cow_path    = SingleTaskPath(in_ch_task, config, "cow", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=0)
         self.lvo_path    = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
         self.lesion_path = SingleTaskPath(in_ch_task, config, "lesion", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=32)
+        
+        # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW
+        self.guidance_dropout = nn.Dropout2d(p=0.3)
 
     def forward(self, skips: List[torch.Tensor], epoch: int = 0):
         s1, s2, s3, s4, s5 = skips
@@ -200,6 +203,9 @@ class SingleEncoderTripleDecoder(nn.Module):
         
         # --- Lesion nhận Guidance từ CoW và LVO ---
         guidance_for_lesion = torch.cat([f_cow.detach(), f_lvo.detach()], dim=1)
+        # Ép Lesion tự lực cánh sinh bằng cách thi thoảng tắt một số kênh Guidance
+        guidance_for_lesion = self.guidance_dropout(guidance_for_lesion)
+        
         if self.training:
             guidance_for_lesion.requires_grad_(True)
             def lesion_guidance_hook(grad):
