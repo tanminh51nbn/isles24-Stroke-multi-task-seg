@@ -36,8 +36,8 @@ loss:
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*F1_LVO + w3*Dice_CoW
 composite_score:
-  dice_lesion_weight: 0.44
-  f1_lvo_weight: 0.44
+  dice_lesion_weight: 0.45
+  dice_lvo_weight: 0.45
   dice_cow_weight: 0.12
   thresholds:
     lesion: 0.5

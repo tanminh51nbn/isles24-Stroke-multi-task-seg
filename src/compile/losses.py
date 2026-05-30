@@ -120,12 +120,13 @@ class ModifiedFocalLoss(nn.Module):
         slice_neg_loss = neg_loss.sum(dim=(1, 2, 3))
         
         slice_num_pos = pos_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
+        slice_num_neg = neg_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
         
-        # [FIX] CHUẨN CENTERNET: Chia tổng loss cho số lượng điểm dương tính
-        # Bỏ hoàn toàn slice_weight_pos khổng lồ gây mất cân bằng gradient
-        slice_loss = (slice_pos_loss + slice_neg_loss) / slice_num_pos
+        # Bù trừ mất cân bằng: Phạt dương tính (nhỏ) và phạt âm tính (lớn) được cân bằng lại
+        slice_weight_pos = slice_num_neg / slice_num_pos
+        slice_loss = (slice_pos_loss * slice_weight_pos + slice_neg_loss) / slice_num_neg
         
-        slice_loss = torch.nan_to_num(slice_loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=100.0)
+        slice_loss = torch.nan_to_num(slice_loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=20000.0)
         
         if debug:
             num_pos_val = int(pos_mask.sum().item())

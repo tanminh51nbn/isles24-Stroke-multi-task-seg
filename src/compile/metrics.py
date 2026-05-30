@@ -133,17 +133,17 @@ def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold:
     return {"tp": tp_sum, "fp": fp_sum, "fn": fn_sum}
 
 
-def finalize_lvo_f1(lvo_stats: dict) -> float:
+def finalize_lvo_dice(lvo_stats: dict) -> float:
     """Tính Distance-Weighted Soft Dice (ghi đè tên hàm cũ)."""
     tp, fp, fn = lvo_stats["tp"], lvo_stats["fp"], lvo_stats["fn"]
     dice = (2 * tp) / (2 * tp + fp + fn + 1e-8)
     return dice * 100.0
 
 
-def f1_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None) -> float:
+def dice_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None) -> float:
     """Distance-Weighted Soft Dice (per-batch, dùng cho debug)."""
     stats = accumulate_lvo_stats(logits, targets, threshold, lvo_cls)
-    return finalize_lvo_f1(stats)
+    return finalize_lvo_dice(stats)
 
 
 def alcd_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
@@ -332,16 +332,16 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
         lvo_stats["tp"] += batch_stats["tp"]
         lvo_stats["fp"] += batch_stats["fp"]
         lvo_stats["fn"] += batch_stats["fn"]
-        f1_lvo = 0.0  # Sẽ được tính ở cuối epoch bởi finalize_lvo_f1
+        dice_lvo = 0.0  # Sẽ được tính ở cuối epoch bởi finalize_lvo_dice
     else:
-        f1_lvo = f1_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], lvo_cls=lvo_cls)
+        dice_lvo = dice_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], lvo_cls=lvo_cls)
     
     # CoW Metrics
     d_cow = dice_score(preds["cow"], targets[:, 2:3], threshold=t["cow"]).item()
 
     w = weights
     comp = (w["dice_lesion_weight"] * d_lesion + 
-            w["f1_lvo_weight"]      * (f1_lvo/100.0) + 
+            w["dice_lvo_weight"]    * (dice_lvo/100.0) + 
             w["dice_cow_weight"]    * d_cow)
 
     return {
@@ -349,7 +349,7 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
         "dice_lesion_pos": d_lesion_pos,  # [FIX C] Dice trên Lesion-positive slice — metric thực cho PGW
         "aad_lesion":      aad_lesion,
         "alcd_lesion":     alcd_lesion,
-        "f1_lvo":          f1_lvo,
+        "dice_lvo":        dice_lvo,
         "dice_cow":        d_cow,
         "composite":       comp
     }

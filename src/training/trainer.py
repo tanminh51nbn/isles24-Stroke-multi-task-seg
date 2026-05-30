@@ -11,7 +11,7 @@ from typing import Optional
 import math
 
 from compile.metrics import (
-    compute_all_metrics, finalize_lvo_f1, accumulate_lvo_stats,
+    compute_all_metrics, finalize_lvo_dice, accumulate_lvo_stats,
     accumulate_patient_lvo_stats, finalize_patient_lvo_acc,
     get_lvo_threshold,
 )
@@ -160,8 +160,8 @@ class Trainer:
                 
             # Compute and print diagnostic stats
             denom = self._diag_lvo_tp + 0.5 * (self._diag_lvo_fp + self._diag_lvo_fn)
-            lvo_train_f1 = (self._diag_lvo_tp / denom) if denom > 0 else 0.0
-            print(f"    [LVO DIAGNOSTICS] Train F1: {lvo_train_f1*100:.2f}% (TP={int(self._diag_lvo_tp)} FP={int(self._diag_lvo_fp)} FN={int(self._diag_lvo_fn)}) | Max Prob: {self._diag_lvo_max:.4f}")
+            lvo_train_dice = (self._diag_lvo_tp / denom) if denom > 0 else 0.0
+            print(f"    [LVO DIAGNOSTICS] Train Dice: {lvo_train_dice*100:.2f}% (TP={int(self._diag_lvo_tp)} FP={int(self._diag_lvo_fp)} FN={int(self._diag_lvo_fn)}) | Max Prob: {self._diag_lvo_max:.4f}")
             # Reset diagnostics for next epoch
             self._diag_lvo_tp = self._diag_lvo_fp = self._diag_lvo_fn = 0
             self._diag_lvo_max = 0.0
@@ -317,18 +317,18 @@ class Trainer:
             avg_v_lvo = sum_v_lvo / max(n_b, 1)
             avg_v_cow = sum_v_cow / max(n_b, 1)
 
-        # Tính F1 Global một lần duy nhất sau khi đã gom toàn bộ Val set
-        af1_v = finalize_lvo_f1(lvo_stats)
-        
         # Tính patient LVO metrics trên toàn bộ tập dữ liệu đã gộp
         pat = finalize_patient_lvo_acc(
             patient_stats,
             threshold=lvo_thr
         )
         
+        # [FIX] Finalize Global LVO Dice
+        lvo_dice = finalize_lvo_dice(lvo_stats)
+        
         if self.rank == 0:
             # Log LVO Summary (Global + Patient)
-            print(f"    [LVO Summary] F1: {af1_v:.2f}% (TP={lvo_stats['tp']} FP={lvo_stats['fp']} FN={lvo_stats['fn']}) | Threshold={lvo_thr:.2f}")
+            print(f"    [LVO Summary] Dice: {lvo_dice:.2f}% (TP={lvo_stats['tp']} FP={lvo_stats['fp']} FN={lvo_stats['fn']}) | Threshold={lvo_thr:.2f}")
             print(f"    [LVO Patient] Acc: {pat['accuracy']*100:.1f}% ({pat['tp']+pat['tn']}/{pat['n']}) | TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']} | BalAcc={pat['bal_acc']*100:.1f}%")
             # Visualize sample tốt nhất (sau khi đã duyệt toàn bộ val loop)
             if should_vis and vis_candidates:
@@ -343,9 +343,9 @@ class Trainer:
                     )
 
         w = self.metric_weights
-        # [FIX] Dùng Slice-level F1 (đã được đồng bộ hoàn hảo qua 2 GPU) thay vì Patient-level (bị lỗi chia cắt DDP)
-        slice_f1_lvo = af1_v / 100.0
-        comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * slice_f1_lvo + w["dice_cow_weight"] * ad_c)
+        # [FIX] Dùng Slice-level Dice (đã được đồng bộ hoàn hảo qua 2 GPU) thay vì Patient-level (bị lỗi chia cắt DDP)
+        slice_dice_lvo = lvo_dice / 100.0
+        comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * slice_dice_lvo + w["dice_cow_weight"] * ad_c)
         
         p_l, p_v, p_c = 1.0, 1.0, 1.0
         if hasattr(self.loss_fn, "current_weights"):
@@ -354,8 +354,8 @@ class Trainer:
 
         return {
             "val_loss": avg_l, "val_main": avg_m, "val_raw": avg_raw, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
-            "f1_lvo": af1_v, "dice_cow": ad_c,
-            "f1_lvo_patient": pat.get("f1", 0.0) * 100.0,
+            "dice_lvo": lvo_dice, "dice_cow": ad_c,
+            "dice_lvo_patient": pat.get("f1", 0.0) * 100.0,
             "p_lesion": p_l,
             "p_lvo": p_v,
             "p_cow": p_c,
@@ -390,7 +390,7 @@ class Trainer:
                 lr_enc = self.optimizer.param_groups[0]['lr']
                 lr_dec = self.optimizer.param_groups[1]['lr']
                 print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR (En/De): {lr_enc:.1e}/{lr_dec:.1e} | Comp: {v_m['composite']:.4f}")
-                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} (Pos: {v_m['dice_lesion_pos']:.4f}) | F1_LVO: {v_m['f1_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
+                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} (Pos: {v_m['dice_lesion_pos']:.4f}) | Dice_LVO: {v_m['dice_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
                 print(f"   | [VAL] Loss: {v_m['val_loss']:.4f} (Main: {v_m['val_main']:.4f}, Raw: {v_m['val_raw']:.4f}) | AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.4f}")
                 print(f"   | [TRA] Loss: {t_m['train_loss']:.4f} (Main: {t_m['train_main']:.4f}, Raw: {t_m['train_raw']:.4f})\n{'-'*80}", flush=True)
             self.history.append({**t_m, **v_m, "epoch": epoch + 1})
