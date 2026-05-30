@@ -11,7 +11,7 @@ from typing import Optional
 import math
 
 from compile.metrics import (
-    compute_all_metrics, finalize_lvo_f1,
+    compute_all_metrics, finalize_lvo_f1, accumulate_lvo_stats,
     accumulate_patient_lvo_stats, finalize_patient_lvo_acc,
     get_lvo_threshold,
 )
@@ -70,13 +70,12 @@ class Trainer:
                 with torch.no_grad():
                     lvo_p = torch.sigmoid(preds["lvo"])
                     self._diag_lvo_max = max(self._diag_lvo_max, lvo_p.max().item())
-                    l_thr = 0.23 # default threshold for metric
-                    pred_m = (lvo_p > l_thr).float()
-                    gt_lvo = lbl[:, 1:2]
-                    self._diag_lvo_tp += (pred_m * gt_lvo).sum().item()
-                    self._diag_lvo_fp += (pred_m * (1 - gt_lvo)).sum().item()
-                    self._diag_lvo_fn += ((1 - pred_m) * gt_lvo).sum().item()
-
+                    l_thr = get_lvo_threshold(epoch, self.metric_weights)
+                    max_r = float(self.config.get("loss", {}).get("lvo", {}).get("max_radius", 10.0))
+                    stats = accumulate_lvo_stats(preds["lvo"], lbl[:, 1:2], threshold=l_thr, lvo_cls=preds.get("lvo_cls", None), max_radius=max_r)
+                    self._diag_lvo_tp += stats["tp"]
+                    self._diag_lvo_fp += stats["fp"]
+                    self._diag_lvo_fn += stats["fn"]
             task_losses = [losses["total_lesion"], losses["total_lvo"], losses["total_cow"]]
             is_finite = torch.tensor(1.0 if all(torch.isfinite(l) for l in task_losses) else 0.0, device=self.device)
             if dist.is_initialized():
@@ -228,7 +227,8 @@ class Trainer:
             # Override thresholds.lvo = lvo_thr (dynamic ramp) cho batch này
             _t = {**self.metric_weights, "thresholds": {**self.metric_weights.get("thresholds", {}), "lvo": lvo_thr}}
             # Truyền lvo_stats và epoch vào để gom TP/FP/FN toàn cục
-            metrics = compute_all_metrics(preds, lbl, _t, lvo_stats=lvo_stats, epoch=epoch)
+            max_r = float(self.config.get("loss", {}).get("lvo", {}).get("max_radius", 10.0))
+            metrics = compute_all_metrics(preds, lbl, _t, lvo_stats=lvo_stats, epoch=epoch, lvo_max_radius=max_r)
 
             sum_d_l  += metrics["dice_lesion"]
             sum_d_c  += metrics["dice_cow"]

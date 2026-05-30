@@ -11,7 +11,7 @@ Hệ quy chiếu chung với các đội vô địch:
 import os
 import torch
 import numpy as np
-from scipy.ndimage import label
+from scipy.ndimage import label, distance_transform_edt
 
 
 def get_lvo_threshold(epoch: int, cfg: dict) -> float:
@@ -76,40 +76,72 @@ def aad_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.
     return (sum(diff_percentages) / len(diff_percentages)) * 100.0
 
 
-def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None) -> dict:
-    """Gom TP/FP/FN từng batch để tính F1 global sau khi duyệt xong Val set."""
+def get_distance_penalty_weight(gt_mask: np.ndarray, max_radius: float = 10.0) -> np.ndarray:
+    """
+    Tạo bản đồ trọng số phạt FP dựa trên khoảng cách đến nhãn gốc.
+    gt_mask: (H, W) nhị phân 0/1.
+    """
+    if gt_mask.max() == 0:
+        return np.ones_like(gt_mask) # Nếu não khỏe 100%, phạt tối đa mọi nơi
+        
+    # Tính khoảng cách Euclidean từ mỗi pixel ngoài nhãn đến pixel nhãn gần nhất
+    dist = distance_transform_edt(1 - gt_mask)
+    
+    # Chuẩn hóa khoảng cách thành trọng số W (0.0 đến 1.0)
+    # Vùng trong nhãn (dist=0) -> W=0
+    # Xa hơn max_radius -> W=1.0
+    W = np.clip(dist / max_radius, 0.0, 1.0)
+    return W
+
+
+def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None, max_radius: float = 10.0) -> dict:
+    """Gom Soft TP, FP, FN từng batch dùng Distance-Weighted F1."""
     probs = torch.sigmoid(logits)
     if lvo_cls is not None:
         probs_cls = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
         probs = probs * probs_cls
-    preds = (probs > threshold).float().cpu().numpy()
-    gt    = (targets > 0.1).float().cpu().numpy()
+        
+    # Áp dụng ngưỡng: Dưới ngưỡng -> 0, Trên ngưỡng -> Giữ nguyên độ tự tin P
+    preds = (probs > threshold).float() * probs
     
-    tp, fp, fn = 0, 0, 0
-    for i in range(preds.shape[0]):
-        p_slice = preds[i, 0]
-        g_slice = gt[i, 0]
-        has_p = p_slice.max() > 0
-        has_g = g_slice.max() > 0
-        if has_p and has_g:
-            if (p_slice * g_slice).sum() > 0: tp += 1
-            else: fp += 1; fn += 1
-        elif has_p and not has_g: fp += 1
-        elif not has_p and has_g: fn += 1
-    return {"tp": tp, "fp": fp, "fn": fn}
+    # Nhãn nhị phân cứng
+    gt_bin = (targets > 0.5).float()
+    
+    preds_np = preds.detach().cpu().numpy()
+    gt_np = gt_bin.detach().cpu().numpy()
+    
+    tp_sum = 0.0
+    fp_sum = 0.0
+    fn_sum = 0.0
+    
+    for i in range(preds_np.shape[0]):
+        p_slice = preds_np[i, 0]
+        g_slice = gt_np[i, 0]
+        
+        # Lấy bản đồ trọng số phạt FP
+        W_slice = get_distance_penalty_weight(g_slice, max_radius)
+        
+        # TP: Chỉ tính bên TRONG nhãn (g_slice = 1)
+        tp_sum += (p_slice * g_slice).sum()
+        
+        # FP: Chỉ tính bên NGOÀI nhãn, nhân với trọng số phạt W
+        fp_sum += (p_slice * W_slice).sum()
+        
+        # FN: Phần bỏ lỡ TRONG nhãn
+        fn_sum += ((1.0 - p_slice) * g_slice).sum()
+        
+    return {"tp": tp_sum, "fp": fp_sum, "fn": fn_sum}
 
 
 def finalize_lvo_f1(lvo_stats: dict) -> float:
-    """Tính F1 cuối cùng từ TP/FP/FN đã gom trên toàn Val set."""
+    """Tính Distance-Weighted Soft Dice (ghi đè tên hàm cũ)."""
     tp, fp, fn = lvo_stats["tp"], lvo_stats["fp"], lvo_stats["fn"]
-    precision = tp / (tp + fp + 1e-8)
-    recall    = tp / (tp + fn + 1e-8)
-    f1 = (2 * precision * recall) / (precision + recall + 1e-8)
-    return f1 * 100.0
+    dice = (2 * tp) / (2 * tp + fp + fn + 1e-8)
+    return dice * 100.0
 
 
 def f1_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None) -> float:
-    """Instance-level F1 Score cho LVO Detection (per-batch, dùng cho debug)."""
+    """Distance-Weighted Soft Dice (per-batch, dùng cho debug)."""
     stats = accumulate_lvo_stats(logits, targets, threshold, lvo_cls)
     return finalize_lvo_f1(stats)
 
@@ -265,7 +297,7 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
     return {"accuracy": acc, "tp": tp, "fp": fp, "fn": fn, "tn": tn, "n": n, "f1": f1_patient, "bal_acc": bal_acc}
 
 
-def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None, epoch: int = 999) -> dict:
+def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None, epoch: int = 999, lvo_max_radius: float = 10.0) -> dict:
     t = weights.get("thresholds", {"lesion": 0.45, "lvo": 0.05, "cow": 0.5})
     # [Solution B] Tắt lesion_cls gating trong evaluation.
     # Cls head vẫn được train (cung cấp gradient qua loss) nhưng KHÔNG nhân vào
@@ -296,7 +328,7 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
     # LVO: Gom stats nếu được cung cấp lvo_stats dict (Global mode)
     # Ngược lại tính per-batch như cũ (dùng cho debug)
     if lvo_stats is not None:
-        batch_stats = accumulate_lvo_stats(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], lvo_cls=lvo_cls)
+        batch_stats = accumulate_lvo_stats(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], lvo_cls=lvo_cls, max_radius=lvo_max_radius)
         lvo_stats["tp"] += batch_stats["tp"]
         lvo_stats["fp"] += batch_stats["fp"]
         lvo_stats["fn"] += batch_stats["fn"]
