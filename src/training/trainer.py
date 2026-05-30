@@ -119,6 +119,12 @@ class Trainer:
                     if self.scaler is not None:
                         g_norm /= self.scaler.get_scale()
                     print(f"    [GUIDANCE] LVO Guidance Flow Norm: {g_norm:.4f}")
+                
+                if hasattr(raw.decoder, "_lesion_guidance_grad_norm"):
+                    g_norm_l = raw.decoder._lesion_guidance_grad_norm
+                    if self.scaler is not None:
+                        g_norm_l /= self.scaler.get_scale()
+                    print(f"    [GUIDANCE] Lesion Guidance Flow Norm: {g_norm_l:.4f}")
 
             # [FIX 1.3] Per-task gradient clip cho các nhánh để bảo vệ encoder (Bệnh 3)
             raw = self.model.module if hasattr(self.model, "module") else self.model

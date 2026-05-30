@@ -174,8 +174,8 @@ class SingleEncoderTripleDecoder(nn.Module):
         in_ch_task = dec_ch[1] # output of dec3
         
         self.cow_path    = SingleTaskPath(in_ch_task, config, "cow", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=0)
-        self.lesion_path = SingleTaskPath(in_ch_task, config, "lesion", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
-        self.lvo_path    = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=32)
+        self.lvo_path    = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
+        self.lesion_path = SingleTaskPath(in_ch_task, config, "lesion", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=32)
 
     def forward(self, skips: List[torch.Tensor], epoch: int = 0):
         s1, s2, s3, s4, s5 = skips
@@ -188,21 +188,25 @@ class SingleEncoderTripleDecoder(nn.Module):
         
         f_cow, cow_auxs = self.cow_path(x_shared, [s2, s1])
         
-        f_lesion, lesion_auxs = self.lesion_path(x_shared, [s2, s1], guidance=f_cow.detach())
-        
-        guidance_for_lvo = torch.cat([f_cow.detach(), f_lesion.detach()], dim=1)
+        # --- LVO nhận Guidance từ CoW ---
+        guidance_for_lvo = f_cow.detach()
         if self.training:
             guidance_for_lvo.requires_grad_(True)
-            
             def lvo_guidance_hook(grad):
-                # Ghi lại norm của gradient chảy qua guidance của LVO
-                norm = grad.norm(2).item()
-                # Lưu vào thuộc tính tạm để in ra ở cấp trainer nếu cần
-                self._lvo_guidance_grad_norm = norm
-                
+                self._lvo_guidance_grad_norm = grad.norm(2).item()
             guidance_for_lvo.register_hook(lvo_guidance_hook)
             
         f_lvo, lvo_auxs = self.lvo_path(x_shared, [s2, s1], guidance=guidance_for_lvo)
+        
+        # --- Lesion nhận Guidance từ CoW và LVO ---
+        guidance_for_lesion = torch.cat([f_cow.detach(), f_lvo.detach()], dim=1)
+        if self.training:
+            guidance_for_lesion.requires_grad_(True)
+            def lesion_guidance_hook(grad):
+                self._lesion_guidance_grad_norm = grad.norm(2).item()
+            guidance_for_lesion.register_hook(lesion_guidance_hook)
+            
+        f_lesion, lesion_auxs = self.lesion_path(x_shared, [s2, s1], guidance=guidance_for_lesion)
 
         aux_masks = {
             "lesion": lesion_auxs,
