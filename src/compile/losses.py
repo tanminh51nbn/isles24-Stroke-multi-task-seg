@@ -330,15 +330,15 @@ class MultiTaskLoss(nn.Module):
         # 1. Lesion Task — Stroke-Optimized Compound Loss (Focal Loss + Asymmetric Tversky)
         # Thay thế hoàn toàn MFL bằng Compound Loss chuyên biệt cho vùng nhồi máu đa dạng kích thước
         self.lesion_main_loss = CompoundDiceBCELoss(
-            alpha=l_cfg["lesion"].get("alpha", 0.3),                 # Phạt False Positive nhẹ hơn (cho phép vươn vòi tìm kiếm)
-            beta=l_cfg["lesion"].get("beta", 0.7),                   # Phạt False Negative nặng hơn (ngăn chặn bỏ sót vùng mờ)
+            alpha=l_cfg["lesion"].get("alpha", 0.5),                 # Phạt False Positive nặng hơn
+            beta=l_cfg["lesion"].get("beta", 0.5),                   # Phạt False Negative cân bằng
             batch=l_cfg["lesion"].get("batch_dice", False),          # Tính per-slice để chống vanishing gradient từ mẫu số Tversky khổng lồ
             use_focal=True,                                          # Dùng Focal Loss thay BCE
             focal_gamma=l_cfg["lesion"].get("focal_gamma", 2.0),     # Ép dẹp loss của não khỏe, tập trung vào ranh giới
             reduction='none'                                         # Trả về per-slice vector để áp dụng slice_weights
         )
 
-        self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 3.0)
+        self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 1.5)
         l_l_cls_pos_w = l_cfg["lesion"].get("cls_pos_weight", 2.0)
         self.lesion_cls_loss_fn = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([l_l_cls_pos_w])

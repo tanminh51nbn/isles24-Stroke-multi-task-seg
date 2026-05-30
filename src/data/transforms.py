@@ -143,7 +143,7 @@ class RandomElasticTransform(nn.Module):
     Mô phỏng nhu mô não bị chèn ép do sưng phù (edema).
     Sử dụng Separable Gaussian convolution để làm mịn displacement field trên GPU.
     """
-    def __init__(self, prob: float = 0.2, alpha: float = 15.0, sigma: float = 6.0):
+    def __init__(self, prob: float = 0.4, alpha: float = 15.0, sigma: float = 6.0):
         super().__init__()
         self.prob  = prob
         self.alpha = alpha  # Độ lệch tối đa (pixel)
