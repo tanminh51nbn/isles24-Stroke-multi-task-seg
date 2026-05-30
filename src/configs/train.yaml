@@ -10,7 +10,7 @@ loss:
     alpha: 0.5
     beta: 0.5
     focal_gamma: 2.0
-    slice_pos_weight: 1.5
+    slice_pos_weight: 2
     cls_weight: 0.25
     cls_pos_weight: 2.0
 

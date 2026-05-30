@@ -43,7 +43,7 @@ augmentation:
     translate_px: 10
 
   elastic_transform:
-    prob: 0.2        # Giảm từ 0.35 xuống 0.2 để tránh làm "chảy não" (mất hình dạng giải phẫu)
+    prob: 0.4        # Giảm từ 0.35 xuống 0.2 để tránh làm "chảy não" (mất hình dạng giải phẫu)
     alpha: 15.0
     sigma: 6.0
     alpha_affine: 50
