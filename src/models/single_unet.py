@@ -25,6 +25,33 @@ from models.decoder import ConvBnGelu1x1, ConvBnGelu, LightweightDualAttention, 
 from models.heads import MultiTaskHeads
 
 
+# ─── Módulo Guidance Mềm (Spatial Attention) ──────────────────────────────────
+
+class SpatialAttentionGuidance(nn.Module):
+    """
+    Biến Đặc trưng thô (VD: từ nhánh CoW) thành một Bản đồ Không gian 1 kênh (Đèn pin).
+    Sử dụng cơ chế Residual: Đầu ra = Đặc trưng_Gốc * (1.0 + Đèn_pin).
+    """
+    def __init__(self, guidance_ch: int):
+        super().__init__()
+        self.attn_conv = nn.Sequential(
+            nn.Conv2d(guidance_ch, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x_task, guidance_features):
+        # 1. Resize guidance để khớp với x_task
+        g_interp = F.interpolate(guidance_features, size=x_task.shape[2:], mode='bilinear', align_corners=False)
+        # 2. Tạo bản đồ Đèn pin (0 đến 1)
+        attn_map = self.attn_conv(g_interp)
+        # 3. Residual Soft Attention
+        out = x_task * (1.0 + attn_map)
+        return out, attn_map
+
+
 # ─── Khối Decoder cho 1 Encoder (Single Decoder Block) ─────────────────────────
 
 class SingleDecoderBlock(nn.Module):
@@ -103,13 +130,9 @@ class SingleTaskPath(nn.Module):
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
         
         if guidance_ch > 0:
-            self.guidance_fusion = nn.Sequential(
-                nn.Conv2d(final_ch + guidance_ch, final_ch, kernel_size=1),
-                nn.BatchNorm2d(final_ch),
-                nn.GELU()
-            )
+            self.guidance_attn = SpatialAttentionGuidance(guidance_ch)
         else:
-            self.guidance_fusion = None
+            self.guidance_attn = None
 
     def forward(self, x_shared, skips_task, guidance: Optional[torch.Tensor] = None):
         s2, s1 = skips_task
@@ -120,9 +143,9 @@ class SingleTaskPath(nn.Module):
         x = self.up_final(x)
         x = self.final_conv(x)
         
-        if guidance is not None and self.guidance_fusion is not None:
-            g_interp = F.interpolate(guidance, size=x.shape[2:], mode='bilinear', align_corners=False)
-            x = self.guidance_fusion(torch.cat([x, g_interp], dim=1))
+        if guidance is not None and self.guidance_attn is not None:
+            x, attn_map = self.guidance_attn(x, guidance)
+            # Nếu cần debug, có thể đưa attn_map ra ngoài, nhưng hiện tại ta bỏ qua để giữ API đơn giản.
 
         return x, [None, None, aux2, aux1]
 
