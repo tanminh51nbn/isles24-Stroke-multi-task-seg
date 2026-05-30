@@ -7,10 +7,10 @@
 loss:
   lesion:
     type: "compound_focal_tversky"
-    alpha: 0.3
-    beta: 0.7
+    alpha: 0.5
+    beta: 0.5
     focal_gamma: 2.0
-    slice_pos_weight: 3.0
+    slice_pos_weight: 1.5
     cls_weight: 0.25
     cls_pos_weight: 2.0
 
