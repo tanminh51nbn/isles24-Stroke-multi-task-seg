@@ -343,7 +343,7 @@ class Trainer:
         w = self.metric_weights
         # [FIX] Dùng Slice-level Dice (đã được đồng bộ hoàn hảo qua 2 GPU) thay vì Patient-level (bị lỗi chia cắt DDP)
         slice_dice_lvo = lvo_dice / 100.0
-        comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * slice_dice_lvo + w["dice_cow_weight"] * ad_c)
+        comp = (w["dice_lesion_weight"] * ad_l + w["dice_lvo_weight"] * slice_dice_lvo + w["dice_cow_weight"] * ad_c)
         
         p_l, p_v, p_c = 1.0, 1.0, 1.0
         if hasattr(self.loss_fn, "current_weights"):
