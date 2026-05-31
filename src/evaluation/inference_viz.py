@@ -152,14 +152,10 @@ def run_compare_mode(args, base_model, train_cfg, device):
             
             if name == "lvo":
                 sig = torch.sigmoid(preds["lvo"])
-                cls = preds.get("lvo_cls", None)
-                if cls is not None: sig = sig * torch.sigmoid(cls).view(-1,1,1,1)
                 ax.imshow(sig.numpy()[0,0], cmap='hot', alpha=0.6, vmin=0, vmax=1)
             elif name == "lesion":
                 thresh = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
                 sig = torch.sigmoid(preds["lesion"])
-                cls = preds.get("lesion_cls", None)
-                if cls is not None: sig = sig * torch.sigmoid(cls).view(-1,1,1,1)
                 mask = (sig > thresh).numpy()[0,0]
                 if mask.sum() > 0:
                     ov = np.zeros((*mask.shape, 4))
@@ -170,15 +166,11 @@ def run_compare_mode(args, base_model, train_cfg, device):
                 thresh_c = train_cfg["composite_score"]["thresholds"].get("cow", 0.5)
                 
                 sig_l = torch.sigmoid(preds["lesion"])
-                cls_l = preds.get("lesion_cls", None)
-                if cls_l is not None: sig_l = sig_l * torch.sigmoid(cls_l).view(-1,1,1,1)
                 m_l = (sig_l > thresh_l).numpy()[0,0]
                 
                 m_c = (torch.sigmoid(preds["cow"]) > thresh_c).numpy()[0,0]
                 
                 sig_v = torch.sigmoid(preds["lvo"])
-                cls_v = preds.get("lvo_cls", None)
-                if cls_v is not None: sig_v = sig_v * torch.sigmoid(cls_v).view(-1,1,1,1)
                 h_v = sig_v.numpy()[0,0]
                 
                 if m_l.sum() > 0:
