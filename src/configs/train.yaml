@@ -7,24 +7,25 @@
 loss:
   lesion:
     type: "compound_focal_tversky"
-    alpha: 0.5
-    beta: 0.5
-    focal_gamma: 2.0
+    alpha: 0.3
+    beta: 0.7
+    focal_gamma: 1.25
+    batch_dice: true
     slice_pos_weight: 2
     cls_weight: 0.25
-    cls_pos_weight: 2.0
+    cls_pos_weight: 5.0
 
   lvo:
     type: "modified_focal"
     mfl_alpha: 2.0
     mfl_beta: 2.5
     sigma_init: 5.0
-    sigma_floor: 2.0
+    sigma_floor: 1.5
     sigma_decay: 0.97
     slice_pos_weight: 4.0
     cls_weight: 0.25
-    cls_pos_weight: 2.0
-    max_radius: 15.0
+    cls_pos_weight: 25.0
+    max_radius: 11.0
 
   cow:
     type: "cl_tversky"
@@ -49,7 +50,7 @@ composite_score:
 optimizer:
   type: "adamw"
   lr: 2.5e-4
-  weight_decay: 0.15
+  weight_decay: 0.05
   encoder_lr_scale: 0.01
   eps: 1.0e-7
 
