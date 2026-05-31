@@ -72,8 +72,7 @@ class Trainer:
                     self._diag_lvo_max = max(self._diag_lvo_max, lvo_p.max().item())
                     l_thr = get_lvo_threshold(epoch, self.metric_weights)
                     max_r = float(self.config.get("loss", {}).get("lvo", {}).get("max_radius", 10.0))
-                    lvo_cls_train = preds.get("lvo_cls", None) if epoch >= 4 else None
-                    stats = accumulate_lvo_stats(preds["lvo"], lbl[:, 1:2], threshold=l_thr, lvo_cls=lvo_cls_train, max_radius=max_r)
+                    stats = accumulate_lvo_stats(preds["lvo"], lbl[:, 1:2], threshold=l_thr, max_radius=max_r)
                     self._diag_lvo_tp += stats["tp"]
                     self._diag_lvo_fp += stats["fp"]
                     self._diag_lvo_fn += stats["fn"]
@@ -242,11 +241,9 @@ class Trainer:
                 n_b_pos += 1
 
             paths = batch.get("path", [""] * inp.shape[0])
-            # Tách gating khỏi patient-level LVO trước epoch 25
-            lvo_cls_gating = preds.get("lvo_cls", None) if epoch >= 25 else None
             accumulate_patient_lvo_stats(
                 preds["lvo"], lbl[:, 1:2], paths, patient_stats,
-                threshold=lvo_thr, lvo_cls=lvo_cls_gating
+                threshold=lvo_thr
             )
 
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)
