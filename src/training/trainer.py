@@ -72,7 +72,8 @@ class Trainer:
                     self._diag_lvo_max = max(self._diag_lvo_max, lvo_p.max().item())
                     l_thr = get_lvo_threshold(epoch, self.metric_weights)
                     max_r = float(self.config.get("loss", {}).get("lvo", {}).get("max_radius", 10.0))
-                    stats = accumulate_lvo_stats(preds["lvo"], lbl[:, 1:2], threshold=l_thr, lvo_cls=preds.get("lvo_cls", None), max_radius=max_r)
+                    lvo_cls_train = preds.get("lvo_cls", None) if epoch >= 4 else None
+                    stats = accumulate_lvo_stats(preds["lvo"], lbl[:, 1:2], threshold=l_thr, lvo_cls=lvo_cls_train, max_radius=max_r)
                     self._diag_lvo_tp += stats["tp"]
                     self._diag_lvo_fp += stats["fp"]
                     self._diag_lvo_fn += stats["fn"]

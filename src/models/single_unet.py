@@ -181,7 +181,7 @@ class SingleEncoderTripleDecoder(nn.Module):
         
         self.cow_path    = SingleTaskPath(in_ch_task, config, "cow", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=0)
         self.lvo_path    = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
-        self.lesion_path = SingleTaskPath(in_ch_task, config, "lesion", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=32)
+        self.lesion_path = SingleTaskPath(in_ch_task, config, "lesion", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
         
         # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW (Tăng lên 0.4 chống overfit)
         self.guidance_dropout = nn.Dropout2d(p=0.4)
@@ -207,8 +207,8 @@ class SingleEncoderTripleDecoder(nn.Module):
             
         f_lvo, lvo_auxs = self.lvo_path(x_shared, [s2, s1], guidance=guidance_for_lvo)
         
-        # --- Lesion nhận Guidance từ CoW và LVO ---
-        guidance_for_lesion = torch.cat([f_cow.detach(), f_lvo.detach()], dim=1)
+        # --- Lesion chỉ nhận Guidance từ CoW (Mạch máu sạch) ---
+        guidance_for_lesion = f_cow.detach()
         # Ép Lesion tự lực cánh sinh bằng cách thi thoảng tắt một số kênh Guidance
         guidance_for_lesion = self.guidance_dropout(guidance_for_lesion)
         
