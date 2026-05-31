@@ -47,31 +47,6 @@ class ChannelAttention(nn.Module):
         return x * w  # Scale channel-wise
 
 
-# [T2.1] LVO Binary Classification Branch
-# Cho model học task dễ hơn trước: "có LVO không?" (binary)
-# Signal này dày đặc hơn heatmap loss (BCE trên 1 scalar, không phụ thuộc num_pos)
-class LVOClassificationHead(nn.Module):
-    """Global Avg + Max Pooling → FC → scalar per batch item."""
-    def __init__(self, in_ch: int):
-        super().__init__()
-        mid_ch = max(16, in_ch // 4)
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
-        self.cls = nn.Sequential(
-            nn.Linear(in_ch * 2, mid_ch),
-            nn.GELU(),
-            nn.Dropout(p=0.3),
-            nn.Linear(mid_ch, 1),     # (B, 1)
-        )
-        # Bias init: pi=0.20 → bias = -log((1-0.2)/0.2) = -1.386
-        # Những slide có LVO chiếm ~20% tổng số slice
-        nn.init.constant_(self.cls[-1].bias, -1.386)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        avg_out = self.avg_pool(x).view(x.shape[0], -1)
-        max_out = self.max_pool(x).view(x.shape[0], -1)
-        out = torch.cat([avg_out, max_out], dim=1)
-        return self.cls(out)  # (B, 1) raw logit
 
 
 class ResidualBlock(nn.Module):
@@ -114,27 +89,6 @@ class SegmentationHead(nn.Module):
         return self.conv_out(x)
 
 
-class LesionClassificationHead(nn.Module):
-    """Global Avg + Max Pooling → FC → scalar per batch item."""
-    def __init__(self, in_ch: int):
-        super().__init__()
-        mid_ch = max(16, in_ch // 4)
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
-        self.cls = nn.Sequential(
-            nn.Linear(in_ch * 2, mid_ch),
-            nn.GELU(),
-            nn.Dropout(p=0.3),
-            nn.Linear(mid_ch, 1),     # (B, 1)
-        )
-        # Bias init: pi=0.50 → bias = 0.0
-        nn.init.constant_(self.cls[-1].bias, 0.0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        avg_out = self.avg_pool(x).view(x.shape[0], -1)
-        max_out = self.max_pool(x).view(x.shape[0], -1)
-        out = torch.cat([avg_out, max_out], dim=1)
-        return self.cls(out)  # (B, 1) raw logit
 
 
 class MultiTaskHeads(nn.Module):
@@ -172,12 +126,6 @@ class MultiTaskHeads(nn.Module):
         self.lvo_head    = SegmentationHead(in_ch, out_ch=1, dropout=lvo_drop)
         self.cow_head    = SegmentationHead(in_ch, out_ch=1, dropout=cow_drop)
 
-        # [T2.1] LVO Classification Head (binary: có LVO hay không)
-        self.lvo_cls_head = LVOClassificationHead(in_ch)
-        
-        # [NEW] Lesion Classification Head (binary: có Lesion hay không)
-        self.lesion_cls_head = LesionClassificationHead(in_ch)
-
         # [QUAN TRỌNG] Bias Initialization (Chống sụp đổ màn hình)
         # 1. LVO: [T2] Đổi bias -4.595 → -2.0: σ(-2.0)=0.12
         # Bias cũ (σ=0.01) quá conservative, model không tỉnh nổi sau 70 epoch
@@ -203,6 +151,4 @@ class MultiTaskHeads(nn.Module):
             "lesion":  self.lesion_head(f_lesion),
             "lvo":     self.lvo_head(f_lvo),
             "cow":     self.cow_head(features["cow"]),
-            "lvo_cls": self.lvo_cls_head(f_lvo),  # [T2.1] (B, 1) binary LVO cls logit
-            "lesion_cls": self.lesion_cls_head(f_lesion),  # [NEW] (B, 1) binary Lesion cls logit
         }
