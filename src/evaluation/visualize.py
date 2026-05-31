@@ -157,11 +157,6 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     sig_lesion = sig_lesion_t.numpy()
     
     sig_lvo_t = torch.sigmoid(preds["lvo"].squeeze()).float().cpu()
-    lvo_cls = preds.get("lvo_cls", None)
-    if lvo_cls is not None:
-        cls_prob = torch.sigmoid(lvo_cls).cpu().squeeze().item()
-        if cls_prob < 0.5:
-            sig_lvo_t = sig_lvo_t * 0.0
     sig_lvo = sig_lvo_t.numpy()
     sig_cow    = torch.sigmoid(preds["cow"].squeeze()).float().cpu().numpy()
 
