@@ -30,11 +30,12 @@ from models.heads import MultiTaskHeads
 class FusedSpatialAttention(nn.Module):
     """
     Kết hợp Đặc trưng của Task hiện tại và Đặc trưng Hướng dẫn (CoW) 
-    để tự động sinh ra Bản đồ Không gian 1 kênh (Đèn pin) có khả năng Dập tắt (Masking).
-    Đầu ra = Đặc trưng_Gốc * Đèn_pin.
+    để tự động sinh ra Bản đồ Không gian 1 kênh (Đèn pin) có khả năng Dập tắt (Masking)
+    hoặc Tăng cường (Residual).
     """
-    def __init__(self, task_ch: int, guidance_ch: int):
+    def __init__(self, task_ch: int, guidance_ch: int, residual: bool = True):
         super().__init__()
+        self.residual = residual
         self.attn_conv = nn.Sequential(
             nn.Conv2d(task_ch + guidance_ch, 16, kernel_size=3, padding=1),
             nn.BatchNorm2d(16),
@@ -50,8 +51,11 @@ class FusedSpatialAttention(nn.Module):
         fused = torch.cat([x_task, g_interp], dim=1)
         # 3. Tạo bản đồ Đèn pin (0 đến 1)
         attn_map = self.attn_conv(fused)
-        # 4. Hard Attention (cho phép dập tắt báo ảo)
-        out = x_task * attn_map
+        # 4. Áp dụng Attention (Residual giúp chống 'mù' nếu guidance thiếu sót)
+        if self.residual:
+            out = x_task + x_task * attn_map
+        else:
+            out = x_task * attn_map
         return out, attn_map
 
 
