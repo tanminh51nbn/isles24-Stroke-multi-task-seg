@@ -30,16 +30,16 @@ decoder:
   final_ch: 16
   dropout:
     shared: 0.2
-    cow: 0.15
+    cow: 0.1
     lvo: 0.2
-    lesion: 0.35 # Tăng mạnh cho Lesion decoder block
+    lesion: 0.3 # Tăng mạnh cho Lesion decoder block
 
 # ── Heads (Residual Task Blocks) ────────────────────────────────
 heads:
   activation: "GELU"
   lesion:
     out_channels: 1
-    dropout: 0.5 # Tăng mạnh cho Lesion Head
+    dropout: 0.4 # Tăng mạnh cho Lesion Head
   lvo:
     out_channels: 1
     dropout: 0.3
