@@ -38,11 +38,8 @@ def get_lvo_threshold(epoch: int, cfg: dict) -> float:
         return thresh_freeze + t * (thresh_unfreeze - thresh_freeze)
 
 
-def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, smooth: float = 1e-6, cls_logits: torch.Tensor = None) -> torch.Tensor:
+def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, smooth: float = 1e-6) -> torch.Tensor:
     probs = torch.sigmoid(logits)
-    if cls_logits is not None:
-        probs_cls = torch.sigmoid(cls_logits).view(-1, 1, 1, 1)
-        probs = torch.where(probs_cls > 0.5, probs, torch.zeros_like(probs))
     preds = (probs > threshold).float()
     preds   = preds.view(preds.size(0), -1)
     targets = targets.view(targets.size(0), -1)
@@ -76,15 +73,12 @@ def aad_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.
     return (sum(diff_percentages) / len(diff_percentages)) * 100.0
 
 
-def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None, max_radius: float = 15.0) -> dict:
+def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, max_radius: float = 15.0) -> dict:
     """
     Tính TP, TN, FP, FN theo khoảng cách Distance-to-Center (D2C) trên từng slice.
     max_radius: đóng vai trò là bán kính chấp nhận sai số R (pixels)
     """
     probs = torch.sigmoid(logits)
-    if lvo_cls is not None:
-        probs_cls = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
-        probs = torch.where(probs_cls > 0.5, probs, torch.zeros_like(probs))
 
     B, C, H, W = probs.shape
     tp = 0.0
@@ -162,9 +156,9 @@ def finalize_lvo_dice(lvo_stats: dict) -> float:
     return dice * 100.0
 
 
-def dice_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None) -> float:
+def dice_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
     """Distance-to-Center F1-score (per-batch, dùng cho debug)."""
-    stats = accumulate_lvo_stats(logits, targets, threshold, lvo_cls)
+    stats = accumulate_lvo_stats(logits, targets, threshold)
     return finalize_lvo_dice(stats)
 
 
@@ -255,8 +249,7 @@ def accumulate_patient_lvo_stats(
     targets: torch.Tensor,
     paths: list,
     patient_stats: dict,
-    threshold: float = 0.5,
-    lvo_cls: torch.Tensor = None
+    threshold: float = 0.5
 ) -> None:
     """Gom dự đoán LVO theo bệnh nhân (patient-level) từ batch.
 
@@ -265,9 +258,6 @@ def accumulate_patient_lvo_stats(
         {patient_id: {"has_gt": bool, "max_pred": float}}
     """
     probs = torch.sigmoid(logits)
-    if lvo_cls is not None:
-        probs_cls = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
-        probs = torch.where(probs_cls > 0.5, probs, torch.zeros_like(probs))
     preds_prob = probs.float().cpu()
     gt_bin     = (targets > 0.1).float().cpu()
 
@@ -321,15 +311,8 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dic
 
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None, epoch: int = 999, lvo_max_radius: float = 10.0) -> dict:
     t = weights.get("thresholds", {"lesion": 0.45, "lvo": 0.05, "cow": 0.5})
-    # [Solution B] Tắt lesion_cls gating trong evaluation.
-    # Cls head vẫn được train (cung cấp gradient qua loss) nhưng KHÔNG nhân vào
-    # segmentation probability khi đánh giá. Loại bỏ multiplicative bottleneck:
-    # sigmoid(cls_logit=1.0) = 0.73 → pixel 0.55 bị kéo xuống 0.40 (dưới ngưỡng 0.45).
-    lesion_cls = None
-    lvo_cls = preds.get("lvo_cls", None) if epoch >= 5 else None
-
     # Lesion Metrics
-    d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"], cls_logits=lesion_cls).item()
+    d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]).item()
     aad_lesion = aad_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]) # Note: AAD doesn't support gating, which is fine as it's auxiliary
     alcd_lesion = alcd_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"])
 
@@ -341,8 +324,7 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
         d_lesion_pos = dice_score(
             preds["lesion"][has_lesion_gt],
             targets[:, 0:1][has_lesion_gt],
-            threshold=t["lesion"],
-            cls_logits=lesion_cls[has_lesion_gt] if lesion_cls is not None else None
+            threshold=t["lesion"]
         ).item()
     else:
         d_lesion_pos = 1.0  # batch này toàn background — không trừng phạt
@@ -350,7 +332,7 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
     # LVO: Gom stats nếu được cung cấp lvo_stats dict (Global mode)
     # Ngược lại tính per-batch như cũ (dùng cho debug)
     if lvo_stats is not None:
-        batch_stats = accumulate_lvo_stats(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], lvo_cls=lvo_cls, max_radius=lvo_max_radius)
+        batch_stats = accumulate_lvo_stats(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], max_radius=lvo_max_radius)
         lvo_stats["tp"] += batch_stats["tp"]
         lvo_stats["fp"] += batch_stats["fp"]
         lvo_stats["fn"] += batch_stats["fn"]
@@ -359,7 +341,7 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
         lvo_stats["tp_count"] = lvo_stats.get("tp_count", 0) + batch_stats.get("tp_count", 0)
         dice_lvo = 0.0  # Sẽ được tính ở cuối epoch bởi finalize_lvo_dice
     else:
-        dice_lvo = dice_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], lvo_cls=lvo_cls)
+        dice_lvo = dice_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"])
     
     # CoW Metrics
     d_cow = dice_score(preds["cow"], targets[:, 2:3], threshold=t["cow"]).item()
