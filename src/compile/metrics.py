@@ -42,7 +42,7 @@ def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0
     probs = torch.sigmoid(logits)
     if cls_logits is not None:
         probs_cls = torch.sigmoid(cls_logits).view(-1, 1, 1, 1)
-        probs = probs * probs_cls
+        probs = torch.where(probs_cls > 0.5, probs, torch.zeros_like(probs))
     preds = (probs > threshold).float()
     preds   = preds.view(preds.size(0), -1)
     targets = targets.view(targets.size(0), -1)
@@ -84,7 +84,7 @@ def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold:
     probs = torch.sigmoid(logits)
     if lvo_cls is not None:
         probs_cls = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
-        probs = probs * probs_cls
+        probs = torch.where(probs_cls > 0.5, probs, torch.zeros_like(probs))
 
     B, C, H, W = probs.shape
     tp = 0.0
@@ -267,7 +267,7 @@ def accumulate_patient_lvo_stats(
     probs = torch.sigmoid(logits)
     if lvo_cls is not None:
         probs_cls = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
-        probs = probs * probs_cls
+        probs = torch.where(probs_cls > 0.5, probs, torch.zeros_like(probs))
     preds_prob = probs.float().cpu()
     gt_bin     = (targets > 0.1).float().cpu()
 
