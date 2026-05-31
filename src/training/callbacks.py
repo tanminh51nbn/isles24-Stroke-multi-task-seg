@@ -100,12 +100,12 @@ class ModelCheckpoint:
 
         if self.save_overall and comp > self.best_composite:
             self.best_composite = comp
-            _save(os.path.join(self.save_dir, "best_overall.pt"), f"Overall (composite={comp:.4f})")
+            _save(os.path.join(self.save_dir, "best_overall.pt"), f"Overall (Composite={comp:.4f})")
 
         if self.save_lesion and lesion > self.best_lesion:
             self.best_lesion = lesion
-            _save(os.path.join(self.save_dir, "best_lesion.pt"), f"Lesion (dice={lesion:.4f})")
+            _save(os.path.join(self.save_dir, "best_lesion.pt"), f"Lesion (Dice={lesion:.4f})")
 
         if self.save_lvo and lvo > self.best_lvo:
             self.best_lvo = lvo
-            _save(os.path.join(self.save_dir, "best_lvo.pt"), f"LVO (f1={lvo:.4f})")
+            _save(os.path.join(self.save_dir, "best_lvo.pt"), f"LVO (Dice={lvo:.4f})")
