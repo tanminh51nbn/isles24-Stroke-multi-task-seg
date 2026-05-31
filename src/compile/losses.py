@@ -335,7 +335,7 @@ class MultiTaskLoss(nn.Module):
         )
 
         self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 1.5)
-        l_l_cls_pos_w = l_cfg["lesion"].get("cls_pos_weight", 2.0)
+        l_l_cls_pos_w = l_cfg["lesion"].get("cls_pos_weight", 5.0)
         self.lesion_cls_loss_fn = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([l_l_cls_pos_w])
         )
@@ -358,8 +358,8 @@ class MultiTaskLoss(nn.Module):
                 reduction='none'
             )
         # [T2.1] LVO Binary Classification Loss
-        # [FIX] Hạ pos_weight từ 5.0 xuống 1.5 để dập tắt ảo giác (giảm >1200 FPs)
-        lvo_cls_pos_w = l_v_cfg.get("cls_pos_weight", l_v_cfg.get("lvo_cls_pos_weight", 1.5))
+        # Sử dụng pos_weight=25.0 để đối phó với class imbalance nghiêm trọng (tỷ lệ âm:dương ~ 31:1)
+        lvo_cls_pos_w = l_v_cfg.get("cls_pos_weight", l_v_cfg.get("lvo_cls_pos_weight", 25.0))
         self.lvo_cls_loss_fn = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([lvo_cls_pos_w])
         )
