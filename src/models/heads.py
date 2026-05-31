@@ -143,11 +143,34 @@ class MultiTaskHeads(nn.Module):
     Mỗi head có bộ tham số riêng để tối ưu hóa độc lập.
     """
 
-    def __init__(self, in_ch: int = 16, dropout: float = 0.3):
+    def __init__(self, in_ch: int = 16, heads_config: dict = None):
         super().__init__()
-        self.lesion_head = SegmentationHead(in_ch, out_ch=1, dropout=dropout)
-        self.lvo_head    = SegmentationHead(in_ch, out_ch=1, dropout=dropout)
-        self.cow_head    = SegmentationHead(in_ch, out_ch=1, dropout=dropout)
+        
+        lesion_drop = 0.3
+        lvo_drop = 0.3
+        cow_drop = 0.3
+        
+        if heads_config is not None:
+            common_drop = heads_config.get("dropout", 0.3)
+            
+            if "lesion" in heads_config and isinstance(heads_config["lesion"], dict):
+                lesion_drop = heads_config["lesion"].get("dropout", common_drop)
+            else:
+                lesion_drop = common_drop
+                
+            if "lvo" in heads_config and isinstance(heads_config["lvo"], dict):
+                lvo_drop = heads_config["lvo"].get("dropout", common_drop)
+            else:
+                lvo_drop = common_drop
+                
+            if "cow" in heads_config and isinstance(heads_config["cow"], dict):
+                cow_drop = heads_config["cow"].get("dropout", common_drop)
+            else:
+                cow_drop = common_drop
+                
+        self.lesion_head = SegmentationHead(in_ch, out_ch=1, dropout=lesion_drop)
+        self.lvo_head    = SegmentationHead(in_ch, out_ch=1, dropout=lvo_drop)
+        self.cow_head    = SegmentationHead(in_ch, out_ch=1, dropout=cow_drop)
 
         # [T2.1] LVO Classification Head (binary: có LVO hay không)
         self.lvo_cls_head = LVOClassificationHead(in_ch)

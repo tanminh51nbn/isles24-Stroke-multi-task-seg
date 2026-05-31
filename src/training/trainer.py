@@ -258,14 +258,26 @@ class Trainer:
                         "path":  batch.get("path", [""] * inp.shape[0])[i],
                     })
 
-        # [FIX] Đồng bộ TP/FP/FN qua DDP trước khi tính F1
+        # [FIX] Đồng bộ TP/FP/FN và D2C distance qua DDP trước khi tính F1
         if dist.is_initialized():
             lvo_tensor = torch.tensor(
-                [lvo_stats["tp"], lvo_stats["fp"], lvo_stats["fn"]], 
+                [
+                    lvo_stats["tp"], 
+                    lvo_stats["fp"], 
+                    lvo_stats["fn"],
+                    lvo_stats.get("total_dist", 0.0),
+                    float(lvo_stats.get("tp_count", 0))
+                ], 
                 dtype=torch.float32, device=self.device
             )
             dist.all_reduce(lvo_tensor, op=dist.ReduceOp.SUM)
-            lvo_stats = {"tp": int(lvo_tensor[0].item()), "fp": int(lvo_tensor[1].item()), "fn": int(lvo_tensor[2].item())}
+            lvo_stats = {
+                "tp": int(lvo_tensor[0].item()), 
+                "fp": int(lvo_tensor[1].item()), 
+                "fn": int(lvo_tensor[2].item()),
+                "total_dist": lvo_tensor[3].item(),
+                "tp_count": int(lvo_tensor[4].item())
+            }
             
             # Đồng bộ các chỉ số slice bao gồm cả sum_d_l_pos và n_b_pos
             sync = torch.tensor([
@@ -326,8 +338,9 @@ class Trainer:
         lvo_dice = finalize_lvo_dice(lvo_stats)
         
         if self.rank == 0:
-            # Log LVO Summary (Global + Patient)
-            print(f"    [LVO Val] Dice: {lvo_dice:.2f}% (TP={lvo_stats['tp']:.0f} FP={lvo_stats['fp']:.0f} FN={lvo_stats['fn']:.0f}) | Pat_Acc: {pat['accuracy']*100:.1f}% (TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']})")
+            # Log LVO Summary (Global D2C + Patient)
+            mean_d2c = lvo_stats.get("mean_d2c", 0.0)
+            print(f"    [LVO Val] D2C_F1: {lvo_dice:.2f}% (TP={lvo_stats['tp']:.0f} FP={lvo_stats['fp']:.0f} FN={lvo_stats['fn']:.0f} | Mean D2C={mean_d2c:.2f}px) | Pat_Acc: {pat['accuracy']*100:.1f}% (TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']})")
             # Visualize sample tốt nhất (sau khi đã duyệt toàn bộ val loop)
             if should_vis and vis_candidates:
                 best = select_best_sample(vis_candidates)
@@ -353,6 +366,7 @@ class Trainer:
         return {
             "val_loss": avg_l, "val_main": avg_m, "val_raw": avg_raw, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
             "dice_lvo": lvo_dice, "dice_cow": ad_c,
+            "mean_d2c_lvo": lvo_stats.get("mean_d2c", 0.0),
             "dice_lvo_patient": pat.get("f1", 0.0) * 100.0,
             "p_lesion": p_l,
             "p_lvo": p_v,

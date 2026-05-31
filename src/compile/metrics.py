@@ -76,72 +76,94 @@ def aad_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.
     return (sum(diff_percentages) / len(diff_percentages)) * 100.0
 
 
-def get_distance_penalty_weight(gt_mask: np.ndarray, max_radius: float = 10.0) -> np.ndarray:
+def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None, max_radius: float = 15.0) -> dict:
     """
-    Tạo bản đồ trọng số phạt FP dựa trên khoảng cách đến nhãn gốc.
-    gt_mask: (H, W) nhị phân 0/1.
+    Tính TP, TN, FP, FN theo khoảng cách Distance-to-Center (D2C) trên từng slice.
+    max_radius: đóng vai trò là bán kính chấp nhận sai số R (pixels)
     """
-    if gt_mask.max() == 0:
-        return np.ones_like(gt_mask) # Nếu não khỏe 100%, phạt tối đa mọi nơi
-        
-    # Tính khoảng cách Euclidean từ mỗi pixel ngoài nhãn đến pixel nhãn gần nhất
-    dist = distance_transform_edt(1 - gt_mask)
-    
-    # Chuẩn hóa khoảng cách thành trọng số W (0.0 đến 1.0)
-    # Vùng trong nhãn (dist=0) -> W=0
-    # Xa hơn max_radius -> W=1.0
-    W = np.clip(dist / max_radius, 0.0, 1.0)
-    return W
-
-
-def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None, max_radius: float = 10.0) -> dict:
-    """Gom Soft TP, FP, FN từng batch dùng Distance-Weighted F1."""
     probs = torch.sigmoid(logits)
     if lvo_cls is not None:
         probs_cls = torch.sigmoid(lvo_cls).view(-1, 1, 1, 1)
         probs = probs * probs_cls
-        
-    # Áp dụng ngưỡng: Dưới ngưỡng -> 0, Trên ngưỡng -> Giữ nguyên độ tự tin P
-    preds = (probs > threshold).float() * probs
-    
-    # Nhãn nhị phân cứng
-    gt_bin = (targets > 0.5).float()
-    
-    preds_np = preds.detach().cpu().numpy()
-    gt_np = gt_bin.detach().cpu().numpy()
-    
-    tp_sum = 0.0
-    fp_sum = 0.0
-    fn_sum = 0.0
-    
-    for i in range(preds_np.shape[0]):
-        p_slice = preds_np[i, 0]
-        g_slice = gt_np[i, 0]
-        
-        # Lấy bản đồ trọng số phạt FP
-        W_slice = get_distance_penalty_weight(g_slice, max_radius)
-        
-        # TP: Chỉ tính bên TRONG nhãn (g_slice = 1)
-        tp_sum += (p_slice * g_slice).sum()
-        
-        # FP: Chỉ tính bên NGOÀI nhãn, nhân với trọng số phạt W
-        fp_sum += (p_slice * W_slice).sum()
-        
-        # FN: Phần bỏ lỡ TRONG nhãn
-        fn_sum += ((1.0 - p_slice) * g_slice).sum()
-        
-    return {"tp": tp_sum, "fp": fp_sum, "fn": fn_sum}
+
+    B, C, H, W = probs.shape
+    tp = 0.0
+    fp = 0.0
+    fn = 0.0
+    tn = 0.0
+    total_dist = 0.0
+    tp_count = 0
+
+    for i in range(B):
+        p_slice = probs[i, 0] # (H, W)
+        g_slice = targets[i, 0] # (H, W)
+
+        # 1. Xác định xem GT có LVO hay không
+        g_max = g_slice.max().item()
+        has_gt = g_max > 0.1 # Nhãn Gaussian tâm = 1.0, ngưỡng 0.1 là an toàn
+
+        # 2. Xác định xem AI có đoán có LVO hay không
+        p_max = p_slice.max().item()
+        has_pred = p_max > threshold
+
+        if has_gt:
+            # Lấy tâm Ground-Truth
+            gt_idx = g_slice.argmax().item()
+            y_gt = gt_idx // W
+            x_gt = gt_idx % W
+
+            if has_pred:
+                # Lấy đỉnh dự đoán
+                pred_idx = p_slice.argmax().item()
+                y_p = pred_idx // W
+                x_p = pred_idx % W
+
+                # Tính khoảng cách Euclidean
+                dist = np.sqrt((y_p - y_gt)**2 + (x_p - x_gt)**2)
+
+                if dist <= max_radius:
+                    tp += 1.0
+                    total_dist += dist
+                    tp_count += 1
+                else:
+                    # Đoán lệch: vừa tính là FP (lệch vị trí) và FN (bỏ sót vị trí đúng)
+                    fp += 1.0
+                    fn += 1.0
+            else:
+                # Bỏ sót hoàn toàn
+                fn += 1.0
+        else:
+            if has_pred:
+                # Báo ảo trên slice khỏe
+                fp += 1.0
+            else:
+                # Loại trừ chính xác
+                tn += 1.0
+
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "total_dist": total_dist,
+        "tp_count": tp_count
+    }
 
 
 def finalize_lvo_dice(lvo_stats: dict) -> float:
-    """Tính Distance-Weighted Soft Dice (ghi đè tên hàm cũ)."""
+    """Tính Distance-to-Center F1-score (D2C) và gán thêm mean_d2c vào dict."""
     tp, fp, fn = lvo_stats["tp"], lvo_stats["fp"], lvo_stats["fn"]
     dice = (2 * tp) / (2 * tp + fp + fn + 1e-8)
+    
+    total_dist = lvo_stats.get("total_dist", 0.0)
+    tp_count = lvo_stats.get("tp_count", 0)
+    lvo_stats["mean_d2c"] = total_dist / max(tp_count, 1e-8)
+    
     return dice * 100.0
 
 
 def dice_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, lvo_cls: torch.Tensor = None) -> float:
-    """Distance-Weighted Soft Dice (per-batch, dùng cho debug)."""
+    """Distance-to-Center F1-score (per-batch, dùng cho debug)."""
     stats = accumulate_lvo_stats(logits, targets, threshold, lvo_cls)
     return finalize_lvo_dice(stats)
 
@@ -332,6 +354,9 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
         lvo_stats["tp"] += batch_stats["tp"]
         lvo_stats["fp"] += batch_stats["fp"]
         lvo_stats["fn"] += batch_stats["fn"]
+        lvo_stats["tn"] = lvo_stats.get("tn", 0.0) + batch_stats.get("tn", 0.0)
+        lvo_stats["total_dist"] = lvo_stats.get("total_dist", 0.0) + batch_stats.get("total_dist", 0.0)
+        lvo_stats["tp_count"] = lvo_stats.get("tp_count", 0) + batch_stats.get("tp_count", 0)
         dice_lvo = 0.0  # Sẽ được tính ở cuối epoch bởi finalize_lvo_dice
     else:
         dice_lvo = dice_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"], lvo_cls=lvo_cls)

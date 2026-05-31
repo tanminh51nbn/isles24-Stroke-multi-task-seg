@@ -28,17 +28,24 @@ decoder:
   attention_type: "dual"  # "dual", "ag", or null
   out_channels: [256, 128, 64, 32]
   final_ch: 16
+  dropout:
+    shared: 0.2
+    cow: 0.15
+    lvo: 0.2
+    lesion: 0.35 # Tăng mạnh cho Lesion decoder block
 
 # ── Heads (Residual Task Blocks) ────────────────────────────────
 heads:
-  dropout: 0.4
   activation: "GELU"
   lesion:
     out_channels: 1
+    dropout: 0.5 # Tăng mạnh cho Lesion Head
   lvo:
     out_channels: 1
+    dropout: 0.3
   cow:
     out_channels: 1
+    dropout: 0.3
 
 # ── Output ──────────────────────────────────────────────────────
 # Raw logits (NO sigmoid/softmax in model forward)

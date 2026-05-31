@@ -58,7 +58,7 @@ class FusedSpatialAttention(nn.Module):
 # ─── Khối Decoder cho 1 Encoder (Single Decoder Block) ─────────────────────────
 
 class SingleDecoderBlock(nn.Module):
-    def __init__(self, in_ch: int, skip_ch: int, out_ch: int, attention_type: Optional[str] = "dual", use_aux: bool = True, task_name: str = "shared", aux_ch: int = 1):
+    def __init__(self, in_ch: int, skip_ch: int, out_ch: int, attention_type: Optional[str] = "dual", use_aux: bool = True, task_name: str = "shared", aux_ch: int = 1, dropout_p: float = 0.2):
         super().__init__()
         self.attention_type = attention_type
         self.use_aux = use_aux
@@ -67,7 +67,7 @@ class SingleDecoderBlock(nn.Module):
         
         self.conv1 = ConvBnGelu1x1(in_ch + skip_ch + aux_ch, out_ch)
         self.conv2 = ConvBnGelu(out_ch, out_ch)
-        self.dropout = nn.Dropout2d(p=0.2)
+        self.dropout = nn.Dropout2d(p=dropout_p)
         
         if attention_type == "ag":
             self.ag = AttentionGate(F_g=in_ch, F_l=skip_ch, F_int=skip_ch // 2)
@@ -107,9 +107,12 @@ class SingleSharedPath(nn.Module):
         dec_ch = config["decoder"]["out_channels"]
         attn_type = config["decoder"].get("attention_type", "dual")
 
+        dropout_cfg = config["decoder"].get("dropout", {})
+        dropout_p = dropout_cfg.get("shared", 0.2) if isinstance(dropout_cfg, dict) else (dropout_cfg if isinstance(dropout_cfg, float) else 0.2)
+
         # skip_channels = [s4, s3] (với s5 là bottleneck)
-        self.dec4 = SingleDecoderBlock(1024, skip_channels[0], dec_ch[0], attn_type, use_aux=False, aux_ch=0)
-        self.dec3 = SingleDecoderBlock(dec_ch[0], skip_channels[1], dec_ch[1], attn_type, use_aux=False, aux_ch=0)
+        self.dec4 = SingleDecoderBlock(1024, skip_channels[0], dec_ch[0], attn_type, use_aux=False, aux_ch=0, dropout_p=dropout_p)
+        self.dec3 = SingleDecoderBlock(dec_ch[0], skip_channels[1], dec_ch[1], attn_type, use_aux=False, aux_ch=0, dropout_p=dropout_p)
 
     def forward(self, x_bottleneck, skips_shared):
         s4, s3 = skips_shared
@@ -126,8 +129,11 @@ class SingleTaskPath(nn.Module):
         final_ch = config["decoder"].get("final_ch", 16)
         attn_type = config["decoder"].get("attention_type", "dual")
 
-        self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0], dec_ch[2], attn_type, use_aux=active_aux_levels[0], task_name=task_name, aux_ch=aux_ch)
-        self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1], dec_ch[3], attn_type, use_aux=active_aux_levels[1], task_name=task_name, aux_ch=aux_ch)
+        dropout_cfg = config["decoder"].get("dropout", {})
+        dropout_p = dropout_cfg.get(task_name, 0.2) if isinstance(dropout_cfg, dict) else (dropout_cfg if isinstance(dropout_cfg, float) else 0.2)
+
+        self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0], dec_ch[2], attn_type, use_aux=active_aux_levels[0], task_name=task_name, aux_ch=aux_ch, dropout_p=dropout_p)
+        self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1], dec_ch[3], attn_type, use_aux=active_aux_levels[1], task_name=task_name, aux_ch=aux_ch, dropout_p=dropout_p)
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
@@ -177,8 +183,8 @@ class SingleEncoderTripleDecoder(nn.Module):
         self.lvo_path    = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
         self.lesion_path = SingleTaskPath(in_ch_task, config, "lesion", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=32)
         
-        # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW
-        self.guidance_dropout = nn.Dropout2d(p=0.3)
+        # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW (Tăng lên 0.4 chống overfit)
+        self.guidance_dropout = nn.Dropout2d(p=0.4)
 
     def forward(self, skips: List[torch.Tensor], epoch: int = 0):
         s1, s2, s3, s4, s5 = skips
@@ -266,7 +272,7 @@ class SingleEncoderUNet(nn.Module):
         decoder_final_ch = config["decoder"].get("final_ch", 16)
         self.heads = MultiTaskHeads(
             in_ch=decoder_final_ch,
-            dropout=config["heads"]["dropout"],
+            heads_config=config["heads"],
         )
 
     def forward(self, x: torch.Tensor, epoch: int = 0) -> dict:
