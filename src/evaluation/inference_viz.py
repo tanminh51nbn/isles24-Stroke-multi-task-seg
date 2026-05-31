@@ -64,7 +64,7 @@ def run_compare_mode(args, base_model, train_cfg, device):
     
     cases = {}
     print("[Compare] Đang quét tìm 8 trường hợp (dựa trên sự xuất hiện của Lesion, LVO, CoW)...")
-    for f in all_files[:2000]:
+    for f in all_files:
         if len(cases) == 8: break
         try:
             ds = ISLES24Dataset([f], transform=None)

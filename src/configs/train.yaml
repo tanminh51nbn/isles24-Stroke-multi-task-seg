@@ -34,7 +34,7 @@ loss:
     iters: 4
 
 # ── Composite Validation Score ──────────────────────────────────
-# Score = w1*Dice_Lesion + w2*F1_LVO + w3*Dice_CoW
+# Score = w1*Dice_Lesion + w2*Dice_LVO + w3*Dice_CoW
 composite_score:
   dice_lesion_weight: 0.45
   dice_lvo_weight: 0.45
