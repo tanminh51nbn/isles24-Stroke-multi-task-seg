@@ -14,6 +14,8 @@ loss:
     slice_pos_weight: 2
     cls_weight: 0.0
     cls_pos_weight: 5.0
+    sdf_weight: 0.15
+    sdf_fg_weight: 0.1
 
   lvo:
     type: "modified_focal"
@@ -79,7 +81,7 @@ training:
     w_min:
       lesion: 0.50
       lvo: 0.30
-      cow: 0.20
+      cow: 0.40
     w_max:
       lesion: 5.0
       lvo: 4.0
