@@ -32,14 +32,14 @@ decoder:
     shared: 0.2
     cow: 0.1
     lvo: 0.2
-    lesion: 0.3 # Tăng mạnh cho Lesion decoder block
+    lesion: 0.15 # Giảm một nửa theo yêu cầu bác sĩ (từ 0.3)
 
 # ── Heads (Residual Task Blocks) ────────────────────────────────
 heads:
   activation: "GELU"
   lesion:
     out_channels: 1
-    dropout: 0.4 # Tăng mạnh cho Lesion Head
+    dropout: 0.2 # Giảm một nửa theo yêu cầu bác sĩ (từ 0.4)
   lvo:
     out_channels: 1
     dropout: 0.3
