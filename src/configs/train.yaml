@@ -6,7 +6,7 @@
 # ── Loss Function (Task-Specific) ──────────────────────────────
 loss:
   lesion:
-    type: "compound_focal_tversky"
+    type: "focal_tversky"
     alpha: 0.3
     beta: 0.7
     gamma: 1.25
