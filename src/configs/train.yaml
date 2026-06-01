@@ -10,7 +10,7 @@ loss:
     alpha: 0.3
     beta: 0.7
     focal_gamma: 1.25
-    batch_dice: true
+    batch_dice: false
     slice_pos_weight: 2
     cls_weight: 0.0
     cls_pos_weight: 5.0

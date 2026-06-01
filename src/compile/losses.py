@@ -126,8 +126,9 @@ class ModifiedFocalLoss(nn.Module):
         slice_weight_pos = slice_num_neg / slice_num_pos
         slice_loss = (slice_pos_loss * slice_weight_pos + slice_neg_loss) / slice_num_neg
         
-        slice_loss = torch.nan_to_num(slice_loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=17000.0)
+        slice_loss = torch.nan_to_num(slice_loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=14000.0)
         
+
         if debug:
             pass # Removed debug print
 
