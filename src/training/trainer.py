@@ -397,8 +397,20 @@ class Trainer:
             t_m = self.train_one_epoch(epoch)
             v_m = self.validate(epoch + 1)
             if self.rank == 0:
-                lr_enc = self.optimizer.param_groups[0]['lr']
-                lr_dec = self.optimizer.param_groups[1]['lr']
+                # Tìm đúng learning rate của Encoder và Decoder dựa vào tên param group
+                lr_enc = None
+                lr_dec = None
+                for g in self.optimizer.param_groups:
+                    name = g.get('name', '').lower()
+                    if 'encoder' in name:
+                        lr_enc = g['lr']
+                    elif 'decoder' in name:
+                        lr_dec = g['lr']
+                
+                # Fallback nếu không tìm thấy theo tên
+                if lr_enc is None: lr_enc = self.optimizer.param_groups[0]['lr']
+                if lr_dec is None: lr_dec = self.optimizer.param_groups[-1]['lr']
+
                 print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR (En/De): {lr_enc:.1e}/{lr_dec:.1e} | Comp: {v_m['composite']:.4f}")
                 print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} (Pos: {v_m['dice_lesion_pos']:.4f}) | Dice_LVO: {v_m['dice_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
                 print(f"   | [VAL] Loss: {v_m['val_loss']:.4f} (Main: {v_m['val_main']:.4f}, Raw: {v_m['val_raw']:.4f}) | AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.4f}")
