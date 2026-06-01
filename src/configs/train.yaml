@@ -12,7 +12,7 @@ loss:
     focal_gamma: 1.25
     use_lovasz: true
     batch_dice: false
-    slice_pos_weight: 2
+    slice_pos_weight: 3
     cls_weight: 0.0
     cls_pos_weight: 5.0
     sdf_weight: 0.15
