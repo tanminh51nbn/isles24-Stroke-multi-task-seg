@@ -9,12 +9,8 @@ loss:
     type: "compound_focal_tversky"
     alpha: 0.3
     beta: 0.7
-    focal_gamma: 1.25
-    use_lovasz: true
-    batch_dice: false
-    slice_pos_weight: 3
-    cls_weight: 0.0
-    cls_pos_weight: 5.0
+    gamma: 1.25
+    slice_pos_weight: 2.0
     sdf_weight: 0.15
     sdf_fg_weight: 0.1
 
@@ -23,8 +19,8 @@ loss:
     mfl_alpha: 2.0
     mfl_beta: 2.5
     sigma_init: 5.0
-    sigma_floor: 1.5
-    sigma_decay: 0.97
+    sigma_floor: 1.2
+    sigma_decay: 0.98
     slice_pos_weight: 4.0
     cls_weight: 0.0
     cls_pos_weight: 25.0
@@ -52,8 +48,8 @@ composite_score:
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
-  lr: 1e-4
-  weight_decay: 0.05
+  lr: 7e-4
+  weight_decay: 0.025
   encoder_lr_scale: 0.01
   eps: 1.0e-7
 

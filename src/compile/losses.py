@@ -267,128 +267,7 @@ class BinaryFocalLoss(nn.Module):
             # Return slice-level vector of shape (B,) by averaging over spatial dimensions
             return focal_loss.view(focal_loss.size(0), -1).mean(dim=1)
 
-# ─── Lovász-Hinge Loss ────────────────────────────────────────────────────────
 
-def lovasz_grad(gt_sorted):
-    """
-    Computes gradient of the Lovasz extension w.r.t sorted errors
-    """
-    p = len(gt_sorted)
-    gts = gt_sorted.sum()
-    intersection = gts - gt_sorted.float().cumsum(0)
-    union = gts + (1 - gt_sorted).float().cumsum(0)
-    jaccard = 1. - intersection / union
-    if p > 1: # cover 1-pixel case
-        jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
-    return jaccard
-
-def lovasz_hinge_flat(logits, labels):
-    """
-    Binary Lovasz hinge loss
-    logits: [P] Tensor, logits at each prediction
-    labels: [P] Tensor, binary ground truth labels (0 or 1)
-    """
-    if len(labels) == 0:
-        return logits.sum() * 0.
-    signs = 2. * labels.float() - 1.
-    errors = (1. - logits * signs)
-    errors_sorted, perm = torch.sort(errors, dim=0, descending=True)
-    gt_sorted = labels[perm]
-    grad = lovasz_grad(gt_sorted)
-    loss = torch.dot(F.relu(errors_sorted), grad)
-    return loss
-
-def lovasz_hinge(logits, labels, per_slice=True):
-    """
-    Binary Lovasz hinge loss wrapper
-    logits: [B, H, W] Tensor
-    labels: [B, H, W] Tensor
-    """
-    if per_slice:
-        loss = 0
-        for i in range(logits.shape[0]):
-            loss += lovasz_hinge_flat(logits[i].reshape(-1), labels[i].reshape(-1))
-        return loss / logits.shape[0]
-    else:
-        return lovasz_hinge_flat(logits.reshape(-1), labels.reshape(-1))
-
-class CompoundLovaszBCELoss(nn.Module):
-    """
-    0.5 * Lovasz-Hinge Loss + 0.5 * BCEWithLogitsLoss.
-    """
-    def __init__(self, pos_weight: float = 1.0, per_slice: bool = True, reduction: str = 'mean'):
-        super().__init__()
-        self.pos_weight = pos_weight
-        self.per_slice = per_slice
-        self.reduction = reduction
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        # Sử dụng pos_weight tự động tương thích device
-        bce_loss_map = F.binary_cross_entropy_with_logits(
-            logits, targets,
-            pos_weight=torch.tensor([self.pos_weight], device=logits.device),
-            reduction='none'
-        )
-        
-        if self.reduction == 'none':
-            bce_loss_vec = bce_loss_map.view(bce_loss_map.size(0), -1).mean(dim=1)
-            loss_vec = torch.zeros_like(bce_loss_vec)
-            for i in range(logits.shape[0]):
-                l_loss = lovasz_hinge_flat(logits[i].reshape(-1), targets[i].reshape(-1))
-                loss_vec[i] = 0.5 * l_loss + 0.5 * bce_loss_vec[i]
-            return loss_vec
-            
-        bce_loss = bce_loss_map.mean()
-        lovasz_loss = lovasz_hinge(logits, targets, per_slice=self.per_slice)
-        return 0.5 * lovasz_loss + 0.5 * bce_loss
-
-
-class CompoundDiceBCELoss(nn.Module):
-    """
-    nnU-Net compound loss cải tiến: 0.5 * Dice (Tversky) + 0.5 * BCEWithLogitsLoss (hoặc FocalLoss).
-    """
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, smooth: float = 1.0, pos_weight: float = 1.0, batch: bool = False, use_focal: bool = False, focal_alpha: float = 0.25, focal_gamma: float = 2.0, reduction: str = 'mean'):
-        super().__init__()
-        self.dice = TverskyLoss(alpha=alpha, beta=beta, smooth=smooth, batch=batch, reduction=reduction)
-        self.use_focal = use_focal
-        self.reduction = reduction
-        if use_focal:
-            self.focal = BinaryFocalLoss(alpha=focal_alpha, gamma=focal_gamma, reduction=reduction)
-        else:
-            self.register_buffer("pos_weight", torch.tensor([pos_weight]))
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        logits = logits.float()
-        targets = targets.float()
-        
-        if self.dice.batch:
-            # If batch=True, compute globally. Empty slices safely add to global FP.
-            dice_loss = self.dice(logits, targets)
-        else:
-            # If batch=False, compute per-slice. Mask out empty slices to prevent gradient spikes,
-            # allowing the model to focus on Focal Loss for empty slices.
-            has_pos = (targets.amax(dim=(1, 2, 3)) > 0)
-            if self.reduction == 'none':
-                dice_loss = torch.zeros(logits.size(0), device=logits.device, dtype=logits.dtype)
-                if has_pos.any():
-                    dice_loss[has_pos] = self.dice(logits[has_pos], targets[has_pos])
-            else:
-                if has_pos.any():
-                    dice_loss = self.dice(logits[has_pos], targets[has_pos])
-                else:
-                    dice_loss = torch.tensor(0.0, device=logits.device)
-                    
-        if self.use_focal:
-            bce_loss = self.focal(logits, targets)
-        else:
-            if self.reduction == 'none':
-                # Compute per-pixel BCE, then average over spatial dimensions (1, 2, 3) to get (B,)
-                bce_loss = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=self.pos_weight, reduction='none')
-                bce_loss = bce_loss.view(bce_loss.size(0), -1).mean(dim=1)
-            else:
-                bce_loss = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=self.pos_weight)
-        
-        return 0.5 * dice_loss + 0.5 * bce_loss
 
 
 # ─── Multi-Task Loss (The Core) ───────────────────────────────────────────────
@@ -400,32 +279,16 @@ class MultiTaskLoss(nn.Module):
         t_cfg  = config.get("training", {})
         self.init_w = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
 
-        # 1. Lesion Task — Stroke-Optimized Compound Loss (Focal Loss + Asymmetric Tversky)
-        # Thay thế hoàn toàn MFL bằng Compound Loss chuyên biệt cho vùng nhồi máu đa dạng kích thước
-        self.use_lovasz = l_cfg["lesion"].get("use_lovasz", False)
-        if self.use_lovasz:
-            self.lesion_main_loss = CompoundLovaszBCELoss(
-                pos_weight=l_cfg["lesion"].get("slice_pos_weight", 2.0),
-                per_slice=not l_cfg["lesion"].get("batch_dice", False),
-                reduction='none'
-            )
-        else:
-            self.lesion_main_loss = CompoundDiceBCELoss(
-                alpha=l_cfg["lesion"].get("alpha", 0.5),                 # Phạt False Positive nặng hơn
-                beta=l_cfg["lesion"].get("beta", 0.5),                   # Phạt False Negative cân bằng
-                batch=l_cfg["lesion"].get("batch_dice", False),          # Tính per-slice để chống vanishing gradient từ mẫu số Tversky khổng lồ
-                use_focal=True,                                          # Dùng Focal Loss thay BCE
-                focal_gamma=l_cfg["lesion"].get("focal_gamma", 2.0),     # Ép dẹp loss của não khỏe, tập trung vào ranh giới
-                reduction='none'                                         # Trả về per-slice vector để áp dụng slice_weights
-            )
-
-        self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 1.5)
-        l_l_cls_pos_w = l_cfg["lesion"].get("cls_pos_weight", 5.0)
-        self.lesion_cls_loss_fn = nn.BCEWithLogitsLoss(
-            pos_weight=torch.tensor([l_l_cls_pos_w])
+        # 1. Lesion Task
+        self.lesion_main_loss = FocalTverskyLoss(
+            alpha=l_cfg["lesion"].get("alpha", 0.3),
+            beta=l_cfg["lesion"].get("beta", 0.7),
+            gamma=l_cfg["lesion"].get("gamma", 1.25),
+            reduction='none'
         )
-        self.lesion_cls_w = l_cfg["lesion"].get("cls_weight", 0.25)
-        self.lesion_sdf_w = l_cfg["lesion"].get("sdf_weight", 0.0)
+
+        self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 2.0)
+        self.lesion_sdf_w = l_cfg["lesion"].get("sdf_weight", 0.15)
         self.lesion_sdf_loss_fn = SDFBoundaryLoss(fg_weight=l_cfg["lesion"].get("sdf_fg_weight", 0.1))
 
         # 2. LVO Task
@@ -659,19 +522,7 @@ class MultiTaskLoss(nn.Module):
         # 2. Additional Task-specific Losses (Boundary & Topology - CoW only)
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) if self.cow_cl_w > 0.0 else torch.tensor(0.0, device=targets.device)
 
-        # Lesion Slice-level Classification Loss (per-slice vector)
-        lesion_cls_logit = preds.get('lesion_cls', None)
-        if lesion_cls_logit is not None:
-            lesion_cls_logit_flat = lesion_cls_logit.view(-1)  # (B,)
-            pos_w = self.lesion_cls_loss_fn.pos_weight.to(targets.device)
-            l_l_cls = nn.functional.binary_cross_entropy_with_logits(
-                lesion_cls_logit_flat, has_lesion,
-                pos_weight=pos_w,
-                reduction='none'
-            )
-            combined_lesion_loss = (1.0 - self.lesion_cls_w) * l_l_m + self.lesion_cls_w * l_l_cls
-        else:
-            combined_lesion_loss = l_l_m
+        combined_lesion_loss = l_l_m
 
         # Dynamic slice-level weights (using configurable slice_pos_weight, negative slices default to 1.0)
         lesion_slice_weights = has_lesion * (self.lesion_slice_pos_w - 1.0) + 1.0
