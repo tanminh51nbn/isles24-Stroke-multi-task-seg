@@ -267,6 +267,77 @@ class BinaryFocalLoss(nn.Module):
             # Return slice-level vector of shape (B,) by averaging over spatial dimensions
             return focal_loss.view(focal_loss.size(0), -1).mean(dim=1)
 
+# ─── Lovász-Hinge Loss ────────────────────────────────────────────────────────
+
+def lovasz_grad(gt_sorted):
+    """
+    Computes gradient of the Lovasz extension w.r.t sorted errors
+    """
+    p = len(gt_sorted)
+    gts = gt_sorted.sum()
+    intersection = gts - gt_sorted.float().cumsum(0)
+    union = gts + (1 - gt_sorted).float().cumsum(0)
+    jaccard = 1. - intersection / union
+    if p > 1: # cover 1-pixel case
+        jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+    return jaccard
+
+def lovasz_hinge_flat(logits, labels):
+    """
+    Binary Lovasz hinge loss
+    logits: [P] Tensor, logits at each prediction
+    labels: [P] Tensor, binary ground truth labels (0 or 1)
+    """
+    if len(labels) == 0:
+        return logits.sum() * 0.
+    signs = 2. * labels.float() - 1.
+    errors = (1. - logits * signs)
+    errors_sorted, perm = torch.sort(errors, dim=0, descending=True)
+    gt_sorted = labels[perm]
+    grad = lovasz_grad(gt_sorted)
+    loss = torch.dot(F.relu(errors_sorted), grad)
+    return loss
+
+def lovasz_hinge(logits, labels, per_slice=True):
+    """
+    Binary Lovasz hinge loss wrapper
+    logits: [B, H, W] Tensor
+    labels: [B, H, W] Tensor
+    """
+    if per_slice:
+        loss = 0
+        for i in range(logits.shape[0]):
+            loss += lovasz_hinge_flat(logits[i].reshape(-1), labels[i].reshape(-1))
+        return loss / logits.shape[0]
+    else:
+        return lovasz_hinge_flat(logits.reshape(-1), labels.reshape(-1))
+
+class CompoundLovaszBCELoss(nn.Module):
+    """
+    0.5 * Lovasz-Hinge Loss + 0.5 * BCEWithLogitsLoss.
+    """
+    def __init__(self, per_slice: bool = True, reduction: str = 'mean'):
+        super().__init__()
+        self.per_slice = per_slice
+        self.reduction = reduction
+        self.bce = nn.BCEWithLogitsLoss(reduction='none')
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        bce_loss_map = self.bce(logits, targets)
+        
+        if self.reduction == 'none':
+            bce_loss_vec = bce_loss_map.view(bce_loss_map.size(0), -1).mean(dim=1)
+            loss_vec = torch.zeros_like(bce_loss_vec)
+            for i in range(logits.shape[0]):
+                l_loss = lovasz_hinge_flat(logits[i].reshape(-1), targets[i].reshape(-1))
+                loss_vec[i] = 0.5 * l_loss + 0.5 * bce_loss_vec[i]
+            return loss_vec
+            
+        bce_loss = bce_loss_map.mean()
+        lovasz_loss = lovasz_hinge(logits, targets, per_slice=self.per_slice)
+        return 0.5 * lovasz_loss + 0.5 * bce_loss
+
+
 class CompoundDiceBCELoss(nn.Module):
     """
     nnU-Net compound loss cải tiến: 0.5 * Dice (Tversky) + 0.5 * BCEWithLogitsLoss (hoặc FocalLoss).
@@ -326,14 +397,21 @@ class MultiTaskLoss(nn.Module):
 
         # 1. Lesion Task — Stroke-Optimized Compound Loss (Focal Loss + Asymmetric Tversky)
         # Thay thế hoàn toàn MFL bằng Compound Loss chuyên biệt cho vùng nhồi máu đa dạng kích thước
-        self.lesion_main_loss = CompoundDiceBCELoss(
-            alpha=l_cfg["lesion"].get("alpha", 0.5),                 # Phạt False Positive nặng hơn
-            beta=l_cfg["lesion"].get("beta", 0.5),                   # Phạt False Negative cân bằng
-            batch=l_cfg["lesion"].get("batch_dice", False),          # Tính per-slice để chống vanishing gradient từ mẫu số Tversky khổng lồ
-            use_focal=True,                                          # Dùng Focal Loss thay BCE
-            focal_gamma=l_cfg["lesion"].get("focal_gamma", 2.0),     # Ép dẹp loss của não khỏe, tập trung vào ranh giới
-            reduction='none'                                         # Trả về per-slice vector để áp dụng slice_weights
-        )
+        self.use_lovasz = l_cfg["lesion"].get("use_lovasz", False)
+        if self.use_lovasz:
+            self.lesion_main_loss = CompoundLovaszBCELoss(
+                per_slice=not l_cfg["lesion"].get("batch_dice", False),
+                reduction='none'
+            )
+        else:
+            self.lesion_main_loss = CompoundDiceBCELoss(
+                alpha=l_cfg["lesion"].get("alpha", 0.5),                 # Phạt False Positive nặng hơn
+                beta=l_cfg["lesion"].get("beta", 0.5),                   # Phạt False Negative cân bằng
+                batch=l_cfg["lesion"].get("batch_dice", False),          # Tính per-slice để chống vanishing gradient từ mẫu số Tversky khổng lồ
+                use_focal=True,                                          # Dùng Focal Loss thay BCE
+                focal_gamma=l_cfg["lesion"].get("focal_gamma", 2.0),     # Ép dẹp loss của não khỏe, tập trung vào ranh giới
+                reduction='none'                                         # Trả về per-slice vector để áp dụng slice_weights
+            )
 
         self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 1.5)
         l_l_cls_pos_w = l_cfg["lesion"].get("cls_pos_weight", 5.0)
