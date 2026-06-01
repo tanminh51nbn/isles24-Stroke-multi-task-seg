@@ -316,14 +316,19 @@ class CompoundLovaszBCELoss(nn.Module):
     """
     0.5 * Lovasz-Hinge Loss + 0.5 * BCEWithLogitsLoss.
     """
-    def __init__(self, per_slice: bool = True, reduction: str = 'mean'):
+    def __init__(self, pos_weight: float = 1.0, per_slice: bool = True, reduction: str = 'mean'):
         super().__init__()
+        self.pos_weight = pos_weight
         self.per_slice = per_slice
         self.reduction = reduction
-        self.bce = nn.BCEWithLogitsLoss(reduction='none')
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        bce_loss_map = self.bce(logits, targets)
+        # Sử dụng pos_weight tự động tương thích device
+        bce_loss_map = F.binary_cross_entropy_with_logits(
+            logits, targets,
+            pos_weight=torch.tensor([self.pos_weight], device=logits.device),
+            reduction='none'
+        )
         
         if self.reduction == 'none':
             bce_loss_vec = bce_loss_map.view(bce_loss_map.size(0), -1).mean(dim=1)
@@ -400,6 +405,7 @@ class MultiTaskLoss(nn.Module):
         self.use_lovasz = l_cfg["lesion"].get("use_lovasz", False)
         if self.use_lovasz:
             self.lesion_main_loss = CompoundLovaszBCELoss(
+                pos_weight=l_cfg["lesion"].get("slice_pos_weight", 2.0),
                 per_slice=not l_cfg["lesion"].get("batch_dice", False),
                 reduction='none'
             )
