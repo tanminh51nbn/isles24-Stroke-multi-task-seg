@@ -7,8 +7,8 @@
 loss:
   lesion:
     type: "focal_tversky"
-    alpha: 0.3
-    beta: 0.7
+    alpha: 0.4
+    beta: 0.6
     gamma: 1.25
     slice_pos_weight: 2.0
     sdf_weight: 0.15
