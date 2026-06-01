@@ -340,6 +340,8 @@ class MultiTaskLoss(nn.Module):
             pos_weight=torch.tensor([l_l_cls_pos_w])
         )
         self.lesion_cls_w = l_cfg["lesion"].get("cls_weight", 0.25)
+        self.lesion_sdf_w = l_cfg["lesion"].get("sdf_weight", 0.0)
+        self.lesion_sdf_loss_fn = SDFBoundaryLoss(fg_weight=l_cfg["lesion"].get("sdf_fg_weight", 0.1))
 
         # 2. LVO Task
         l_v_cfg = l_cfg.get("lvo", {})
@@ -592,6 +594,10 @@ class MultiTaskLoss(nn.Module):
 
         # Apply weights and take mean to get scalar losses
         combined_lesion_loss_scalar = (combined_lesion_loss * lesion_slice_weights).mean()
+
+        if self.lesion_sdf_w > 0.0:
+            l_l_sdf = self.lesion_sdf_loss_fn(preds['lesion'], targets[:, 3:4], targets[:, 0:1])
+            combined_lesion_loss_scalar = (1.0 - self.lesion_sdf_w) * combined_lesion_loss_scalar + self.lesion_sdf_w * l_l_sdf
         l_v_m_scalar = (l_v_m * lvo_slice_weights).mean()
 
         # 3. Final Task Weighting
