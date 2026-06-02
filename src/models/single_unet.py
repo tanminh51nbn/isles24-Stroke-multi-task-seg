@@ -187,10 +187,20 @@ class SingleEncoderTripleDecoder(nn.Module):
         self.lvo_path    = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
         self.lesion_path = SingleTaskPath(in_ch_task, config, "lesion", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
         
+        # [NEW] Tissue Stem: Trích xuất trực tiếp từ 6 kênh gốc của lát cắt Z (không bị trộn lẫn)
+        self.tissue_stem = nn.Sequential(
+            nn.Conv2d(6, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.GELU(),
+            nn.Conv2d(16, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.GELU()
+        )
+        
         # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW (Tăng lên 0.4 chống overfit)
         self.guidance_dropout = nn.Dropout2d(p=0.4)
 
-    def forward(self, skips: List[torch.Tensor], epoch: int = 0):
+    def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None):
         s1, s2, s3, s4, s5 = skips
 
         # 1. Bottleneck
@@ -223,6 +233,14 @@ class SingleEncoderTripleDecoder(nn.Module):
             guidance_for_lesion.register_hook(lesion_guidance_hook)
             
         f_lesion, lesion_auxs = self.lesion_path(x_shared, [s2, s1], guidance=guidance_for_lesion)
+
+        # [NEW] Tissue Skip Connection: Bắn trực tiếp lát cắt Z vào f_lesion
+        if x_raw is not None:
+            # Lát cắt Z nằm ở index 6 đến 11 (6 kênh)
+            slice_z = x_raw[:, 6:12, :, :]
+            tissue_features = self.tissue_stem(slice_z)
+            # Cộng gộp để Lesion có thông tin chi tiết về mô não nguyên bản
+            f_lesion = f_lesion + tissue_features
 
         aux_masks = {
             "lesion": lesion_auxs,
@@ -282,7 +300,7 @@ class SingleEncoderUNet(nn.Module):
     def forward(self, x: torch.Tensor, epoch: int = 0) -> dict:
         skips = self.encoder(x)
 
-        features_dict, aux_masks, g_maps = self.decoder(skips, epoch=epoch)
+        features_dict, aux_masks, g_maps = self.decoder(skips, epoch=epoch, x_raw=x)
 
         out = self.heads(features_dict)
         
