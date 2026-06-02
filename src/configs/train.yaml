@@ -22,7 +22,7 @@ loss:
     sigma_floor: 1.2
     sigma_decay: 0.98
     slice_pos_weight: 4.0
-    cls_weight: 0.0
+    cls_weight: 0.25
     cls_pos_weight: 25.0
     max_radius: 11.0
 
@@ -49,7 +49,7 @@ composite_score:
 optimizer:
   type: "adamw"
   lr: 7e-4
-  weight_decay: 0.025
+  weight_decay: 0.05
   encoder_lr_scale: 0.01
   eps: 1.0e-7
 
