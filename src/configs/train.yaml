@@ -10,8 +10,8 @@ loss:
     alpha: 0.35
     beta: 0.65
     gamma: 1.35
-    slice_pos_weight: 4.0
-    sdf_weight: 0.35
+    slice_pos_weight: 2.5
+    sdf_weight: 0.4
     sdf_fg_weight: 0.1
 
   lvo:
@@ -19,10 +19,10 @@ loss:
     mfl_alpha: 2.0
     mfl_beta: 4.0
     sigma_init: 5.0
-    sigma_floor: 1.1
-    sigma_decay: 0.98
+    sigma_floor: 1.25
+    sigma_decay: 0.975
     slice_pos_weight: 5.0
-    max_radius: 17.0
+    max_radius: 13.0
 
   cow:
     type: "cl_tversky"
