@@ -309,13 +309,7 @@ class MultiTaskLoss(nn.Module):
                 beta=l_v_cfg.get("mfl_beta", 4.0),
                 reduction='none'
             )
-        # [T2.1] LVO Binary Classification Loss
-        # Sử dụng pos_weight=25.0 để đối phó với class imbalance nghiêm trọng (tỷ lệ âm:dương ~ 31:1)
-        lvo_cls_pos_w = l_v_cfg.get("cls_pos_weight", l_v_cfg.get("lvo_cls_pos_weight", 25.0))
-        self.lvo_cls_loss_fn = nn.BCEWithLogitsLoss(
-            pos_weight=torch.tensor([lvo_cls_pos_w])
-        )
-        self.lvo_cls_w = l_v_cfg.get("cls_weight", l_v_cfg.get("lvo_cls_weight", 0.3))  # Tỷ lệ cls trong tổng LVO loss
+
         
         # Sigma curriculum và slice weights cho LVO:
         self.lvo_sigma_init  = l_v_cfg.get("sigma_init",  7.5)
@@ -509,17 +503,7 @@ class MultiTaskLoss(nn.Module):
                 print(f"      [LVO_DEBUG] PosPixels: {int(num_pos)} | FTL_Loss: {l_v_m.mean().item():.4f}")
         l_c_m = self.cow_main_loss(preds['cow'], targets[:, 2:3])
 
-        # [T2.1] LVO Binary Classification Loss (per-slice vector)
-        lvo_cls_logit = preds.get('lvo_cls', None)
-        if lvo_cls_logit is not None:
-            lvo_cls_logit_flat = lvo_cls_logit.view(-1)  # (B,)
-            pos_w = self.lvo_cls_loss_fn.pos_weight.to(targets.device)
-            l_v_cls = nn.functional.binary_cross_entropy_with_logits(
-                lvo_cls_logit_flat, has_lvo,
-                pos_weight=pos_w,
-                reduction='none'
-            )
-            l_v_m = (1.0 - self.lvo_cls_w) * l_v_m + self.lvo_cls_w * l_v_cls
+
 
         # 2. Additional Task-specific Losses (Boundary & Topology - CoW only)
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) if self.cow_cl_w > 0.0 else torch.tensor(0.0, device=targets.device)
