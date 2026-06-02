@@ -44,8 +44,8 @@ def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0
     
     # [Volumetric Dice] Flatten toàn bộ batch (gộp tất cả pixel)
     # Khối lớn sẽ gánh điểm cho khối nhỏ, phản ánh đúng diện tích thực tế.
-    preds_flat = preds.view(-1)
-    targets_flat = targets.view(-1)
+    preds_flat = preds.reshape(-1)
+    targets_flat = targets.reshape(-1)
     
     intersection = (preds_flat * targets_flat).sum()
     dice = (2.0 * intersection + smooth) / (preds_flat.sum() + targets_flat.sum() + smooth)
