@@ -41,11 +41,15 @@ def get_lvo_threshold(epoch: int, cfg: dict) -> float:
 def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, smooth: float = 1e-6) -> torch.Tensor:
     probs = torch.sigmoid(logits)
     preds = (probs > threshold).float()
-    preds   = preds.view(preds.size(0), -1)
-    targets = targets.view(targets.size(0), -1)
-    intersection = (preds * targets).sum(dim=1)
-    dice = (2.0 * intersection + smooth) / (preds.sum(dim=1) + targets.sum(dim=1) + smooth)
-    return dice.mean()
+    
+    # [Volumetric Dice] Flatten toàn bộ batch (gộp tất cả pixel)
+    # Khối lớn sẽ gánh điểm cho khối nhỏ, phản ánh đúng diện tích thực tế.
+    preds_flat = preds.view(-1)
+    targets_flat = targets.view(-1)
+    
+    intersection = (preds_flat * targets_flat).sum()
+    dice = (2.0 * intersection + smooth) / (preds_flat.sum() + targets_flat.sum() + smooth)
+    return dice
 
 
 def aad_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
