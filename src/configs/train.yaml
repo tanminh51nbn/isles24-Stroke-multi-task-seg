@@ -21,7 +21,7 @@ loss:
     sigma_init: 5.0
     sigma_floor: 1.2
     sigma_decay: 0.98
-    slice_pos_weight: 4.0
+    slice_pos_weight: 4.5
     max_radius: 11.0
 
   cow:
