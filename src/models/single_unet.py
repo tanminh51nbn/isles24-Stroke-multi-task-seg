@@ -134,17 +134,17 @@ class ASPPBlock(nn.Module):
             nn.ReLU(inplace=True)
         )
         self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, 3, padding=6, dilation=6, bias=False), 
+            nn.Conv2d(in_channels, mid_channels, 3, padding=2, dilation=2, bias=False), 
             nn.BatchNorm2d(mid_channels), 
             nn.ReLU(inplace=True)
         )
         self.conv3 = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, 3, padding=12, dilation=12, bias=False), 
+            nn.Conv2d(in_channels, mid_channels, 3, padding=3, dilation=3, bias=False), 
             nn.BatchNorm2d(mid_channels), 
             nn.ReLU(inplace=True)
         )
         self.conv4 = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, 3, padding=18, dilation=18, bias=False), 
+            nn.Conv2d(in_channels, mid_channels, 3, padding=4, dilation=4, bias=False), 
             nn.BatchNorm2d(mid_channels), 
             nn.ReLU(inplace=True)
         )
