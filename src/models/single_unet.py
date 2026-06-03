@@ -407,9 +407,6 @@ class SingleEncoderUNet(nn.Module):
             config,
             skip_channels=self.encoder.skip_channels
         )
-        
-        # [NEW] Modality SE Block
-        self.se_input = ModalitySEBlock(in_channels=in_ch, reduction=2)
 
         decoder_final_ch = config["decoder"].get("final_ch", 16)
         self.heads = MultiTaskHeads(
@@ -418,8 +415,7 @@ class SingleEncoderUNet(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, epoch: int = 0) -> dict:
-        x_weighted = self.se_input(x)
-        skips = self.encoder(x_weighted)
+        skips = self.encoder(x)
 
         features_dict, aux_masks, g_maps = self.decoder(skips, epoch=epoch, x_raw=x)
 
