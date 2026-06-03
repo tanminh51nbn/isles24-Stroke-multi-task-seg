@@ -126,28 +126,30 @@ class ModalitySEBlock(nn.Module):
 class ASPPBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
+        mid_channels = in_channels // 4  # Giảm kênh trung gian (ví dụ: 1024 -> 256) để chống tràn VRAM
+        
         self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 1, bias=False), 
-            nn.BatchNorm2d(out_channels), 
+            nn.Conv2d(in_channels, mid_channels, 1, bias=False), 
+            nn.BatchNorm2d(mid_channels), 
             nn.ReLU(inplace=True)
         )
         self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding=6, dilation=6, bias=False), 
-            nn.BatchNorm2d(out_channels), 
+            nn.Conv2d(in_channels, mid_channels, 3, padding=6, dilation=6, bias=False), 
+            nn.BatchNorm2d(mid_channels), 
             nn.ReLU(inplace=True)
         )
         self.conv3 = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding=12, dilation=12, bias=False), 
-            nn.BatchNorm2d(out_channels), 
+            nn.Conv2d(in_channels, mid_channels, 3, padding=12, dilation=12, bias=False), 
+            nn.BatchNorm2d(mid_channels), 
             nn.ReLU(inplace=True)
         )
         self.conv4 = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding=18, dilation=18, bias=False), 
-            nn.BatchNorm2d(out_channels), 
+            nn.Conv2d(in_channels, mid_channels, 3, padding=18, dilation=18, bias=False), 
+            nn.BatchNorm2d(mid_channels), 
             nn.ReLU(inplace=True)
         )
         self.project = nn.Sequential(
-            nn.Conv2d(out_channels * 4, out_channels, 1, bias=False), 
+            nn.Conv2d(mid_channels * 4, out_channels, 1, bias=False), 
             nn.BatchNorm2d(out_channels), 
             nn.ReLU(inplace=True)
         )
