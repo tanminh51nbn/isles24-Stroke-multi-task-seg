@@ -11,18 +11,18 @@ loss:
     beta: 0.65
     gamma: 1.35
     slice_pos_weight: 2.5
-    sdf_weight: 0.4
-    sdf_fg_weight: 0.1
+    sdf_weight: 0.45
+    sdf_fg_weight: 0.2
 
   lvo:
     type: "modified_focal"
-    mfl_alpha: 2.0
-    mfl_beta: 4.0
+    mfl_alpha: 2.5
+    mfl_beta: 4.5
     sigma_init: 5.0
     sigma_floor: 1.25
-    sigma_decay: 0.975
+    sigma_decay: 0.98
     slice_pos_weight: 5.0
-    max_radius: 13.0
+    max_radius: 14.5
 
   cow:
     type: "cl_tversky"
@@ -46,14 +46,14 @@ composite_score:
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
-  lr: 7e-4
+  lr: 1e-3
   weight_decay: 0.05
   encoder_lr_scale: 0.01
   eps: 1.0e-7
 
 scheduler:
-  warmup_epochs: 6
-  hold_epochs: 6
+  warmup_epochs: 5
+  hold_epochs: 7
   min_lr: 1.0e-6
 
 # ── Training ────────────────────────────────────────────────────

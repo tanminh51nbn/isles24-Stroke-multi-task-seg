@@ -21,7 +21,7 @@ encoder:
   # Skip levels 1-5
   output_channels: [64, 128, 256, 512, 1024]
   # Encoder Dropout: tăng dần theo chiều sâu
-  enc_dropout: [0.05, 0.10, 0.15, 0.20]
+  enc_dropout: [0.07, 0.12, 0.17, 0.22]
 
 # ── Decoder ─────────────────────────────────────────────────────
 decoder:
@@ -31,21 +31,21 @@ decoder:
   dropout:
     shared: 0.2
     cow: 0.1
-    lvo: 0.2
-    lesion: 0.15 # Giảm một nửa theo yêu cầu bác sĩ (từ 0.3)
+    lvo: 0.15
+    lesion: 0.2
 
 # ── Heads (Residual Task Blocks) ────────────────────────────────
 heads:
   activation: "GELU"
   lesion:
     out_channels: 1
-    dropout: 0.2 # Giảm một nửa theo yêu cầu bác sĩ (từ 0.4)
+    dropout: 0.2
   lvo:
     out_channels: 1
     dropout: 0.3
   cow:
     out_channels: 1
-    dropout: 0.3
+    dropout: 0.2
 
 # ── Output ──────────────────────────────────────────────────────
 # Raw logits (NO sigmoid/softmax in model forward)
