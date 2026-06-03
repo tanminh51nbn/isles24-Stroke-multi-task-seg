@@ -103,6 +103,60 @@ class SingleDecoderBlock(nn.Module):
         return out, aux_out
 
 
+# ─── Módulo SE Block & ASPP (Chống Bất đối xứng) ───────────────────────────────
+
+class ModalitySEBlock(nn.Module):
+    def __init__(self, in_channels, reduction=2):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(in_channels, in_channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_channels // reduction, in_channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+
+
+class ASPPBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 1, bias=False), 
+            nn.BatchNorm2d(out_channels), 
+            nn.ReLU(inplace=True)
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=6, dilation=6, bias=False), 
+            nn.BatchNorm2d(out_channels), 
+            nn.ReLU(inplace=True)
+        )
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=12, dilation=12, bias=False), 
+            nn.BatchNorm2d(out_channels), 
+            nn.ReLU(inplace=True)
+        )
+        self.conv4 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=18, dilation=18, bias=False), 
+            nn.BatchNorm2d(out_channels), 
+            nn.ReLU(inplace=True)
+        )
+        self.project = nn.Sequential(
+            nn.Conv2d(out_channels * 4, out_channels, 1, bias=False), 
+            nn.BatchNorm2d(out_channels), 
+            nn.ReLU(inplace=True)
+        )
+        
+    def forward(self, x):
+        res = torch.cat([self.conv1(x), self.conv2(x), self.conv3(x), self.conv4(x)], dim=1)
+        return self.project(res)
+
+
 # ─── Specialized Decoder Paths (Single Encoder version) ────────────────────────
 
 class SingleSharedPath(nn.Module):
@@ -220,7 +274,7 @@ class SingleEncoderTripleDecoder(nn.Module):
         
         self.shared_bottleneck = nn.Sequential(
             ConvBnGelu1x1(skip_channels[4], bottleneck_ch),
-            ConvBnGelu(bottleneck_ch, bottleneck_ch),
+            ASPPBlock(bottleneck_ch, bottleneck_ch),
         )
 
         skips_shared = [skip_channels[3], skip_channels[2]]  # s4, s3
@@ -351,6 +405,9 @@ class SingleEncoderUNet(nn.Module):
             config,
             skip_channels=self.encoder.skip_channels
         )
+        
+        # [NEW] Modality SE Block
+        self.se_input = ModalitySEBlock(in_channels=in_ch, reduction=2)
 
         decoder_final_ch = config["decoder"].get("final_ch", 16)
         self.heads = MultiTaskHeads(
@@ -359,7 +416,8 @@ class SingleEncoderUNet(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, epoch: int = 0) -> dict:
-        skips = self.encoder(x)
+        x_weighted = self.se_input(x)
+        skips = self.encoder(x_weighted)
 
         features_dict, aux_masks, g_maps = self.decoder(skips, epoch=epoch, x_raw=x)
 
