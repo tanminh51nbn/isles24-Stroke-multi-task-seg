@@ -163,6 +163,54 @@ class SingleTaskPath(nn.Module):
         return x, [None, None, aux2, aux1]
 
 
+class ShallowLVOBranch(nn.Module):
+    def __init__(self, ch_s2: int, ch_s1: int, final_ch: int, guidance_ch: int = 16, dropout_p: float = 0.2):
+        super().__init__()
+        # Reduce skip channels
+        self.conv_s2 = ConvBnGelu1x1(ch_s2, 64)
+        self.conv_s1 = ConvBnGelu1x1(ch_s1, 64)
+        
+        # Fusion at H/2, W/2
+        self.fusion = nn.Sequential(
+            ConvBnGelu(128, 64),
+            nn.Dropout2d(p=dropout_p),
+            ConvBnGelu(64, final_ch)
+        )
+        self.up_s2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        
+        if guidance_ch > 0:
+            self.guidance_attn = FusedSpatialAttention(task_ch=final_ch, guidance_ch=guidance_ch)
+        else:
+            self.guidance_attn = None
+            
+        # Keep aux outputs for compatibility [None, None, aux2, aux1]
+        self.aux_head2 = AuxHead(64, "lvo", out_ch=1) # Aux on s2
+        self.aux_head1 = AuxHead(final_ch, "lvo", out_ch=1) # Aux on final
+
+    def forward(self, s2, s1, guidance: Optional[torch.Tensor] = None):
+        x_s2 = self.conv_s2(s2)
+        aux2 = self.aux_head2(x_s2)
+        
+        x_s2_up = self.up_s2(x_s2)
+        x_s1 = self.conv_s1(s1)
+        
+        x_fused = torch.cat([x_s2_up, x_s1], dim=1)
+        x_fused = self.fusion(x_fused)
+        
+        aux1 = self.aux_head1(x_fused)
+        
+        # Upsample to final size (256, 256)
+        x_final = self.up_final(x_fused)
+        
+        if guidance is not None and self.guidance_attn is not None:
+            f_lvo, _ = self.guidance_attn(x_final, guidance)
+        else:
+            f_lvo = x_final
+            
+        return f_lvo, [None, None, aux2, aux1]
+
+
 class SingleEncoderTripleDecoder(nn.Module):
     def __init__(self, config: dict, skip_channels: List[int]):
         super().__init__()
@@ -184,10 +232,16 @@ class SingleEncoderTripleDecoder(nn.Module):
         in_ch_task = dec_ch[1] # output of dec3
         
         self.cow_path    = SingleTaskPath(in_ch_task, config, "cow", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=0)
-        self.lvo_path    = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
+        
+        # [NEW] Shallow LVO Branch
+        dropout_cfg = config["decoder"].get("dropout", {})
+        lvo_shallow_drop = dropout_cfg.get("lvo_shallow", 0.2) if isinstance(dropout_cfg, dict) else 0.2
+        final_ch = config["decoder"].get("final_ch", 16)
+        self.lvo_path = ShallowLVOBranch(ch_s2=skips_task[0], ch_s1=skips_task[1], final_ch=final_ch, guidance_ch=16, dropout_p=lvo_shallow_drop)
+        
         self.lesion_path = SingleTaskPath(in_ch_task, config, "lesion", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
         
-        # [NEW] Tissue Stem: Trích xuất trực tiếp từ 6 kênh gốc của lát cắt Z (không bị trộn lẫn)
+        # [NEW] Tissue Stem & Gated Alignment
         self.tissue_stem = nn.Sequential(
             nn.Conv2d(6, 16, kernel_size=3, padding=1),
             nn.BatchNorm2d(16),
@@ -195,6 +249,12 @@ class SingleEncoderTripleDecoder(nn.Module):
             nn.Conv2d(16, 16, kernel_size=3, padding=1),
             nn.BatchNorm2d(16),
             nn.GELU()
+        )
+        self.tissue_gate = nn.Sequential(
+            nn.Conv2d(final_ch + 16, 16, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 1, kernel_size=1),
+            nn.Sigmoid()
         )
         
         # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW (Tăng lên 0.4 chống overfit)
@@ -219,7 +279,7 @@ class SingleEncoderTripleDecoder(nn.Module):
                 self._lvo_guidance_grad_norm = grad.norm(2).item()
             guidance_for_lvo.register_hook(lvo_guidance_hook)
             
-        f_lvo, lvo_auxs = self.lvo_path(x_shared, [s2, s1], guidance=guidance_for_lvo)
+        f_lvo, lvo_auxs = self.lvo_path(s2, s1, guidance=guidance_for_lvo)
         
         # --- Lesion chỉ nhận Guidance từ CoW (Mạch máu sạch) ---
         guidance_for_lesion = f_cow.detach()
@@ -239,8 +299,9 @@ class SingleEncoderTripleDecoder(nn.Module):
             # Lát cắt Z nằm ở index 6 đến 11 (6 kênh)
             slice_z = x_raw[:, 6:12, :, :]
             tissue_features = self.tissue_stem(slice_z)
-            # Cộng gộp để Lesion có thông tin chi tiết về mô não nguyên bản
-            f_lesion = f_lesion + tissue_features
+            # Dùng Gate để quyết định lấy bao nhiêu phần trăm từ tissue_features
+            gate = self.tissue_gate(torch.cat([f_lesion, tissue_features], dim=1))
+            f_lesion = f_lesion + tissue_features * gate
 
         aux_masks = {
             "lesion": lesion_auxs,
