@@ -31,9 +31,8 @@ decoder:
   dropout:
     shared: 0.2
     cow: 0.1
-    lvo: 0.15
+    lvo: 0.4
     lesion: 0.2
-    lvo_shallow: 0.2
 
 # ── Heads (Residual Task Blocks) ────────────────────────────────
 heads:

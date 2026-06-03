@@ -266,11 +266,7 @@ class SingleEncoderTripleDecoder(nn.Module):
         
         self.cow_path    = SingleTaskPath(in_ch_task, config, "cow", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=0)
         
-        import copy
-        config_lvo = copy.deepcopy(config)
-        if "dropout" in config_lvo["decoder"] and isinstance(config_lvo["decoder"]["dropout"], dict):
-            config_lvo["decoder"]["dropout"]["lvo"] = 0.4
-        self.lvo_path = SingleTaskPath(in_ch_task, config_lvo, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
+        self.lvo_path = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
         
         self.lesion_path = LesionTaskPath(in_ch_task, config, skips_task, perf_ch=6)
         
