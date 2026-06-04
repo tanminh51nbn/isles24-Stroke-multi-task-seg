@@ -1,5 +1,5 @@
 """
-trainer.py — Vòng lặp huấn luyện chính cho Dual-Encoder Multi-Task UNet
+trainer.py — Vòng lặp huấn luyện chính cho Multi-Task UNet
 """
 
 import os
@@ -17,7 +17,7 @@ from compile.metrics import (
 )
 from evaluation.visualize import overlay_predictions, select_best_sample
 from data.fold_split import apply_sampling
-import os
+
 
 class Trainer:
     def __init__(self, model, train_loader: DataLoader, val_loader: DataLoader, train_files_original, loss_fn, optimizer, scheduler, config: dict, device: torch.device, rank: int = 0):
@@ -63,7 +63,7 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
             raw_model = self.model.module if hasattr(self.model, "module") else self.model
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
-                preds = raw_model(inp, epoch=epoch)
+                preds = raw_model(inp, epoch=epoch, decoupled=True)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
                 
                 # Accumulate diagnostics
@@ -88,8 +88,10 @@ class Trainer:
 
             # Phẫu thuật Gradient bằng PCGrad
             _log_enc = (batch_idx % self.log_interval == 0 and self.rank == 0)
-            self.pcgrad.backward(task_losses, self.model, scaler=self.scaler,
-                                 encoder_debug_ids=self._enc_param_ids if _log_enc else None)
+            weights = [losses["p_lesion"], losses["p_lvo"], losses["p_cow"]]
+            self.pcgrad.backward_encoder_bypass(task_losses, self.model, scaler=self.scaler,
+                                                encoder_debug_ids=self._enc_param_ids if _log_enc else None,
+                                                weights=weights, asymmetric=True)
             self.scaler.unscale_(self.optimizer)
             
             if batch_idx % self.log_interval == 0 and self.rank == 0:
@@ -104,6 +106,16 @@ class Trainer:
                         elif "encoder" in n.lower() or "features" in n.lower(): gn["e"] += sq_val
                 
                 print(f"    [GRAD] B{batch_idx:03d} | 🔴 Les: {gn['l']**0.5:.2f} 🎯 LVO: {gn['v']**0.5:.2f} 🟢 CoW: {gn['c']**0.5:.2f} 🧠 Enc: {gn['e']**0.5:.2f}")
+                
+                # In thông số đo đạc Telemetry PCGrad + PGW (G1)
+                if hasattr(self.pcgrad, 'telemetry_data') and self.pcgrad.telemetry_data is not None:
+                    td = self.pcgrad.telemetry_data
+                    con = td["conflict"]
+                    cos_b = td["cosine_before"]
+                    cos_a = td["cosine_after"]
+                    print(f"    [TELEMETRY] Conflict: L-V:{int(con.get('Lesion,LVO', 0))} L-C:{int(con.get('Lesion,CoW', 0))} V-C:{int(con.get('LVO,CoW', 0))} | "
+                          f"CosBefore: L-V:{cos_b.get('Lesion,LVO', 0.0):+.2f} L-C:{cos_b.get('Lesion,CoW', 0.0):+.2f} V-C:{cos_b.get('LVO,CoW', 0.0):+.2f} | "
+                          f"CosAfter (Direction Kept): Les:{cos_a.get('Lesion', 1.0):.2f} LVO:{cos_a.get('LVO', 1.0):.2f} CoW:{cos_a.get('CoW', 1.0):.2f}")
                 
                 enc_str, guide_str = "", ""
                 if hasattr(self.pcgrad, '_enc_debug') and self.pcgrad._enc_debug is not None:
@@ -124,17 +136,8 @@ class Trainer:
                 if enc_str or guide_str:
                     print(f"    [INFO] Guide_Flow[{guide_str.strip()}] {enc_str}")
 
-            # [FIX 1.3] Per-task gradient clip cho các nhánh để bảo vệ encoder (Bệnh 3)
-            raw = self.model.module if hasattr(self.model, "module") else self.model
-            for task, max_norm in [("lesion", 10.0), ("lvo", 10.0), ("cow", 10.0)]:
-                task_params = [p for n, p in raw.named_parameters()
-                               if task in n.lower() and p.grad is not None]
-                if task_params:
-                    task_norm = nn.utils.clip_grad_norm_(task_params, max_norm=max_norm)
-                    if task == "lvo":
-                        lvo_val = task_norm.item() if torch.is_tensor(task_norm) else float(task_norm)
-                        if lvo_val > max_lvo_spike:
-                            max_lvo_spike = lvo_val
+            # Bỏ qua Per-task gradient clip thủ công tại đây vì PCGrad đã thực hiện
+            # clip per-task 10.0 một cách chính xác trước đó.
             
             # Clip toàn bộ tham số mô hình (global clip)
             nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
@@ -150,10 +153,7 @@ class Trainer:
             n_batches += 1
 
         if self.rank == 0:
-            if max_lvo_spike > 100.0:
-                import math
-                spike_str = "inf" if math.isinf(max_lvo_spike) else f"{max_lvo_spike:.1f}"
-                print(f"    [WARN] LVO max grad spike: {spike_str} -> clipped to 10.0")
+            # Log spike được theo dõi trực tiếp trong PCGrad nếu cần
             if nan_batches > 0:
                 print(f"    [WARN] Đã skip {nan_batches} batches do lỗi NaN/Inf.")
                 
@@ -384,16 +384,45 @@ class Trainer:
         if "history" in ckpt: self.history = ckpt["history"]
         return ckpt.get("epoch", 0)
 
+    def _rebuild_train_loader(self, new_file_list: list, epoch: int):
+        from torch.utils.data.distributed import DistributedSampler
+        new_dataset = type(self.train_loader.dataset)(
+            new_file_list, 
+            transform=self.train_loader.dataset.transform
+        )
+        if dist.is_initialized():
+            new_sampler = DistributedSampler(
+                new_dataset,
+                num_replicas=dist.get_world_size(),
+                rank=dist.get_rank(),
+                shuffle=True,
+                seed=self.config["split"].get("seed", 42)
+            )
+            new_sampler.set_epoch(epoch)
+        else:
+            new_sampler = None
+            
+        self.train_loader = DataLoader(
+            new_dataset,
+            batch_size=self.train_loader.batch_size,
+            sampler=new_sampler,
+            shuffle=(new_sampler is None),
+            num_workers=self.train_loader.num_workers,
+            pin_memory=self.train_loader.pin_memory,
+            persistent_workers=self.train_loader.persistent_workers,
+            prefetch_factor=self.train_loader.prefetch_factor,
+            drop_last=self.train_loader.drop_last
+        )
+
     def fit(self, early_stopping=None, checkpoint=None, start_epoch: int = 0):
         raw = self.model.module if hasattr(self.model, "module") else self.model
         raw.freeze_encoders()
         for epoch in range(start_epoch, self.epochs):
-            # [CYCLIC STRIDE] Cập nhật danh sách file huấn luyện cho Epoch mới
+            # [CYCLIC STRIDE] Cập nhật danh sách file huấn luyện và tái cấu trúc DataLoader
             new_train_list = apply_sampling(self.train_files_original, self.config, epoch=epoch)
-            self.train_loader.dataset.file_list = new_train_list
+            self._rebuild_train_loader(new_train_list, epoch)
             
             if epoch == self.freeze_enc_epochs: raw.unfreeze_encoders()
-            if hasattr(self.train_loader.sampler, "set_epoch"): self.train_loader.sampler.set_epoch(epoch)
             
             t_m = self.train_one_epoch(epoch)
             torch.cuda.empty_cache()  # [MEMORY FIX] Giải phóng VRAM rác chống phân mảnh
