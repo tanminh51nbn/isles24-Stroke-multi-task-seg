@@ -9,8 +9,8 @@ Kiến trúc tổng thể:
     Triple-Decoder (Knowledge Cascade)
         ├── SharedPath (dec4, dec3)
         ├── TaskPath (CoW)
-        ├── TaskPath (Lesion, guidance=CoW)
-        └── TaskPath (LVO, guidance=CoW+Lesion)
+        ├── TaskPath (LVO, guidance=CoW)
+        └── TaskPath (Lesion, guidance=CoW+Dropout(0.4))
         ↓
     MultiTaskHeads (Lesion, LVO, CoW)
 """
@@ -45,6 +45,12 @@ class FusedSpatialAttention(nn.Module):
         )
         
     def forward(self, x_task, guidance_features):
+        # --- Shape Assertion Mode (D2) ---
+        from models.single_unet import SingleEncoderUNet
+        if getattr(SingleEncoderUNet, 'DEBUG', False):
+            assert x_task.shape[0] == guidance_features.shape[0], \
+                f"[FusedSpatialAttention] Batch size mismatch: task={x_task.shape[0]}, guidance={guidance_features.shape[0]}."
+
         # 1. Resize guidance để khớp với x_task
         g_interp = F.interpolate(guidance_features, size=x_task.shape[2:], mode='bilinear', align_corners=False)
         # 2. Ghép nối để mạng nhìn thấy cả 2
@@ -90,11 +96,28 @@ class SingleDecoderBlock(nn.Module):
         else:
             prev_mask = F.interpolate(prev_mask, size=(x_up.shape[2], x_up.shape[3]), mode=interp_mode, align_corners=(False if interp_mode == "bilinear" else None))
         
+        # --- Shape Assertion Mode (D2) ---
+        from models.single_unet import SingleEncoderUNet
+        if getattr(SingleEncoderUNet, 'DEBUG', False):
+            assert x_up.shape[2:] == skip.shape[2:], \
+                f"[SingleDecoderBlock - {self.task_name}] Spatial shape mismatch between x_up {x_up.shape[2:]} and skip {skip.shape[2:]}."
+            assert x_up.shape[2:] == prev_mask.shape[2:], \
+                f"[SingleDecoderBlock - {self.task_name}] Spatial shape mismatch between x_up {x_up.shape[2:]} and prev_mask {prev_mask.shape[2:]}."
+            assert x_up.shape[0] == skip.shape[0] == prev_mask.shape[0], \
+                f"[SingleDecoderBlock - {self.task_name}] Batch size mismatch: x_up={x_up.shape[0]}, skip={skip.shape[0]}, prev_mask={prev_mask.shape[0]}."
+
         if self.attention_type == "ag":
             skip = self.ag(g=x_up, x=skip)
         elif self.attention_type == "dual":
             skip = self.dual_attn(skip)
             
+        # --- Channel Dimension Assertion Mode (D2) ---
+        if getattr(SingleEncoderUNet, 'DEBUG', False):
+            expected_ch = x_up.shape[1] + skip.shape[1] + prev_mask.shape[1]
+            conv1_in_ch = self.conv1.block[0].in_channels
+            assert conv1_in_ch == expected_ch, \
+                f"[SingleDecoderBlock - {self.task_name}] Conv1 expects {conv1_in_ch} input channels, but concat output has {expected_ch} channels."
+
         out = torch.cat([x_up, skip, prev_mask], dim=1)
         out = self.conv1(out)
         out = self.conv2(out)
@@ -166,7 +189,9 @@ class SingleSharedPath(nn.Module):
 
 
 class SingleTaskPath(nn.Module):
-    def __init__(self, in_ch: int, config: dict, task_name: str, skip_channels: List[int], aux_ch: int = 1, active_aux_levels: List[bool] = [True, True], guidance_ch: int = 0):
+    def __init__(self, in_ch: int, config: dict, task_name: str, skip_channels: List[int],
+                 aux_ch: int = 1, active_aux_levels: List[bool] = [True, True],
+                 guidance_ch: int = 0, guidance_dec2_ch: int = 0, guidance_dec1_ch: int = 0):
         super().__init__()
         self.task_name = task_name
         dec_ch = config["decoder"]["out_channels"]
@@ -187,24 +212,40 @@ class SingleTaskPath(nn.Module):
         else:
             self.guidance_attn = None
 
-    def forward(self, x_shared, skips_task, guidance: Optional[torch.Tensor] = None):
+        if guidance_dec2_ch > 0:
+            self.attn_dec2 = FusedSpatialAttention(task_ch=dec_ch[2], guidance_ch=guidance_dec2_ch)
+        else:
+            self.attn_dec2 = None
+
+        if guidance_dec1_ch > 0:
+            self.attn_dec1 = FusedSpatialAttention(task_ch=dec_ch[3], guidance_ch=guidance_dec1_ch)
+        else:
+            self.attn_dec1 = None
+
+    def forward(self, x_shared, skips_task, guidance: Optional[torch.Tensor] = None,
+                guidance_dec2: Optional[torch.Tensor] = None, guidance_dec1: Optional[torch.Tensor] = None):
         s2, s1 = skips_task
 
-        x, aux2 = self.dec2(x_shared, s2, prev_mask=None)
-        x, aux1 = self.dec1(x, s1, prev_mask=aux2)
+        x_dec2, aux2 = self.dec2(x_shared, s2, prev_mask=None)
+        if guidance_dec2 is not None and self.attn_dec2 is not None:
+            x_dec2, _ = self.attn_dec2(x_dec2, guidance_dec2)
 
-        x = self.up_final(x)
+        x_dec1, aux1 = self.dec1(x_dec2, s1, prev_mask=aux2)
+        if guidance_dec1 is not None and self.attn_dec1 is not None:
+            x_dec1, _ = self.attn_dec1(x_dec1, guidance_dec1)
+
+        x = self.up_final(x_dec1)
         x = self.final_conv(x)
         
         if guidance is not None and self.guidance_attn is not None:
             x, attn_map = self.guidance_attn(x, guidance)
-            # Nếu cần debug, có thể đưa attn_map ra ngoài, nhưng hiện tại ta bỏ qua để giữ API đơn giản.
 
-        return x, [None, None, aux2, aux1]
+        return x, [None, None, aux2, aux1], [x_dec2, x_dec1]
 
 
 class LesionTaskPath(nn.Module):
-    def __init__(self, in_ch: int, config: dict, skip_channels: List[int], perf_ch: int = 6):
+    def __init__(self, in_ch: int, config: dict, skip_channels: List[int], perf_ch: int = 6,
+                 guidance_dec2_ch: int = 0, guidance_dec1_ch: int = 0):
         super().__init__()
         dec_ch = config["decoder"]["out_channels"]
         final_ch = config["decoder"].get("final_ch", 16)
@@ -221,7 +262,18 @@ class LesionTaskPath(nn.Module):
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
         self.guidance_attn = FusedSpatialAttention(task_ch=final_ch, guidance_ch=16)
 
-    def forward(self, x_shared, skips_task, guidance, perf_raw):
+        if guidance_dec2_ch > 0:
+            self.attn_dec2 = FusedSpatialAttention(task_ch=dec_ch[2], guidance_ch=guidance_dec2_ch)
+        else:
+            self.attn_dec2 = None
+
+        if guidance_dec1_ch > 0:
+            self.attn_dec1 = FusedSpatialAttention(task_ch=dec_ch[3], guidance_ch=guidance_dec1_ch)
+        else:
+            self.attn_dec1 = None
+
+    def forward(self, x_shared, skips_task, guidance, perf_raw,
+                guidance_dec2: Optional[torch.Tensor] = None, guidance_dec1: Optional[torch.Tensor] = None):
         s2, s1 = skips_task
         
         # perf_raw is (B, 6, 256, 256)
@@ -232,16 +284,21 @@ class LesionTaskPath(nn.Module):
         s2_fused = torch.cat([s2, perf_s2], dim=1)
         s1_fused = torch.cat([s1, perf_s1], dim=1)
         
-        x, aux2 = self.dec2(x_shared, s2_fused, prev_mask=None)
-        x, aux1 = self.dec1(x, s1_fused, prev_mask=aux2)
+        x_dec2, aux2 = self.dec2(x_shared, s2_fused, prev_mask=None)
+        if guidance_dec2 is not None and self.attn_dec2 is not None:
+            x_dec2, _ = self.attn_dec2(x_dec2, guidance_dec2)
 
-        x = self.up_final(x)
+        x_dec1, aux1 = self.dec1(x_dec2, s1_fused, prev_mask=aux2)
+        if guidance_dec1 is not None and self.attn_dec1 is not None:
+            x_dec1, _ = self.attn_dec1(x_dec1, guidance_dec1)
+
+        x = self.up_final(x_dec1)
         x = self.final_conv(x)
         
         if guidance is not None:
             x, _ = self.guidance_attn(x, guidance)
             
-        return x, [None, None, aux2, aux1]
+        return x, [None, None, aux2, aux1], [x_dec2, x_dec1]
 
 
 class SingleEncoderTripleDecoder(nn.Module):
@@ -266,48 +323,139 @@ class SingleEncoderTripleDecoder(nn.Module):
         
         self.cow_path    = SingleTaskPath(in_ch_task, config, "cow", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=0)
         
-        self.lvo_path = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
+        self.lvo_path = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[False, False], guidance_ch=16,
+                                       guidance_dec2_ch=64, guidance_dec1_ch=32)
         
-        self.lesion_path = LesionTaskPath(in_ch_task, config, skips_task, perf_ch=6)
+        self.lesion_path = LesionTaskPath(in_ch_task, config, skips_task, perf_ch=6,
+                                          guidance_dec2_ch=64, guidance_dec1_ch=32)
         
         # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW (Tăng lên 0.4 chống overfit)
         self.guidance_dropout = nn.Dropout2d(p=0.4)
 
-    def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None):
+    def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None, decoupled: bool = False):
+        # --- Shape Assertion Mode (D2) ---
+        from models.single_unet import SingleEncoderUNet
+        if getattr(SingleEncoderUNet, 'DEBUG', False):
+            assert len(skips) == 5, f"[SingleEncoderTripleDecoder] Expected 5 skip tensors from encoder, got {len(skips)}."
+            # s1 to s5 channels: s1 should be 64, s2=256, s3=512, s4=1024, s5=1024 (DenseNet-121 skips)
+            expected_channels = [64, 256, 512, 1024, 1024]
+            for idx, s in enumerate(skips):
+                assert s.shape[1] == expected_channels[idx], \
+                    f"[SingleEncoderTripleDecoder] Encoder skip s{idx+1} expects {expected_channels[idx]} channels, got {s.shape[1]}."
+                expected_size = skips[0].shape[2] // (2 ** idx)
+                assert s.shape[2] == expected_size and s.shape[3] == expected_size, \
+                    f"[SingleEncoderTripleDecoder] Encoder skip s{idx+1} expects spatial size {(expected_size, expected_size)}, got {s.shape[2:]}."
+        
         s1, s2, s3, s4, s5 = skips
 
-        # 1. Bottleneck
-        x_bottleneck = self.shared_bottleneck(s5)
-        
-        # 2. Shared Path (dec4, dec3)
-        x_shared = self.shared_path(x_bottleneck, [s4, s3])
-        
-        f_cow, cow_auxs = self.cow_path(x_shared, [s2, s1])
-        
-        # --- LVO nhận Guidance từ CoW ---
-        guidance_for_lvo = f_cow.detach()
-        if self.training:
-            guidance_for_lvo.requires_grad_(True)
-            def lvo_guidance_hook(grad):
-                self._lvo_guidance_grad_norm = grad.norm(2).item()
-            guidance_for_lvo.register_hook(lvo_guidance_hook)
+        if decoupled and self.training:
+            # 1. Bottleneck with detached leaves for shared path inputs
+            s5_dec = s5.detach().requires_grad_(True)
+            s4_dec = s4.detach().requires_grad_(True)
+            s3_dec = s3.detach().requires_grad_(True)
             
-        f_lvo, lvo_auxs = self.lvo_path(x_shared, [s2, s1], guidance=guidance_for_lvo)
-        
-        # --- Lesion chỉ nhận Guidance từ CoW (Mạch máu sạch) ---
-        guidance_for_lesion = f_cow.detach()
-        # Ép Lesion tự lực cánh sinh bằng cách thi thoảng tắt một số kênh Guidance
-        guidance_for_lesion = self.guidance_dropout(guidance_for_lesion)
-        
-        if self.training:
-            guidance_for_lesion.requires_grad_(True)
-            def lesion_guidance_hook(grad):
-                self._lesion_guidance_grad_norm = grad.norm(2).item()
-            guidance_for_lesion.register_hook(lesion_guidance_hook)
+            x_bottleneck = self.shared_bottleneck(s5_dec)
+            x_shared = self.shared_path(x_bottleneck, [s4_dec, s3_dec])
             
-        # Truyền raw perfusion vào Lesion Path
-        perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
-        f_lesion, lesion_auxs = self.lesion_path(x_shared, [s2, s1], guidance=guidance_for_lesion, perf_raw=perf_raw)
+            # Save detached leaves for backward access
+            self.s5_dec = s5_dec
+            self.s4_dec = s4_dec
+            self.s3_dec = s3_dec
+            self.x_shared = x_shared
+            
+            # 2. Detach x_shared and skips for each task path to isolate their graphs
+            x_shared_cow = x_shared.detach().requires_grad_(True)
+            s2_cow = s2.detach().requires_grad_(True)
+            s1_cow = s1.detach().requires_grad_(True)
+            
+            x_shared_lvo = x_shared.detach().requires_grad_(True)
+            s2_lvo = s2.detach().requires_grad_(True)
+            s1_lvo = s1.detach().requires_grad_(True)
+            
+            x_shared_les = x_shared.detach().requires_grad_(True)
+            s2_les = s2.detach().requires_grad_(True)
+            s1_les = s1.detach().requires_grad_(True)
+            
+            self.task_leaves = {
+                "cow": (x_shared_cow, s2_cow, s1_cow),
+                "lvo": (x_shared_lvo, s2_lvo, s1_lvo),
+                "lesion": (x_shared_les, s2_les, s1_les)
+            }
+            
+            f_cow, cow_auxs, cow_feats = self.cow_path(x_shared_cow, [s2_cow, s1_cow])
+            cow_dec2, cow_dec1 = cow_feats
+            
+            # --- LVO nhận Guidance từ CoW ---
+            guidance_for_lvo = f_cow.detach()
+            f_lvo, lvo_auxs, _ = self.lvo_path(
+                x_shared_lvo, [s2_lvo, s1_lvo],
+                guidance=guidance_for_lvo,
+                guidance_dec2=cow_dec2.detach(),
+                guidance_dec1=cow_dec1.detach()
+            )
+            
+            # --- Lesion chỉ nhận Guidance từ CoW (Mạch máu sạch) ---
+            guidance_for_lesion = f_cow.detach()
+            guidance_for_lesion = self.guidance_dropout(guidance_for_lesion)
+            
+            cow_dec2_for_les = self.guidance_dropout(cow_dec2.detach())
+            cow_dec1_for_les = self.guidance_dropout(cow_dec1.detach())
+            
+            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
+            f_lesion, lesion_auxs, _ = self.lesion_path(
+                x_shared_les, [s2_les, s1_les],
+                guidance=guidance_for_lesion,
+                perf_raw=perf_raw,
+                guidance_dec2=cow_dec2_for_les,
+                guidance_dec1=cow_dec1_for_les
+            )
+        else:
+            # 1. Bottleneck
+            x_bottleneck = self.shared_bottleneck(s5)
+            
+            # 2. Shared Path (dec4, dec3)
+            x_shared = self.shared_path(x_bottleneck, [s4, s3])
+            
+            f_cow, cow_auxs, cow_feats = self.cow_path(x_shared, [s2, s1])
+            cow_dec2, cow_dec1 = cow_feats
+            
+            # --- LVO nhận Guidance từ CoW ---
+            guidance_for_lvo = f_cow.detach()
+            if self.training:
+                guidance_for_lvo.requires_grad_(True)
+                def lvo_guidance_hook(grad):
+                    self._lvo_guidance_grad_norm = grad.norm(2).item()
+                guidance_for_lvo.register_hook(lvo_guidance_hook)
+                
+            f_lvo, lvo_auxs, _ = self.lvo_path(
+                x_shared, [s2, s1],
+                guidance=guidance_for_lvo,
+                guidance_dec2=cow_dec2.detach(),
+                guidance_dec1=cow_dec1.detach()
+            )
+            
+            # --- Lesion chỉ nhận Guidance từ CoW (Mạch máu sạch) ---
+            guidance_for_lesion = f_cow.detach()
+            guidance_for_lesion = self.guidance_dropout(guidance_for_lesion)
+            
+            if self.training:
+                guidance_for_lesion.requires_grad_(True)
+                def lesion_guidance_hook(grad):
+                    self._lesion_guidance_grad_norm = grad.norm(2).item()
+                guidance_for_lesion.register_hook(lesion_guidance_hook)
+                
+            cow_dec2_for_les = self.guidance_dropout(cow_dec2.detach())
+            cow_dec1_for_les = self.guidance_dropout(cow_dec1.detach())
+            
+            # Truyền raw perfusion vào Lesion Path
+            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
+            f_lesion, lesion_auxs, _ = self.lesion_path(
+                x_shared, [s2, s1],
+                guidance=guidance_for_lesion,
+                perf_raw=perf_raw,
+                guidance_dec2=cow_dec2_for_les,
+                guidance_dec1=cow_dec1_for_les
+            )
 
         aux_masks = {
             "lesion": lesion_auxs,
@@ -330,6 +478,7 @@ class SingleEncoderUNet(nn.Module):
     """
     Single-Encoder Multi-Task UNet với cơ chế Triple Decoder Knowledge Cascade
     """
+    DEBUG = False
 
     def __init__(self, config: dict):
         super().__init__()
@@ -364,10 +513,18 @@ class SingleEncoderUNet(nn.Module):
             heads_config=config["heads"],
         )
 
-    def forward(self, x: torch.Tensor, epoch: int = 0) -> dict:
-        skips = self.encoder(x)
+    def forward(self, x: torch.Tensor, epoch: int = 0, decoupled: bool = False) -> dict:
+        # --- Shape Assertion Mode (D2) ---
+        if getattr(self, 'DEBUG', False):
+            assert x.ndim == 4, f"[SingleEncoderUNet] Input must be a 4D tensor (B, C, H, W), got {x.shape}."
+            assert x.shape[1] == 18, f"[SingleEncoderUNet] Input must have 18 channels (6 CTA + 12 CTP), got {x.shape[1]}."
+            assert x.shape[2] % 32 == 0 and x.shape[3] % 32 == 0, \
+                f"[SingleEncoderUNet] Input dimensions must be multiple of 32 (for UNet downsampling), got {x.shape[2:]}."
 
-        features_dict, aux_masks, g_maps = self.decoder(skips, epoch=epoch, x_raw=x)
+        skips = self.encoder(x)
+        self.encoder.saved_skips = skips
+
+        features_dict, aux_masks, g_maps = self.decoder(skips, epoch=epoch, x_raw=x, decoupled=decoupled)
 
         out = self.heads(features_dict)
         
