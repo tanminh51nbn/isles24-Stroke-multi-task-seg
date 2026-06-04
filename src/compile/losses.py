@@ -161,49 +161,42 @@ class BoundaryLoss(nn.Module):
         return 1.0 - ((2.0 * intersection + 1e-5) / (union + 1e-5)).mean()
 
 class SDFBoundaryLoss(nn.Module):
-    def __init__(self, fg_weight: float = 0.1):
+    def __init__(self, fg_weight: float = 0.1, gamma: float = 2.0):
         super().__init__()
         self.fg_weight = fg_weight
+        self.gamma = gamma
 
     def forward(self, logits: torch.Tensor, sdf: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         logits = logits.float()
         sdf = sdf.float()
         if mask is not None:
             mask = mask.float()
+            
+        probs = torch.sigmoid(logits)
+
         if mask is None:
             # Fallback for compatibility (e.g. tests or older configurations)
-            probs = torch.sigmoid(logits)
-            fp_loss = probs * torch.clamp(sdf, min=0)
+            fp_loss = (probs ** self.gamma) * torch.clamp(sdf, min=0)
             fn_loss = (1 - probs) * torch.abs(torch.clamp(sdf, max=0))
             return (fp_loss + fn_loss).mean()
 
         # mask shape: (B, 1, H, W)
-        # 1. Slice-Level Gating: Only compute loss on slices that actually contain lesions
-        has_lesion = (mask.sum(dim=(1, 2, 3)) > 0)
-        if not has_lesion.any():
-            return torch.tensor(0.0, device=logits.device)
-
-        logits_pos = logits[has_lesion]
-        sdf_pos = sdf[has_lesion]
-
-        probs = torch.sigmoid(logits_pos)
-
-        # 2. Foreground-Background Balancing: compute mean fp_loss and fn_loss separately
+        # 1. Background-Foreground Balancing trên toàn bộ Batch (Không Gating Slice rỗng)
         # Background pixels have sdf > 0
-        is_bg = sdf_pos > 0
+        is_bg = sdf > 0
         # Foreground pixels have sdf <= 0
-        is_fg = sdf_pos <= 0
+        is_fg = sdf <= 0
 
         num_bg = is_bg.sum().float()
         num_fg = is_fg.sum().float()
 
-        # Calculate losses
-        fp_loss = probs * torch.clamp(sdf_pos, min=0)
-        fn_loss = (1 - probs) * torch.abs(torch.clamp(sdf_pos, max=0))
+        # Calculate losses (Focal-gated FP loss cho background)
+        fp_loss = (probs ** self.gamma) * torch.clamp(sdf, min=0)
+        fn_loss = (1 - probs) * torch.abs(torch.clamp(sdf, max=0))
 
         # Average separately to balance gradients
         fp_mean = fp_loss.sum() / (num_bg + 1e-8)
-        fn_mean = fn_loss.sum() / (num_fg + 1e-8)
+        fn_mean = fn_loss.sum() / (num_fg + 1e-8) if num_fg > 0 else torch.tensor(0.0, device=logits.device)
 
         return fp_mean + self.fg_weight * fn_mean
 
