@@ -161,11 +161,11 @@ class PCGrad:
         task_leaves = raw_model.decoder.task_leaves  # {"cow": (x_shared_cow, s2_cow, s1_cow), ...}
         
         is_ddp = hasattr(model, "no_sync") and torch.distributed.is_initialized()
-        context = model.no_sync() if is_ddp else contextlib.nullcontext()
+        make_context = lambda: model.no_sync() if is_ddp else contextlib.nullcontext()
         
         # 1. Backward 3 nhánh Task Paths độc lập (Không dùng retain_graph)
         model.zero_grad(set_to_none=True)
-        with context:
+        with make_context():
             # Task CoW: losses[2]
             if scaler is not None and self.use_amp:
                 scaler.scale(losses[2]).backward()
@@ -201,7 +201,7 @@ class PCGrad:
         s3_dec = raw_model.decoder.s3_dec
         x_shared = raw_model.decoder.x_shared
         
-        with context:
+        with make_context():
             # CoW Shared Path Backward
             for p in shared_dec_params:
                 p.grad = None
@@ -259,7 +259,7 @@ class PCGrad:
         # 5. Backward duy nhất 1 lần qua Encoder
         s5_orig, s4_orig, s3_orig, s2_orig, s1_orig = raw_model.encoder.saved_skips
         
-        with context:
+        with make_context():
             torch.autograd.backward(
                 [s5_orig, s4_orig, s3_orig, s2_orig, s1_orig],
                 grad_tensors=final_rep_grads,
