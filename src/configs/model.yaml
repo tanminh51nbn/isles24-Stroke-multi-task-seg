@@ -32,14 +32,14 @@ decoder:
     shared: 0.2
     cow: 0.1
     lvo: 0.3
-    lesion: 0.2
+    lesion: 0.3
 
 # ── Heads (Residual Task Blocks) ────────────────────────────────
 heads:
   activation: "GELU"
   lesion:
     out_channels: 1
-    dropout: 0.2
+    dropout: 0.3
   lvo:
     out_channels: 1
     dropout: 0.3

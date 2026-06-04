@@ -20,7 +20,7 @@ loss:
     mfl_beta: 4.5
     sigma_init: 5.0
     sigma_floor: 1.25
-    sigma_decay: 0.98
+    sigma_decay: 0.97
     slice_pos_weight: 5.0
     max_radius: 14.5
 
@@ -48,7 +48,7 @@ optimizer:
   type: "adamw"
   lr: 1e-3
   weight_decay: 0.05
-  encoder_lr_scale: 0.01
+  encoder_lr_scale: 0.05
   eps: 1.0e-7
 
 scheduler:
