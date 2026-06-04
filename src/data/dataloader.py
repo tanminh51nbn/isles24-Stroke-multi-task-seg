@@ -20,6 +20,11 @@ import os
 import glob
 
 
+def worker_init_fn(worker_id):
+    import torch
+    torch.set_num_threads(1)
+
+
 def build_dataloaders(
     config: dict,
     dataset_dir: str,
@@ -102,6 +107,7 @@ def build_dataloaders(
         persistent_workers=dl_cfg.get("persistent_workers", True),
         prefetch_factor=dl_cfg.get("prefetch_factor", 2),
         drop_last=dl_cfg.get("drop_last", True),
+        worker_init_fn=worker_init_fn,
     )
 
     val_loader = DataLoader(
@@ -113,6 +119,7 @@ def build_dataloaders(
         pin_memory=dl_cfg["pin_memory"],
         persistent_workers=dl_cfg.get("persistent_workers", True),
         drop_last=False,
+        worker_init_fn=worker_init_fn,
     )
 
     if rank == 0:
