@@ -15,7 +15,7 @@ from compile.metrics import (
     accumulate_patient_lvo_stats, finalize_patient_lvo_acc,
     get_lvo_threshold,
 )
-from evaluation.visualize import overlay_predictions, select_best_sample
+from evaluation.visualize import overlay_predictions
 from data.fold_split import apply_sampling
 
 
@@ -202,7 +202,9 @@ class Trainer:
         lvo_thr = get_lvo_threshold(epoch + 1, self.metric_weights)  # epoch là 0-indexed, log dùng 1-indexed
         vis_interval = self.config["training"]["logging"].get("visualize_every", 5)
         should_vis = (epoch % vis_interval == 0) and (self.rank == 0)
-        vis_candidates = []  # Thu thập ứng viên từ toàn bộ val loop
+        
+        best_vis_candidate = None
+        best_vis_score = -1
 
         for batch in self.val_loader:
             inp = batch["input"].to(self.device, non_blocking=True)
@@ -249,12 +251,24 @@ class Trainer:
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)
             if should_vis and self.rank == 0:
                 for i in range(inp.shape[0]):
-                    vis_candidates.append({
-                        "input": inp[i].cpu(),
-                        "label": lbl[i].cpu(),
-                        "pred":  {k: v[i:i+1].cpu() for k, v in preds.items() if isinstance(v, torch.Tensor)},
-                        "path":  batch.get("path", [""] * inp.shape[0])[i],
-                    })
+                    lbl_cpu = lbl[i].cpu()
+                    has_lvo = lbl_cpu[1].max().item() > 0.1
+                    has_lesion = lbl_cpu[0].max().item() > 0.5
+                    
+                    score = 0
+                    if has_lvo and has_lesion: score = 3
+                    elif has_lvo: score = 2
+                    elif has_lesion: score = 1
+                    
+                    if score > best_vis_score:
+                        best_vis_score = score
+                        # Chỉ lưu 1 sample duy nhất thay vì lưu tất cả vào list để tránh RAM leak
+                        best_vis_candidate = {
+                            "input": inp[i].cpu(),
+                            "label": lbl_cpu,
+                            "pred":  {k: v[i:i+1].cpu() for k, v in preds.items() if isinstance(v, torch.Tensor)},
+                            "path":  batch.get("path", [""] * inp.shape[0])[i],
+                        }
 
         # [FIX] Đồng bộ TP/FP/FN và D2C distance qua DDP trước khi tính F1
         if dist.is_initialized():
@@ -340,16 +354,16 @@ class Trainer:
             mean_d2c = lvo_stats.get("mean_d2c", 0.0)
             print(f"    [LVO Val] D2C_F1: {lvo_dice:.2f}% (TP={lvo_stats['tp']:.0f} FP={lvo_stats['fp']:.0f} FN={lvo_stats['fn']:.0f} | Mean D2C={mean_d2c:.2f}px) | Pat_Acc: {pat['accuracy']*100:.1f}% (TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']})")
             # Visualize sample tốt nhất (sau khi đã duyệt toàn bộ val loop)
-            if should_vis and vis_candidates:
-                best = select_best_sample(vis_candidates)
-                if best is not None:
-                    vis_dir = os.path.join(self.output_dir, self.config["training"]["checkpoint"]["dir"], "visualizations")
-                    os.makedirs(vis_dir, exist_ok=True)
-                    overlay_predictions(
-                        sample={"input": best["input"], "label": best["label"], "path": best["path"]},
-                        preds=best["pred"],
-                        epoch=epoch, save_dir=vis_dir, thresholds=self.metric_weights.get("thresholds", {})
-                    )
+            if should_vis and best_vis_candidate is not None:
+                label_desc = {3: "LVO+Lesion", 2: "LVO only", 1: "Lesion only", 0: "No label"}
+                print(f"    [VIS] Selected sample: {label_desc.get(best_vis_score, '?')} — {best_vis_candidate.get('path', '')}")
+                vis_dir = os.path.join(self.output_dir, self.config["training"]["checkpoint"]["dir"], "visualizations")
+                os.makedirs(vis_dir, exist_ok=True)
+                overlay_predictions(
+                    sample={"input": best_vis_candidate["input"], "label": best_vis_candidate["label"], "path": best_vis_candidate["path"]},
+                    preds=best_vis_candidate["pred"],
+                    epoch=epoch, save_dir=vis_dir, thresholds=self.metric_weights.get("thresholds", {})
+                )
 
         w = self.metric_weights
         # [FIX] Dùng Slice-level Dice (đã được đồng bộ hoàn hảo qua 2 GPU) thay vì Patient-level (bị lỗi chia cắt DDP)
@@ -375,7 +389,7 @@ class Trainer:
         }
 
         # Giải phóng thủ công các biến lớn trước khi trả về để tránh giữ tham chiếu vòng trên RAM
-        del vis_candidates
+        del best_vis_candidate
         del patient_stats
         if 'gathered_stats' in locals(): del gathered_stats
         if 'merged_stats' in locals(): del merged_stats
