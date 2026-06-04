@@ -259,12 +259,14 @@ class PCGrad:
         # 5. Backward duy nhất 1 lần qua Encoder
         s1_orig, s2_orig, s3_orig, s4_orig, s5_orig = raw_model.encoder.saved_skips
         
-        with make_context():
-            torch.autograd.backward(
-                [s5_orig, s4_orig, s3_orig, s2_orig, s1_orig],
-                grad_tensors=final_rep_grads,
-                retain_graph=False  # Giải phóng đồ thị Encoder!
-            )
+        # 5. Backward duy nhất 1 lần qua Encoder nếu Encoder đang hoạt động (yêu cầu grad)
+        if any(s.requires_grad for s in [s5_orig, s4_orig, s3_orig, s2_orig, s1_orig]):
+            with make_context():
+                torch.autograd.backward(
+                    [s5_orig, s4_orig, s3_orig, s2_orig, s1_orig],
+                    grad_tensors=final_rep_grads,
+                    retain_graph=False  # Giải phóng đồ thị Encoder!
+                )
 
     def _analyze_encoder_grads(self, params, task_flat_grads, enc_ids, scaler=None):
         """Phân tích gradient per-task trên Encoder params (trước PCGrad projection)."""
