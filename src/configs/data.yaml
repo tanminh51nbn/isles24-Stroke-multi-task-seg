@@ -25,10 +25,9 @@ dataloader:
 sampling:
   enabled: true
   metadata_csv: "/kaggle/working/dataset_metadata.csv"
-  lvo_oversample_factor: 10
+  lvo_oversample_factor: 3
   cow_neg_keepall: true
   plain_neg_ratio: 0.15
-  downsample_neg_ratio: 0.5
 
 # ── Augmentation ─────────────────────────────────────────────────
 augmentation:
