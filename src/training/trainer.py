@@ -361,7 +361,7 @@ class Trainer:
             cw = self.loss_fn.current_weights.tolist()
             p_l, p_v, p_c = cw[0], cw[1], cw[2]
 
-        return {
+        res = {
             "val_loss": avg_l, "val_main": avg_m, "val_raw": avg_raw, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
             "dice_lvo": lvo_dice, "dice_cow": ad_c,
             "mean_d2c_lvo": lvo_stats.get("mean_d2c", 0.0),
@@ -374,6 +374,14 @@ class Trainer:
             "v_les_loss": avg_v_les, "v_lvo_loss": avg_v_lvo, "v_cow_loss": avg_v_cow
         }
 
+        # Giải phóng thủ công các biến lớn trước khi trả về để tránh giữ tham chiếu vòng trên RAM
+        del vis_candidates
+        del patient_stats
+        if 'gathered_stats' in locals(): del gathered_stats
+        if 'merged_stats' in locals(): del merged_stats
+        
+        return res
+
     def load_checkpoint(self, path: str):
         if not os.path.exists(path): return 0
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
@@ -385,34 +393,10 @@ class Trainer:
         return ckpt.get("epoch", 0)
 
     def _rebuild_train_loader(self, new_file_list: list, epoch: int):
-        from torch.utils.data.distributed import DistributedSampler
-        new_dataset = type(self.train_loader.dataset)(
-            new_file_list, 
-            transform=self.train_loader.dataset.transform
-        )
-        if dist.is_initialized():
-            new_sampler = DistributedSampler(
-                new_dataset,
-                num_replicas=dist.get_world_size(),
-                rank=dist.get_rank(),
-                shuffle=True,
-                seed=self.config["split"].get("seed", 42)
-            )
-            new_sampler.set_epoch(epoch)
-        else:
-            new_sampler = None
-            
-        self.train_loader = DataLoader(
-            new_dataset,
-            batch_size=self.train_loader.batch_size,
-            sampler=new_sampler,
-            shuffle=(new_sampler is None),
-            num_workers=self.train_loader.num_workers,
-            pin_memory=self.train_loader.pin_memory,
-            persistent_workers=self.train_loader.persistent_workers,
-            prefetch_factor=self.train_loader.prefetch_factor,
-            drop_last=self.train_loader.drop_last
-        )
+        # Cập nhật danh sách file tại chỗ (in-place) thay vì rebuild loader
+        self.train_loader.dataset.update_files(new_file_list)
+        if dist.is_initialized() and self.train_loader.sampler is not None:
+            self.train_loader.sampler.set_epoch(epoch)
 
     def fit(self, early_stopping=None, checkpoint=None, start_epoch: int = 0):
         raw = self.model.module if hasattr(self.model, "module") else self.model
@@ -425,9 +409,12 @@ class Trainer:
             if epoch == self.freeze_enc_epochs: raw.unfreeze_encoders()
             
             t_m = self.train_one_epoch(epoch)
+            import gc
+            gc.collect()
             torch.cuda.empty_cache()  # [MEMORY FIX] Giải phóng VRAM rác chống phân mảnh
             
             v_m = self.validate(epoch + 1)
+            gc.collect()
             torch.cuda.empty_cache()  # [MEMORY FIX] Giải phóng VRAM rác sau khi validate
             
             if self.rank == 0:
