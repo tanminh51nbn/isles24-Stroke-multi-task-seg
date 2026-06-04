@@ -89,6 +89,9 @@ class ISLES24Dataset(Dataset):
     def __len__(self) -> int:
         return len(self.file_list)
 
+    def update_files(self, file_list: List[str]):
+        self.file_list = file_list
+
     def __getitem__(self, idx: int) -> dict:
         path = self.file_list[idx]
         data = np.load(path, allow_pickle=True).item()
