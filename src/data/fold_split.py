@@ -147,8 +147,8 @@ def apply_sampling(
         neg_plain = neg_plain_pool + rng.choices(neg_plain_pool, k=n_plain_fixed - len(neg_plain_pool)) if len(neg_plain_pool) > 0 else []
 
     sampled_basenames = []
-    final_lvo_factor = sampling_cfg.get("final_lvo_factor", 6)
-    for _ in range(final_lvo_factor):
+    lvo_factor = sampling_cfg.get("lvo_oversample_factor", 3)
+    for _ in range(lvo_factor):
         sampled_basenames.extend(balanced_lvo_base)
     
     sampled_basenames.extend(lesion_pure_subset)
