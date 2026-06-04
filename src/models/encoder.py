@@ -202,7 +202,8 @@ class DenseNet121Encoder(nn.Module):
     def __init__(self, in_channels: int = 12, weights_path: str = None, enc_dropout: list = None):
         super().__init__()
         self.skip_channels = [64, 256, 512, 1024, 1024]
-        backbone = models.densenet121(weights=None)
+        # [MEMORY FIX] Kích hoạt memory_efficient=True để tự động dùng Gradient Checkpointing (Tiết kiệm >50% RAM khi Unfreeze)
+        backbone = models.densenet121(weights=None, memory_efficient=True)
         features = backbone.features
 
         # Inflate conv0: (64, 3, 7, 7) → (64, in_channels, 7, 7)

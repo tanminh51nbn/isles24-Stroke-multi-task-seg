@@ -394,8 +394,13 @@ class Trainer:
             
             if epoch == self.freeze_enc_epochs: raw.unfreeze_encoders()
             if hasattr(self.train_loader.sampler, "set_epoch"): self.train_loader.sampler.set_epoch(epoch)
+            
             t_m = self.train_one_epoch(epoch)
+            torch.cuda.empty_cache()  # [MEMORY FIX] Giải phóng VRAM rác chống phân mảnh
+            
             v_m = self.validate(epoch + 1)
+            torch.cuda.empty_cache()  # [MEMORY FIX] Giải phóng VRAM rác sau khi validate
+            
             if self.rank == 0:
                 # Tìm đúng learning rate của Encoder và Decoder dựa vào tên param group
                 lr_enc = None
