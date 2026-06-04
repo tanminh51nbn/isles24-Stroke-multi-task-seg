@@ -58,8 +58,8 @@ def compute_sdf(mask: np.ndarray) -> np.ndarray:
     - Trong vật thể: Giá trị âm (khoảng cách tới biên gần nhất).
     """
     if mask.sum() == 0:
-        # Trả về 0.5 (hình phạt trung bình) cho các slice trống để ổn định gradient
-        return np.ones_like(mask, dtype=np.float32) * 0.5
+        # Trả về 1.0 (hình phạt cực đại ngoài biên) cho các slice trống
+        return np.ones_like(mask, dtype=np.float32) * 1.0
         
     dist_out = distance_transform_edt(1 - mask)
     dist_in  = distance_transform_edt(mask)
