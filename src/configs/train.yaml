@@ -29,17 +29,17 @@ loss:
     alpha: 0.2
     beta: 0.8
     cl_weight: 0.45
-    iters: 4
+    iters: 8
 
 # ── Composite Validation Score ──────────────────────────────────
 # Score = w1*Dice_Lesion + w2*Dice_LVO + w3*Dice_CoW
 composite_score:
-  dice_lesion_weight: 0.45
-  dice_lvo_weight: 0.45
-  dice_cow_weight: 0.1
+  dice_lesion_weight: 0.39
+  dice_lvo_weight: 0.39
+  dice_cow_weight: 0.22
   thresholds:
     lesion: 0.5
-    lvo: 0.3
+    lvo: 0.5
     cow: 0.5
 
 
@@ -60,7 +60,7 @@ scheduler:
 training:
   epochs: 100
   amp: true
-  grad_clip_norm: 2.0
+  grad_clip_norm: 20.0
   freeze_encoder_epochs: 11
 
   initial_weights:
@@ -83,7 +83,7 @@ training:
       cow: 3.0
     performance_targets:
       lesion: 0.75
-      lvo: 0.5
+      lvo: 0.40
       cow: 0.88
 
   # Checkpointing
