@@ -276,8 +276,8 @@ class MultiHeadDecoder(nn.Module):
         in_ch_task = dec_ch[1] # out of dec3
         
         self.cow_path    = TaskPath(in_ch_task, config, "cow", cta_skips_task, perf_skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=0)
-        self.lesion_path = TaskPath(in_ch_task, config, "lesion", cta_skips_task, perf_skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=16)
-        self.lvo_path    = TaskPath(in_ch_task, config, "lvo", cta_skips_task, perf_skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=32)
+        self.lvo_path    = TaskPath(in_ch_task, config, "lvo", cta_skips_task, perf_skips_task, aux_ch=1, active_aux_levels=[False, False], guidance_ch=16)
+        self.lesion_path = TaskPath(in_ch_task, config, "lesion", cta_skips_task, perf_skips_task, aux_ch=1, active_aux_levels=[True, True], guidance_ch=32)
 
     def forward(self, cta_skips: List[torch.Tensor], perf_skips: List[torch.Tensor], epoch: int = 0):
         s1, s2, s3, s4, s5 = cta_skips
@@ -290,13 +290,13 @@ class MultiHeadDecoder(nn.Module):
         # 2. Shared Path (dec4, dec3)
         x_shared = self.shared_path(x_bottleneck, [s4, s3], [d4, d3])
         
-        # 3. DÒNG CHẢY TRI THỨC (Knowledge Cascade)
+        # 3. DÒNG CHẢY TRI THỨC (Knowledge Cascade): CoW -> LVO -> Lesion
         f_cow, cow_auxs = self.cow_path(x_shared, [s2, s1], [d2, d1])
         
-        f_lesion, lesion_auxs = self.lesion_path(x_shared, [s2, s1], [d2, d1], guidance=f_cow.detach())
+        f_lvo, lvo_auxs = self.lvo_path(x_shared, [s2, s1], [d2, d1], guidance=f_cow.detach())
         
-        guidance_for_lvo = torch.cat([f_cow.detach(), f_lesion.detach()], dim=1)
-        f_lvo, lvo_auxs = self.lvo_path(x_shared, [s2, s1], [d2, d1], guidance=guidance_for_lvo)
+        guidance_for_lesion = torch.cat([f_cow.detach(), f_lvo.detach()], dim=1)
+        f_lesion, lesion_auxs = self.lesion_path(x_shared, [s2, s1], [d2, d1], guidance=guidance_for_lesion)
 
         aux_masks = {
             "lesion": lesion_auxs,
