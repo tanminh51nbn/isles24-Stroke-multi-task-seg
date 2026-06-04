@@ -267,6 +267,15 @@ class PCGrad:
                     grad_tensors=final_rep_grads,
                     retain_graph=False  # Giải phóng đồ thị Encoder!
                 )
+                
+        # 6. Giải phóng toàn bộ tham chiếu tensor trung gian trên model để giải phóng VRAM lập tức
+        raw_model.decoder.task_leaves = None
+        raw_model.decoder.s5_dec = None
+        raw_model.decoder.s4_dec = None
+        raw_model.decoder.s3_dec = None
+        raw_model.decoder.x_shared = None
+        if hasattr(raw_model.encoder, "saved_skips"):
+            raw_model.encoder.saved_skips = None
 
     def _analyze_encoder_grads(self, params, task_flat_grads, enc_ids, scaler=None):
         """Phân tích gradient per-task trên Encoder params (trước PCGrad projection)."""
