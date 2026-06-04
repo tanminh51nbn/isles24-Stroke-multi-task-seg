@@ -38,8 +38,8 @@ composite_score:
   dice_lvo_weight: 0.39
   dice_cow_weight: 0.22
   thresholds:
-    lesion: 0.5
-    lvo: 0.2
+    lesion: 0.35
+    lvo: 0.10
     cow: 0.5
 
 

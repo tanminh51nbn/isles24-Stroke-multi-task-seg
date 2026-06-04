@@ -121,12 +121,8 @@ class ModifiedFocalLoss(nn.Module):
         
         # Số lượng pixel dương để chuẩn hóa (tối thiểu là 1 để tránh chia cho 0)
         slice_num_pos = pos_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
-        
-        # SỬA LỖI (CenterNet MFL chuẩn): 
-        # Không nhân pos_loss với tỷ lệ siêu lớn (slice_num_neg / slice_num_pos).
-        # Thay vào đó, tổng loss được chuẩn hóa bằng số lượng positive pixels.
-        # Điều này ngăn mô hình "spam" False Positives để tránh False Negatives.
-        slice_loss = (slice_pos_loss + slice_neg_loss) / slice_num_pos
+        slice_num_neg = neg_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
+        slice_loss = (slice_pos_loss / slice_num_pos) + (slice_neg_loss / slice_num_neg)
         
         slice_loss = torch.nan_to_num(slice_loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=14000.0)
         
@@ -510,9 +506,17 @@ class MultiTaskLoss(nn.Module):
         # Apply weights and take mean to get scalar losses
         combined_lesion_loss_scalar = (combined_lesion_loss * lesion_slice_weights).mean()
 
-        if self.lesion_sdf_w > 0.0:
+        # Lộ trình tăng dần trọng số SDF (SDF Warmup Curriculum)
+        # Ramped từ 0.05 lên self.lesion_sdf_w (0.45) qua 20 epoch đầu
+        warmup_epochs = 20
+        if cur_ep < warmup_epochs:
+            current_sdf_w = 0.05 + (self.lesion_sdf_w - 0.05) * (cur_ep / float(warmup_epochs))
+        else:
+            current_sdf_w = self.lesion_sdf_w
+
+        if current_sdf_w > 0.0:
             l_l_sdf = self.lesion_sdf_loss_fn(preds['lesion'], targets[:, 3:4], targets[:, 0:1])
-            combined_lesion_loss_scalar = (1.0 - self.lesion_sdf_w) * combined_lesion_loss_scalar + self.lesion_sdf_w * l_l_sdf
+            combined_lesion_loss_scalar = (1.0 - current_sdf_w) * combined_lesion_loss_scalar + current_sdf_w * l_l_sdf
         l_v_m_scalar = (l_v_m * lvo_slice_weights).mean()
 
         # 3. Final Task Weighting
