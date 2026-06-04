@@ -11,6 +11,7 @@ Kỹ thuật Conv1 Inflation:
     Bảo toàn phương sai kích hoạt ban đầu (variance preservation).
 """
 
+import os
 import torch
 import torch.nn as nn
 from torchvision import models
@@ -31,17 +32,15 @@ def inflate_weights(weight: torch.Tensor, target_channels: int) -> torch.Tensor:
     # 1. Lấy đặc trưng trung bình từ 3 kênh gốc
     mean_weight = weight.mean(dim=1, keepdim=True) # (out_ch, 1, kH, kW)
     
-    # 2. Tạo profile trọng số theo từng lát cắt cụ thể (Slice-Aware)
-    # Chia đều target_channels thành 3 nhóm tương ứng với 3 lát cắt Z-1, Z, Z+1
-    channels_per_slice = target_channels // 3
-    
+    # 2. Tạo profile trọng số theo từng lát cắt cụ thể (Slice-Aware) bằng phân chia mềm tỉ lệ
     weights = torch.zeros(target_channels)
     for i in range(target_channels):
-        slice_idx = i // channels_per_slice
-        if slice_idx == 1:  # Lát cắt trung tâm Z
-            weights[i] = 1.0
-        else:               # Lát cắt lân cận Z-1 hoặc Z+1
-            weights[i] = 0.4
+        # Chuẩn hóa vị trí kênh về [0, 1]
+        rel_pos = i / target_channels
+        if (1.0 / 3.0) <= rel_pos < (2.0 / 3.0):
+            weights[i] = 1.0  # Lát cắt trung tâm Z
+        else:
+            weights[i] = 0.4  # Lát cắt lân cận Z-1 hoặc Z+1
             
     # Chuẩn hóa để tổng năng lượng tương đương 3 kênh gốc
     weights = weights / weights.sum() * 3.0
@@ -224,7 +223,6 @@ class DenseNet121Encoder(nn.Module):
         self.norm0 = features.norm0
         self.gelu0 = nn.GELU()
 
-        import os
         # Load RadImageNet weights
         if weights_path is not None and os.path.exists(weights_path):
             self._load_radimagenet(weights_path, in_channels)
@@ -289,7 +287,7 @@ class DenseNet121Encoder(nn.Module):
 
         Returns:
             List 5 feature maps từ nông → sâu:
-            [d1(64,H/2), d2(128,H/4), d3(256,H/8), d4(512,H/16), d5(1024,H/32)]
+            [d1(64,H/2), d2(256,H/4), d3(512,H/8), d4(1024,H/16), d5(1024,H/32)]
         """
         d1 = self.stage0(x)               # (B, 64,   H/2,  W/2) — không dropout
         x  = self.pool(d1)                # (B, 64,   H/4,  W/4)
