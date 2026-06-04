@@ -522,7 +522,8 @@ class SingleEncoderUNet(nn.Module):
                 f"[SingleEncoderUNet] Input dimensions must be multiple of 32 (for UNet downsampling), got {x.shape[2:]}."
 
         skips = self.encoder(x)
-        self.encoder.saved_skips = skips
+        if self.training:
+            self.encoder.saved_skips = skips
 
         features_dict, aux_masks, g_maps = self.decoder(skips, epoch=epoch, x_raw=x, decoupled=decoupled)
 
