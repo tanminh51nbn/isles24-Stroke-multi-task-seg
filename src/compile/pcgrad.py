@@ -257,7 +257,7 @@ class PCGrad:
         final_rep_grads = self._project_grads(rep_grads, skips_dummy, scaler, weights, asymmetric)
 
         # 5. Backward duy nhất 1 lần qua Encoder
-        s5_orig, s4_orig, s3_orig, s2_orig, s1_orig = raw_model.encoder.saved_skips
+        s1_orig, s2_orig, s3_orig, s4_orig, s5_orig = raw_model.encoder.saved_skips
         
         with make_context():
             torch.autograd.backward(
