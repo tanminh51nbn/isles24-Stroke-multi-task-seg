@@ -329,8 +329,8 @@ class SingleEncoderTripleDecoder(nn.Module):
         self.lesion_path = LesionTaskPath(in_ch_task, config, skips_task, perf_ch=6,
                                           guidance_dec2_ch=64, guidance_dec1_ch=32)
         
-        # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW (Tăng lên 0.4 chống overfit)
-        self.guidance_dropout = nn.Dropout2d(p=0.4)
+        # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW (Giảm 0.4 → 0.15 tránh phá hủy cascade)
+        self.guidance_dropout = nn.Dropout2d(p=0.2)
 
     def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None, decoupled: bool = False):
         # --- Shape Assertion Mode (D2) ---
@@ -398,8 +398,9 @@ class SingleEncoderTripleDecoder(nn.Module):
             guidance_for_lesion = f_cow.detach()
             guidance_for_lesion = self.guidance_dropout(guidance_for_lesion)
             
-            cow_dec2_for_les = self.guidance_dropout(cow_dec2.detach())
-            cow_dec1_for_les = self.guidance_dropout(cow_dec1.detach())
+            # [FIX #3] Không dropout deep guidance levels — cần tín hiệu sạch cho deep supervision
+            cow_dec2_for_les = cow_dec2.detach()
+            cow_dec1_for_les = cow_dec1.detach()
             
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             f_lesion, lesion_auxs, _ = self.lesion_path(
@@ -444,8 +445,9 @@ class SingleEncoderTripleDecoder(nn.Module):
                     self._lesion_guidance_grad_norm = grad.norm(2).item()
                 guidance_for_lesion.register_hook(lesion_guidance_hook)
                 
-            cow_dec2_for_les = self.guidance_dropout(cow_dec2.detach())
-            cow_dec1_for_les = self.guidance_dropout(cow_dec1.detach())
+            # [FIX #3] Không dropout deep guidance levels — cần tín hiệu sạch cho deep supervision
+            cow_dec2_for_les = cow_dec2.detach()
+            cow_dec1_for_les = cow_dec1.detach()
             
             # Truyền raw perfusion vào Lesion Path
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)

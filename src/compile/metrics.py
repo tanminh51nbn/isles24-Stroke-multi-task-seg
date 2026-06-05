@@ -16,26 +16,10 @@ from scipy.ndimage import label, distance_transform_edt
 
 def get_lvo_threshold(epoch: int, cfg: dict) -> float:
     """
-    Tính ngưỡng LVO động theo epoch (hoặc cố định nếu không cấu hình ramp).
+    Trả về ngưỡng LVO cố định từ config (không dùng ramp).
     """
-    if "lvo_threshold_ramp" not in cfg:
-        thresholds = cfg.get("thresholds", {})
-        return float(thresholds.get("lvo", 0.15))
-
-    ramp_cfg        = cfg.get("lvo_threshold_ramp", {})
-    freeze_epoch    = int(ramp_cfg.get("freeze_epoch",    20))
-    ramp_end_epoch  = int(ramp_cfg.get("ramp_end_epoch", 30))
-    thresh_freeze   = float(ramp_cfg.get("thresh_freeze",   0.10))
-    thresh_unfreeze = float(ramp_cfg.get("thresh_unfreeze", 0.30))
-
-    if epoch <= freeze_epoch:
-        return thresh_freeze
-    elif epoch >= ramp_end_epoch:
-        return thresh_unfreeze
-    else:
-        # Tuyến tính: 0 → 1 trong khoảng (freeze_epoch, ramp_end_epoch]
-        t = (epoch - freeze_epoch) / max(ramp_end_epoch - freeze_epoch, 1)
-        return thresh_freeze + t * (thresh_unfreeze - thresh_freeze)
+    thresholds = cfg.get("thresholds", {})
+    return float(thresholds.get("lvo", 0.35))
 
 
 def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5, smooth: float = 1e-6) -> torch.Tensor:

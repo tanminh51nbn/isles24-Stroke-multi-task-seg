@@ -507,10 +507,10 @@ class MultiTaskLoss(nn.Module):
         combined_lesion_loss_scalar = (combined_lesion_loss * lesion_slice_weights).mean()
 
         # Lộ trình tăng dần trọng số SDF (SDF Warmup Curriculum)
-        # Ramped từ 0.05 lên self.lesion_sdf_w (0.45) qua 20 epoch đầu
-        warmup_epochs = 20
+        # Ramped từ 0.02 lên self.lesion_sdf_w qua 30 epoch đầu
+        warmup_epochs = 30
         if cur_ep < warmup_epochs:
-            current_sdf_w = 0.05 + (self.lesion_sdf_w - 0.05) * (cur_ep / float(warmup_epochs))
+            current_sdf_w = 0.02 + (self.lesion_sdf_w - 0.02) * (cur_ep / float(warmup_epochs))
         else:
             current_sdf_w = self.lesion_sdf_w
 
@@ -519,9 +519,19 @@ class MultiTaskLoss(nn.Module):
             combined_lesion_loss_scalar = (1.0 - current_sdf_w) * combined_lesion_loss_scalar + current_sdf_w * l_l_sdf
         l_v_m_scalar = (l_v_m * lvo_slice_weights).mean()
 
+        # [FIX #1] Negative Slice Max Penalty: phạt trực tiếp đỉnh nhọn ảo trên slice không có GT LVO
+        neg_lvo_mask = (1.0 - has_lvo)  # (B,) — 1.0 cho negative slices
+        if neg_lvo_mask.sum() > 0:
+            lvo_probs = torch.sigmoid(preds['lvo'].float())  # (B, 1, H, W)
+            lvo_max_per_slice = lvo_probs.amax(dim=(1, 2, 3))  # (B,)
+            neg_penalty = (lvo_max_per_slice ** 2) * neg_lvo_mask  # Chỉ phạt negative slices
+            l_v_neg_penalty = neg_penalty.sum() / neg_lvo_mask.sum().clamp(min=1.0)
+        else:
+            l_v_neg_penalty = torch.tensor(0.0, device=targets.device)
+
         # 3. Final Task Weighting
         loss_l = combined_lesion_loss_scalar * p_l
-        loss_v = l_v_m_scalar * p_v
+        loss_v = (l_v_m_scalar + 0.5 * l_v_neg_penalty) * p_v  # [FIX #1] Thêm neg penalty
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
 
         # Unweighted task losses (dùng để logging/monitoring độ hội tụ thực tế)
