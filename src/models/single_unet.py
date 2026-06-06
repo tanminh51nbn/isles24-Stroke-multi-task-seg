@@ -258,8 +258,9 @@ class SingleTaskPath(nn.Module):
         self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
 
         # ─── Hemispheric Asymmetry Module ──────────────────────────────────
-        # Chỉ áp dụng cho LVO và Lesion (CoW không cần vì nó đối xứng tự nhiên)
-        if task_name in ["lvo", "lesion"]:
+        # CHỈ áp dụng cho LVO. Không dùng cho Lesion (nhồi máu mờ, vắt ngang, đồi thị)
+        # Không dùng cho CoW (đối xứng tự nhiên).
+        if task_name == "lvo":
             self.asymmetry_module = HemisphericAsymmetryModule(dec_ch[2])
         else:
             self.asymmetry_module = None
