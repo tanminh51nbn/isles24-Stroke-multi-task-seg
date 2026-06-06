@@ -33,7 +33,7 @@ sampling:
 augmentation:
   enabled: true
   horizontal_flip:
-    prob: 0.1
+    prob: 0.3
 
   affine:
     prob: 0.3
