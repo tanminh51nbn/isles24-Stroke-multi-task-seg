@@ -189,6 +189,9 @@ class HemisphericAsymmetryModule(nn.Module):
         
         # Trộn thông tin bất đối xứng giữa các kênh với nhau
         self.mix_conv = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
+        
+        # Cổng học được (Learnable Gate) để tự động điều chỉnh mức độ Asymmetry
+        self.gate_param = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Lật theo trục X (chiều ngang bán cầu)
@@ -203,8 +206,11 @@ class HemisphericAsymmetryModule(nn.Module):
         diff = self.gelu(diff)
         diff = self.mix_conv(diff)
         
-        # Cộng feature bất đối xứng vào feature gốc
-        return x + diff
+        # Tính gating weight alpha (0 -> 1, khởi tạo ở 0.5)
+        alpha = torch.sigmoid(self.gate_param)
+        
+        # Cộng feature bất đối xứng vào feature gốc với tỷ lệ alpha
+        return x + alpha * diff
 
 
 # ─── Specialized Decoder Paths (Single Encoder version) ────────────────────────
