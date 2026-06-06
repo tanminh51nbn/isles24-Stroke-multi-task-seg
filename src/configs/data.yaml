@@ -33,41 +33,41 @@ sampling:
 augmentation:
   enabled: true
   horizontal_flip:
-    prob: 0.2     # Tạm hạ xuống 0.05 để Lesion không bị nhiễu loạn không gian (Lazy Learner)
+    prob: 0.1
 
   affine:
     prob: 0.3
-    rotate_deg: 10   # Giảm nhẹ từ 15 xuống 10 (bệnh nhân nằm chụp CT ít khi vẹo đầu quá 10 độ)
+    rotate_deg: 10
     scale_range: 0.1
     translate_px: 10
 
   elastic_transform:
-    prob: 0.4        # Giảm từ 0.35 xuống 0.2 để tránh làm "chảy não" (mất hình dạng giải phẫu)
+    prob: 0.4
     alpha: 15.0
     sigma: 6.0
     alpha_affine: 50
 
   gaussian_noise:
-    prob: 0.2        # Giảm từ 0.4 vì thêm quá nhiều nhiễu sẽ làm mất vết LVO li ti
+    prob: 0.2
     mean: 0.0
-    std: 0.02        # Giảm từ 0.03
+    std: 0.02
 
   gaussian_blur:
-    prob: 0.2        # Giảm từ 0.3
+    prob: 0.2
     max_sigma: 1.0
 
   random_gamma:
-    prob: 0.2        # Giảm từ 0.4 vì giá trị độ xám của CT (HU) là cố định vật lý, không nên đổi quá trớn
-    gamma_range: [0.8, 1.2] # Thu hẹp từ [0.7, 1.3]
+    prob: 0.2
+    gamma_range: [0.8, 1.2]
 
   grid_distortion:
-    prob: 0.1
+    prob: 0.2
     num_steps: 5
     distort_limit: 0.2
 
   intensity_scale:
-    prob: 0.2        # Giảm từ 0.4
-    factor: 0.05     # Thu hẹp từ 0.1 (Chỉ cho phép sáng/tối đi 5%)
+    prob: 0.2
+    factor: 0.05
 
   modality_dropout:
     prob: 0.1
