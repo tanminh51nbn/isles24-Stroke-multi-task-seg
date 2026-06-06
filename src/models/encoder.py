@@ -210,29 +210,29 @@ class DenseNet121Encoder(nn.Module):
         # 1. Slice Attention để học trọng số lát cắt
         self.slice_attention = SliceAttention(in_channels)
 
-        # 2. Backbone Setup: Dual-Stream Shallow Encoder
+        # 2. Backbone Setup: Dual-Stream Shallow Encoder (Theo đúng plan 32+32 -> cat)
         # Stream A: CoW/LVO Focus (Sharp edges)
         self.conv0_A = nn.Conv2d(
             in_channels,
-            64,
+            32,
             kernel_size=5,
             stride=2,
             padding=2,
             bias=False,
         )
-        self.norm0_A = nn.BatchNorm2d(64)
+        self.norm0_A = nn.BatchNorm2d(32)
         self.gelu0_A = nn.GELU()
 
         # Stream B: Lesion Focus (Broad texture)
         self.conv0_B = nn.Conv2d(
             in_channels,
-            64,
+            32,
             kernel_size=9,
             stride=2,
             padding=4,
             bias=False,
         )
-        self.norm0_B = nn.BatchNorm2d(64)
+        self.norm0_B = nn.BatchNorm2d(32)
         self.gelu0_B = nn.GELU()
 
         # Load RadImageNet weights
@@ -290,19 +290,19 @@ class DenseNet121Encoder(nn.Module):
 
         Returns:
             List 5 feature maps từ nông → sâu:
-            [(d1_A, d1_B), d2, d3, d4, d5]
-            Trong đó d1_A và d1_B đều có kích thước (B, 64, H/2, W/2).
+            [d1(64,H/2), d2(256,H/4), d3(512,H/8), d4(1024,H/16), d5(1024,H/32)]
         """
         x_attn = self.slice_attention(x)
         
         # Stream A (CoW/LVO)
-        d1_A = self.gelu0_A(self.norm0_A(self.conv0_A(x_attn)))
+        stream_A = self.gelu0_A(self.norm0_A(self.conv0_A(x_attn)))
         
         # Stream B (Lesion)
-        d1_B = self.gelu0_B(self.norm0_B(self.conv0_B(x_attn)))
+        stream_B = self.gelu0_B(self.norm0_B(self.conv0_B(x_attn)))
         
-        # Gộp lại trước khi qua pool0 và denseblock1
-        x_pool = self.pool(d1_A) + self.pool(d1_B) # (B, 64, H/4, W/4)
+        # Gộp lại thành 64 kênh chuẩn của DenseNet
+        d1 = torch.cat([stream_A, stream_B], dim=1)  # (B, 64, H/2, W/2)
+        x_pool = self.pool(d1)                       # (B, 64, H/4, W/4)
 
         d2 = self.drop1(self.stage1(x_pool))   # (B, 256,  H/4,  W/4) — p=dp[0]
         x  = self.trans1(d2)              # (B, 128,  H/8,  W/8)
@@ -314,7 +314,7 @@ class DenseNet121Encoder(nn.Module):
         x  = self.trans3(d4)              # (B, 512,  H/32, W/32)
 
         d5 = self.drop4(self.stage4(x))   # (B, 1024, H/32, W/32) — p=dp[3]
-        return [(d1_A, d1_B), d2, d3, d4, d5]
+        return [d1, d2, d3, d4, d5]
 
 
 

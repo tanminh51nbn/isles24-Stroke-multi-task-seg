@@ -371,20 +371,14 @@ class SingleEncoderTripleDecoder(nn.Module):
             assert len(skips) == 5, f"[SingleEncoderTripleDecoder] Expected 5 skip tensors from encoder, got {len(skips)}."
             # s1 to s5 channels: s1 should be 64, s2=256, s3=512, s4=1024, s5=1024 (DenseNet-121 skips)
             expected_channels = [64, 256, 512, 1024, 1024]
-            
-            # Kiểm tra riêng cho Dual-Stream s1 (Tuple)
-            s1_A, s1_B = skips[0]
-            assert s1_A.shape[1] == expected_channels[0], f"[SingleEncoderTripleDecoder] s1_A expects {expected_channels[0]} channels, got {s1_A.shape[1]}."
-            assert s1_B.shape[1] == expected_channels[0], f"[SingleEncoderTripleDecoder] s1_B expects {expected_channels[0]} channels, got {s1_B.shape[1]}."
-            
-            for idx, s in enumerate(skips[1:], 1):
+            for idx, s in enumerate(skips):
                 assert s.shape[1] == expected_channels[idx], \
                     f"[SingleEncoderTripleDecoder] Encoder skip s{idx+1} expects {expected_channels[idx]} channels, got {s.shape[1]}."
-                expected_size = skips[1].shape[2] // (2 ** (idx-1))
+                expected_size = skips[0].shape[2] // (2 ** idx)
                 assert s.shape[2] == expected_size and s.shape[3] == expected_size, \
                     f"[SingleEncoderTripleDecoder] Encoder skip s{idx+1} expects spatial size {(expected_size, expected_size)}, got {s.shape[2:]}."
         
-        (s1_A, s1_B), s2, s3, s4, s5 = skips
+        s1, s2, s3, s4, s5 = skips
 
         if decoupled and self.training:
             # 1. Bottleneck with detached leaves for shared path inputs
@@ -404,15 +398,15 @@ class SingleEncoderTripleDecoder(nn.Module):
             # 2. Detach x_shared and skips for each task path to isolate their graphs
             x_shared_cow = x_shared.detach().requires_grad_(True)
             s2_cow = s2.detach().requires_grad_(True)
-            s1_cow = s1_A.detach().requires_grad_(True) # Hard Routing Stream A -> CoW
+            s1_cow = s1.detach().requires_grad_(True)
             
             x_shared_lvo = x_shared.detach().requires_grad_(True)
             s2_lvo = s2.detach().requires_grad_(True)
-            s1_lvo = s1_A.detach().requires_grad_(True) # Hard Routing Stream A -> LVO
+            s1_lvo = s1.detach().requires_grad_(True)
             
             x_shared_les = x_shared.detach().requires_grad_(True)
             s2_les = s2.detach().requires_grad_(True)
-            s1_les = s1_B.detach().requires_grad_(True) # Hard Routing Stream B -> Lesion
+            s1_les = s1.detach().requires_grad_(True)
             
             self.task_leaves = {
                 "cow": (x_shared_cow, s2_cow, s1_cow),
@@ -440,7 +434,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             cow_dec2_for_les = cow_dec2.detach()
             cow_dec1_for_les = cow_dec1.detach()
             
-            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1_A.shape[0], 6, s1_A.shape[2]*2, s1_A.shape[3]*2), device=s1_A.device)
+            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_shared_les, [s2_les, s1_les],
                 guidance=guidance_for_lesion,
@@ -455,7 +449,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             # 2. Shared Path (dec4, dec3)
             x_shared = self.shared_path(x_bottleneck, [s4, s3])
             
-            f_cow, cow_auxs, cow_feats = self.cow_path(x_shared, [s2, s1_A]) # Hard Routing Stream A
+            f_cow, cow_auxs, cow_feats = self.cow_path(x_shared, [s2, s1])
             cow_dec2, cow_dec1 = cow_feats
             
             # --- LVO nhận Guidance từ CoW ---
@@ -467,7 +461,7 @@ class SingleEncoderTripleDecoder(nn.Module):
                 guidance_for_lvo.register_hook(lvo_guidance_hook)
                 
             f_lvo, lvo_auxs, _ = self.lvo_path(
-                x_shared, [s2, s1_A], # Hard Routing Stream A
+                x_shared, [s2, s1],
                 guidance=guidance_for_lvo,
                 guidance_dec2=cow_dec2.detach(),
                 guidance_dec1=cow_dec1.detach()
@@ -488,9 +482,9 @@ class SingleEncoderTripleDecoder(nn.Module):
             cow_dec1_for_les = cow_dec1.detach()
             
             # Truyền raw perfusion vào Lesion Path
-            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1_A.shape[0], 6, s1_A.shape[2]*2, s1_A.shape[3]*2), device=s1_A.device)
+            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             f_lesion, lesion_auxs, _ = self.lesion_path(
-                x_shared, [s2, s1_B], # Hard Routing Stream B
+                x_shared, [s2, s1],
                 guidance=guidance_for_lesion,
                 perf_raw=perf_raw,
                 guidance_dec2=cow_dec2_for_les,
