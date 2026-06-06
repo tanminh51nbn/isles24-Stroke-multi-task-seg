@@ -211,7 +211,7 @@ def overlay_predictions(
     pr_rgba = np.zeros((*pr_lesion_bin.shape, 4))
     pr_rgba[pr_lesion_bin > 0] = [0.7, 0, 0, 0.5]
     pr_rgba[pr_cow_bin > 0] = [0, 0.4, 0, 0.5]
-    pr_rgba[pr_lvo_bin > 0] = [1.0, 1.0, 0, 1.0]
+    pr_rgba[pr_lvo_bin > 0] = [1.0, 1.0, 0, 0.5]
     axes[0, 2].imshow(pr_rgba)
     axes[0, 2].set_title("AI phân vùng"); axes[0, 2].axis("off")
 
