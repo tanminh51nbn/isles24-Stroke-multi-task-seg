@@ -166,6 +166,39 @@ class DenseGlobalBottleneck(nn.Module):
         return res + x
 
 
+class SafePerfusionBottleneck(nn.Module):
+    """
+    Bottleneck an toàn cho Perfusion:
+    Chỉ áp dụng InstanceNorm cho các lát cắt (slices) thực sự có tín hiệu Perfusion.
+    Ngăn chặn việc InstanceNorm khuếch đại nhiễu từ các lát cắt toàn số 0 (do zero variance).
+    """
+    def __init__(self, perf_ch: int, out_ch: int = 16):
+        super().__init__()
+        self.norm = nn.InstanceNorm2d(perf_ch, affine=True)
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(perf_ch, out_ch, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.GELU()
+        )
+        self.out_ch = out_ch
+
+    def forward(self, perf_raw):
+        B, C, H, W = perf_raw.shape
+        eps = 1e-5
+        
+        # Detect lát cắt có tín hiệu perfusion (tổng trị tuyệt đối > eps)
+        has_perf = (perf_raw.abs().sum(dim=[1, 2, 3]) > eps) # (B,)
+        
+        if not has_perf.any():
+            return torch.zeros(B, self.out_ch, H, W, device=perf_raw.device)
+            
+        out = torch.zeros(B, self.out_ch, H, W, device=perf_raw.device)
+        valid_perf = perf_raw[has_perf]
+        out[has_perf] = self.bottleneck(self.norm(valid_perf))
+        
+        return out
+
+
 class HemisphericAsymmetryModule(nn.Module):
     """
     So sánh bất đối xứng 2 bán cầu não (chống nhiễu Head Tilt).
@@ -305,6 +338,13 @@ class SingleTaskPath(nn.Module):
             x_dec1, _ = self.attn_dec1(x_dec1, guidance_dec1)
 
         x = self.up_final(x_dec1)
+        
+        # ─── Bơm tường minh (Explicit Mask) thông tin Perfusion vào Lesion Head ───
+        # Để mô hình tự động fallback sang CTA nếu không có Perfusion
+        has_perf = (perf_raw.abs().sum(dim=[1,2,3]) > 1e-5).float() # (B,)
+        perf_mask = has_perf.view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3]) # (B, 1, H, W)
+        
+        x = torch.cat([x, perf_mask], dim=1) # (B, dec_ch[3] + 1, H, W)
         x = self.final_conv(x)
         
         if guidance is not None and self.guidance_attn is not None:
@@ -324,13 +364,8 @@ class LesionTaskPath(nn.Module):
         dropout_cfg = config["decoder"].get("dropout", {})
         dropout_p = dropout_cfg.get("lesion", 0.2) if isinstance(dropout_cfg, dict) else 0.2
         
-        # ─── Perfusion Bottleneck (Xử lý cháy sáng) ──────────────────────────
-        self.perf_bottleneck = nn.Sequential(
-            nn.InstanceNorm2d(perf_ch, affine=True),
-            nn.Conv2d(perf_ch, 16, kernel_size=1, bias=False),
-            nn.BatchNorm2d(16),
-            nn.GELU()
-        )
+        # ─── Safe Perfusion Bottleneck (Xử lý an toàn lát cắt trống) ──────────
+        self.perf_bottleneck = SafePerfusionBottleneck(perf_ch=perf_ch, out_ch=16)
         
         # Bơm Perfusion Bottleneck (16 kênh) vào skip channels
         self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0] + 16, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
@@ -342,7 +377,9 @@ class LesionTaskPath(nn.Module):
         self.film_s2 = TaskConditionedFiLM(in_channels=skip_channels[0], embedding_dim=64)
         self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
-        self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
+        
+        # dec_ch[3] + 1 vì ta sẽ nối thêm perf_mask (1 kênh)
+        self.final_conv = ConvBnGelu(dec_ch[3] + 1, final_ch)
         self.guidance_attn = FusedSpatialAttention(task_ch=final_ch, guidance_ch=16)
 
         if guidance_dec2_ch > 0:
