@@ -127,9 +127,10 @@ class MultiTaskHeads(nn.Module):
         self.cow_head    = SegmentationHead(in_ch, out_ch=1, dropout=cow_drop)
 
         # [QUAN TRỌNG] Bias Initialization (Chống sụp đổ màn hình)
-        # 1. LVO: [T2] Đổi bias -4.595 → -2.0: σ(-2.0)=0.12
-        # Bias cũ (σ=0.01) quá conservative, model không tỉnh nổi sau 70 epoch
-        nn.init.constant_(self.lvo_head.conv_out.bias, -2.0)
+        # [FIX #3] Hạ bias init: -2.0 → -3.0
+        # σ(-2.0) = 0.12 quá gần ngưỡng 0.4 → 1 slice đủ kích hoạt cả patient
+        # σ(-3.0) = 0.047 — model phải học rõ hơn mới vượt ngưỡng
+        nn.init.constant_(self.lvo_head.conv_out.bias, -3.0)
         
         # 2. CoW (Hiếm, mạch mảnh)
         nn.init.constant_(self.cow_head.conv_out.bias, -2.944)

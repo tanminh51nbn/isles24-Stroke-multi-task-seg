@@ -50,30 +50,47 @@ class TverskyLoss(nn.Module):
 # ─── Focal Tversky Loss ───────────────────────────────────────────────────────
 
 class FocalTverskyLoss(nn.Module):
-    def __init__(self, alpha: float = 0.5, beta: float = 0.5, gamma: float = 2.0, smooth: float = 1.0, reduction: str = 'mean'):
+    def __init__(self, alpha: float = 0.5, beta: float = 0.5, gamma: float = 2.0, smooth: float = 1.0, reduction: str = 'mean', batch: bool = False):
         super().__init__()
         self.alpha  = alpha
         self.beta   = beta
         self.gamma  = gamma
         self.smooth = smooth
         self.reduction = reduction
+        self.batch = batch  # Nếu True: tính TI trên toàn batch (B×H×W) thay vì per-slice
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs   = torch.sigmoid(logits)
-        probs   = probs.view(probs.size(0), -1)
-        targets = targets.view(targets.size(0), -1)
-        TP = (probs * targets).sum(dim=1)
-        FP = (probs * (1 - targets)).sum(dim=1)
-        FN = ((1 - probs) * targets).sum(dim=1)
-        numerator   = TP + self.smooth
-        denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
-        tversky_index = numerator / denominator.clamp(min=self.smooth)
-        error = (1.0 - tversky_index).clamp(min=1e-6, max=1.0)
-        loss_vec = torch.pow(error, self.gamma)
-        if self.reduction == 'mean':
-            return loss_vec.mean()
+
+        if self.batch:
+            # [FIX #1] Batch-level: flatten toàn bộ (B×H×W) → 1 scalar TI
+            # Khớp chính xác với dice_score() metric (cũng flatten toàn batch)
+            probs_f   = probs.reshape(-1)
+            targets_f = targets.reshape(-1)
+            TP = (probs_f * targets_f).sum()
+            FP = (probs_f * (1 - targets_f)).sum()
+            FN = ((1 - probs_f) * targets_f).sum()
+            numerator   = TP + self.smooth
+            denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
+            tversky_index = numerator / denominator.clamp(min=self.smooth)
+            error = (1.0 - tversky_index).clamp(min=1e-6, max=1.0)
+            return torch.pow(error, self.gamma)  # scalar
         else:
-            return loss_vec
+            # Per-slice mode (dùng cho CoW, LVO Focal Tversky)
+            probs   = probs.view(probs.size(0), -1)
+            targets = targets.view(targets.size(0), -1)
+            TP = (probs * targets).sum(dim=1)
+            FP = (probs * (1 - targets)).sum(dim=1)
+            FN = ((1 - probs) * targets).sum(dim=1)
+            numerator   = TP + self.smooth
+            denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
+            tversky_index = numerator / denominator.clamp(min=self.smooth)
+            error = (1.0 - tversky_index).clamp(min=1e-6, max=1.0)
+            loss_vec = torch.pow(error, self.gamma)
+            if self.reduction == 'mean':
+                return loss_vec.mean()
+            else:
+                return loss_vec
 
 def apply_gaussian_blur(mask: torch.Tensor, sigma: float) -> torch.Tensor:
     if sigma <= 0: return mask
@@ -271,16 +288,21 @@ class MultiTaskLoss(nn.Module):
         self.init_w = t_cfg.get("initial_weights", {"lesion": 1.0, "lvo": 1.0, "cow": 1.0})
 
         # 1. Lesion Task
+        # [FIX #1] batch=True: tính TI trên toàn batch (B×H×W) — khớp với metric volumetric
+        # Loại bỏ per-slice weighting vì batch mode không chia theo slice
         self.lesion_main_loss = FocalTverskyLoss(
             alpha=l_cfg["lesion"].get("alpha", 0.3),
             beta=l_cfg["lesion"].get("beta", 0.7),
             gamma=l_cfg["lesion"].get("gamma", 1.25),
-            reduction='none'
+            reduction='mean',
+            batch=True
         )
 
-        self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 2.0)
+        self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 2.5)  # Giữ lại cho tham chiếu
         self.lesion_sdf_w = l_cfg["lesion"].get("sdf_weight", 0.15)
         self.lesion_sdf_loss_fn = SDFBoundaryLoss(fg_weight=l_cfg["lesion"].get("sdf_fg_weight", 0.1))
+        # [FIX #2] Ngưỡng diện tích (pixel) để bật SDF — slice nhỏ hơn ngưỡng này dùng thuần FocalTversky
+        self.lesion_sdf_area_gate = l_cfg["lesion"].get("sdf_area_gate", 400)
 
         # 2. LVO Task
         l_v_cfg = l_cfg.get("lvo", {})
@@ -497,14 +519,12 @@ class MultiTaskLoss(nn.Module):
         # 2. Additional Task-specific Losses (Boundary & Topology - CoW only)
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) if self.cow_cl_w > 0.0 else torch.tensor(0.0, device=targets.device)
 
-        combined_lesion_loss = l_l_m
+        # [FIX #1] Batch-level loss: l_l_m đã là scalar (batch=True trả về 1 giá trị)
+        # Không cần lesion_slice_weights vì FocalTversky đã tính trên toàn batch
+        combined_lesion_loss_scalar = l_l_m
 
-        # Dynamic slice-level weights (using configurable slice_pos_weight, negative slices default to 1.0)
-        lesion_slice_weights = has_lesion * (self.lesion_slice_pos_w - 1.0) + 1.0
+        # LVO vẫn giữ per-slice weights như cũ
         lvo_slice_weights = has_lvo * (self.lvo_slice_pos_w - 1.0) + 1.0
-
-        # Apply weights and take mean to get scalar losses
-        combined_lesion_loss_scalar = (combined_lesion_loss * lesion_slice_weights).mean()
 
         # Lộ trình tăng dần trọng số SDF (SDF Warmup Curriculum)
         # Ramped từ 0.02 lên self.lesion_sdf_w qua 30 epoch đầu
@@ -515,8 +535,21 @@ class MultiTaskLoss(nn.Module):
             current_sdf_w = self.lesion_sdf_w
 
         if current_sdf_w > 0.0:
-            l_l_sdf = self.lesion_sdf_loss_fn(preds['lesion'], targets[:, 3:4], targets[:, 0:1])
-            combined_lesion_loss_scalar = (1.0 - current_sdf_w) * combined_lesion_loss_scalar + current_sdf_w * l_l_sdf
+            # [FIX #2] SDF Area Gating: chỉ áp SDF trên các slice có GT lesion đủ lớn
+            # Small lesion (< sdf_area_gate pixel) dùng thuần FocalTversky — không bị "dạy im lặng"
+            lesion_area = targets[:, 0:1].sum(dim=(1, 2, 3))       # (B,) — diện tích GT mỗi slice
+            large_lesion_mask = (lesion_area >= self.lesion_sdf_area_gate).float()  # (B,)
+            n_large = large_lesion_mask.sum()
+
+            if n_large > 0:
+                # Tính SDF loss chỉ trên slice đủ lớn — dùng mask để zero-out small slices
+                l_l_sdf_raw = self.lesion_sdf_loss_fn(preds['lesion'], targets[:, 3:4], targets[:, 0:1])
+                # l_l_sdf_raw là scalar (mean over all pixels), không thể gate per-slice dễ dàng
+                # → Tính SDF score như trước nhưng chỉ mixed khi batch có đủ large-lesion
+                large_ratio = n_large / float(targets.size(0))  # Tỉ lệ slice lớn trong batch
+                effective_sdf_w = current_sdf_w * large_ratio    # Scale down nếu ít slice lớn
+                combined_lesion_loss_scalar = (1.0 - effective_sdf_w) * combined_lesion_loss_scalar + effective_sdf_w * l_l_sdf_raw
+            # Nếu n_large == 0: batch toàn small/empty lesion → bỏ qua SDF hoàn toàn
         l_v_m_scalar = (l_v_m * lvo_slice_weights).mean()
 
         # [FIX #1] Negative Slice Max Penalty: phạt trực tiếp đỉnh nhọn ảo trên slice không có GT LVO

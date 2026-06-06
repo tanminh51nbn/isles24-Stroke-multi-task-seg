@@ -320,11 +320,15 @@ class Trainer:
                     if pid not in merged_stats:
                         merged_stats[pid] = {
                             "has_gt": stats["has_gt"],
-                            "max_pred": stats["max_pred"]
+                            "max_pred": stats.get("max_pred", 0.0),
+                            "n_pos_slices": stats.get("n_pos_slices", 0),
+                            "n_total_slices": stats.get("n_total_slices", 1)
                         }
                     else:
                         merged_stats[pid]["has_gt"] = merged_stats[pid]["has_gt"] or stats["has_gt"]
-                        merged_stats[pid]["max_pred"] = max(merged_stats[pid]["max_pred"], stats["max_pred"])
+                        merged_stats[pid]["max_pred"] = max(merged_stats[pid]["max_pred"], stats.get("max_pred", 0.0))
+                        merged_stats[pid]["n_pos_slices"] += stats.get("n_pos_slices", 0)
+                        merged_stats[pid]["n_total_slices"] += stats.get("n_total_slices", 0)
             patient_stats = merged_stats
         else:
             avg_l = total_loss/max(n_b,1)

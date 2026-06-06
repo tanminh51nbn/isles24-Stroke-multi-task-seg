@@ -241,42 +241,53 @@ def accumulate_patient_lvo_stats(
 ) -> None:
     """Gom dự đoán LVO theo bệnh nhân (patient-level) từ batch.
 
-    Mỗi bệnh nhân được định danh bằng patient_id trích từ path.
-    patient_stats: dict, cập nhật in-place. Structure:
-        {patient_id: {"has_gt": bool, "max_pred": float}}
+    [FIX #3b] Majority-voting: đếm số slice vượt ngưỡng thay vì chỉ max_pred.
+    Bệnh nhân bị flag LVO+ khi ít nhất K slices vượt ngưỡng.
+    Mục tiêu: giảm FP do 1 slice nhiễu kích hoạt cả patient.
     """
     probs = torch.sigmoid(logits)
     preds_prob = probs.float().cpu()
     gt_bin     = (targets > 0.1).float().cpu()
 
     for i, path in enumerate(paths):
-        # Trích patient_id: thường là 2 thành phần đầu tiên của tên file
-        # Ví dụ: "sub-r001s001_ses-0001_slice012.npy" → "sub-r001s001"
         fname   = os.path.basename(path).replace(".npy", "")
-        pid     = "_".join(fname.split("_")[:1])  # Lấy phần đầu trước dấu _
+        pid     = "_".join(fname.split("_")[:1])
 
         has_gt   = gt_bin[i, 0].max().item() > 0
         max_pred = preds_prob[i, 0].max().item()
+        # Đếm slice này có vượt ngưỡng không
+        is_pos_slice = 1 if max_pred > threshold else 0
 
         if pid not in patient_stats:
-            patient_stats[pid] = {"has_gt": has_gt, "max_pred": max_pred}
+            patient_stats[pid] = {
+                "has_gt": has_gt,
+                "max_pred": max_pred,
+                "n_pos_slices": is_pos_slice,  # [FIX #3b] Majority-voting counter
+                "n_total_slices": 1,
+            }
         else:
-            # Một bệnh nhân có nhiều lát cắt: cập nhật max prediction
-            patient_stats[pid]["has_gt"]   = patient_stats[pid]["has_gt"] or has_gt
-            patient_stats[pid]["max_pred"] = max(
+            patient_stats[pid]["has_gt"]         = patient_stats[pid]["has_gt"] or has_gt
+            patient_stats[pid]["max_pred"]        = max(
                 patient_stats[pid]["max_pred"], max_pred
             )
+            patient_stats[pid]["n_pos_slices"]   += is_pos_slice
+            patient_stats[pid]["n_total_slices"] += 1
 
 
-def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5) -> dict:
+def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5, min_pos_slices: int = 2) -> dict:
     """Tính Accuracy, TP, FP, FN của LVO detection ở mức bệnh nhân.
 
-    Một bệnh nhân dương tính LVO nếu max_pred trên tất cả lát cắt > threshold.
+    [FIX #3b] Majority-voting: bệnh nhân LVO+ khi có ít nhất min_pos_slices slice vượt ngưỡng.
+    Thay vì any-slice (ít nhất 1 slice) → giảm FP do slice nhiễu khích lệ báo nhầm.
     Returns: {"accuracy": float, "tp": int, "fp": int, "fn": int, "tn": int, "n": int, "f1": float}
     """
     tp = fp = fn = tn = 0
     for stats in patient_stats.values():
-        pred_pos = stats["max_pred"] > threshold
+        # [FIX #3b] dùng n_pos_slices nếu có, fallback về max_pred cho backward compat
+        if "n_pos_slices" in stats:
+            pred_pos = stats["n_pos_slices"] >= min_pos_slices
+        else:
+            pred_pos = stats["max_pred"] > threshold
         if stats["has_gt"] and pred_pos:     tp += 1
         elif stats["has_gt"] and not pred_pos: fn += 1
         elif not stats["has_gt"] and pred_pos: fp += 1
