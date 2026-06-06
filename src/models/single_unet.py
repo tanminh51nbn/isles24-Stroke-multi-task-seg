@@ -166,6 +166,47 @@ class DenseGlobalBottleneck(nn.Module):
         return res + x
 
 
+class HemisphericAsymmetryModule(nn.Module):
+    """
+    So sánh bất đối xứng 2 bán cầu não (chống nhiễu Head Tilt).
+    Áp dụng ở độ phân giải 64x64 (tầng dec2) để khử nhiễu sai lệch vật lý.
+    Sử dụng Depthwise Conv 21x21 (bán kính 10 pixels) để bắt các điểm bị lệch
+    do bệnh nhân nghiêng đầu hoặc do Augmentation (Rotate/Translate).
+    """
+    def __init__(self, channels: int):
+        super().__init__()
+        # groups=channels với in_ch=2*channels giúp ghép cặp (feat_i, flipped_i)
+        self.catch_conv = nn.Conv2d(
+            in_channels=channels * 2, 
+            out_channels=channels, 
+            kernel_size=21, 
+            padding=10, 
+            groups=channels, 
+            bias=False
+        )
+        self.norm = nn.BatchNorm2d(channels)
+        self.gelu = nn.GELU()
+        
+        # Trộn thông tin bất đối xứng giữa các kênh với nhau
+        self.mix_conv = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Lật theo trục X (chiều ngang bán cầu)
+        x_flipped = torch.flip(x, dims=[-1])
+        
+        # Nối x và x_flipped: (B, C*2, H, W)
+        concat = torch.cat([x, x_flipped], dim=1)
+        
+        # Hứng lệch trục và tính Diff
+        diff = self.catch_conv(concat)
+        diff = self.norm(diff)
+        diff = self.gelu(diff)
+        diff = self.mix_conv(diff)
+        
+        # Cộng feature bất đối xứng vào feature gốc
+        return x + diff
+
+
 # ─── Specialized Decoder Paths (Single Encoder version) ────────────────────────
 
 class SingleSharedPath(nn.Module):
@@ -210,6 +251,13 @@ class SingleTaskPath(nn.Module):
         self.film_s2 = TaskConditionedFiLM(in_channels=skip_channels[0], embedding_dim=64)
         self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
 
+        # ─── Hemispheric Asymmetry Module ──────────────────────────────────
+        # Chỉ áp dụng cho LVO và Lesion (CoW không cần vì nó đối xứng tự nhiên)
+        if task_name in ["lvo", "lesion"]:
+            self.asymmetry_module = HemisphericAsymmetryModule(dec_ch[2])
+        else:
+            self.asymmetry_module = None
+
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
         
@@ -240,6 +288,10 @@ class SingleTaskPath(nn.Module):
         x_dec2, aux2 = self.dec2(x_shared_film, s2_film, prev_mask=None)
         if guidance_dec2 is not None and self.attn_dec2 is not None:
             x_dec2, _ = self.attn_dec2(x_dec2, guidance_dec2)
+
+        # Áp dụng Asymmetry Module tại tầng dec2 (64x64)
+        if self.asymmetry_module is not None:
+            x_dec2 = self.asymmetry_module(x_dec2)
 
         x_dec1, aux1 = self.dec1(x_dec2, s1_film, prev_mask=aux2)
         if guidance_dec1 is not None and self.attn_dec1 is not None:
