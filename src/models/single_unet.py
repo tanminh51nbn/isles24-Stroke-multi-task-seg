@@ -190,11 +190,17 @@ class SafePerfusionBottleneck(nn.Module):
         has_perf = (perf_raw.abs().sum(dim=[1, 2, 3]) > eps) # (B,)
         
         if not has_perf.any():
-            return torch.zeros(B, self.out_ch, H, W, device=perf_raw.device)
+            # Nếu toàn batch trống, ta vẫn pass qua layer để Pytorch tự ép kiểu AMP (Half/Float)
+            # sau đó nhân 0 để triệt tiêu hoàn toàn nhiễu (bias)
+            dummy_out = self.bottleneck(self.norm(perf_raw))
+            return dummy_out * 0.0
             
-        out = torch.zeros(B, self.out_ch, H, W, device=perf_raw.device)
         valid_perf = perf_raw[has_perf]
-        out[has_perf] = self.bottleneck(self.norm(valid_perf))
+        processed = self.bottleneck(self.norm(valid_perf))
+        
+        # Tạo out tensor KHỚP với dtype của processed (được AMP tự động cast)
+        out = torch.zeros(B, self.out_ch, H, W, device=perf_raw.device, dtype=processed.dtype)
+        out[has_perf] = processed
         
         return out
 
