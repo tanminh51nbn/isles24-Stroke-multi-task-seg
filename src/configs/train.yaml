@@ -18,7 +18,7 @@ loss:
     type: "modified_focal"
     mfl_alpha: 2.5
     mfl_beta: 4.5
-    sigma_init: 5.0
+    sigma_init: 3.0
     sigma_floor: 1.25
     sigma_decay: 0.97
     slice_pos_weight: 5.0
