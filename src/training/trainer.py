@@ -366,7 +366,10 @@ class Trainer:
                 overlay_predictions(
                     sample={"input": best_vis_candidate["input"], "label": best_vis_candidate["label"], "path": best_vis_candidate["path"]},
                     preds=best_vis_candidate["pred"],
-                    epoch=epoch, save_dir=vis_dir, thresholds=self.metric_weights.get("thresholds", {})
+                    title_prefix=f"Epoch {epoch}", 
+                    file_prefix=f"epoch{epoch:03d}",
+                    save_dir=vis_dir, 
+                    thresholds=self.metric_weights.get("thresholds", {})
                 )
 
         w = self.metric_weights

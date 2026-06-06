@@ -127,6 +127,7 @@ def overlay_predictions(
     sample: dict,
     preds: dict,
     title_prefix: str = "Inference",
+    file_prefix: str = "clinical",
     save_dir: Optional[str] = None,
     thresholds: dict = None,
     show: bool = False
@@ -250,8 +251,7 @@ def overlay_predictions(
 
     if save_dir:
         fname = os.path.basename(sample.get("path", "sample")).replace(".npy", "")
-        # Thay thế epoch bằng "clinical"
-        save_path = os.path.join(save_dir, f"clinical_{fname}.png")
+        save_path = os.path.join(save_dir, f"{file_prefix}_{fname}.png")
         plt.savefig(save_path, dpi=120, bbox_inches="tight")
     if show: plt.show()
     plt.close()
