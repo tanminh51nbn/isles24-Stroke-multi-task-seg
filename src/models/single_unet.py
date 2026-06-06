@@ -338,13 +338,6 @@ class SingleTaskPath(nn.Module):
             x_dec1, _ = self.attn_dec1(x_dec1, guidance_dec1)
 
         x = self.up_final(x_dec1)
-        
-        # ─── Bơm tường minh (Explicit Mask) thông tin Perfusion vào Lesion Head ───
-        # Để mô hình tự động fallback sang CTA nếu không có Perfusion
-        has_perf = (perf_raw.abs().sum(dim=[1,2,3]) > 1e-5).float() # (B,)
-        perf_mask = has_perf.view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3]) # (B, 1, H, W)
-        
-        x = torch.cat([x, perf_mask], dim=1) # (B, dec_ch[3] + 1, H, W)
         x = self.final_conv(x)
         
         if guidance is not None and self.guidance_attn is not None:
@@ -421,9 +414,16 @@ class LesionTaskPath(nn.Module):
             x_dec1, _ = self.attn_dec1(x_dec1, guidance_dec1)
 
         x = self.up_final(x_dec1)
+        
+        # ─── Bơm tường minh (Explicit Mask) thông tin Perfusion vào Lesion Head ───
+        # Để mô hình tự động fallback sang CTA nếu không có Perfusion
+        has_perf = (perf_raw.abs().sum(dim=[1,2,3]) > 1e-5).float() # (B,)
+        perf_mask = has_perf.view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3]) # (B, 1, H, W)
+        
+        x = torch.cat([x, perf_mask], dim=1) # (B, dec_ch[3] + 1, H, W)
         x = self.final_conv(x)
         
-        if guidance is not None:
+        if guidance is not None and self.guidance_attn is not None:
             x, _ = self.guidance_attn(x, guidance)
             
         return x, [None, None, aux2, aux1], [x_dec2, x_dec1]
