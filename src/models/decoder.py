@@ -14,6 +14,43 @@ import torch.nn.functional as F
 from typing import List, Optional, Tuple
 
 
+# ─── Feature-wise Linear Modulation (FiLM) ───────────────────────────────────
+
+class TaskConditionedFiLM(nn.Module):
+    """
+    FiLM (Feature-wise Linear Modulation) layer.
+    Nhận vào feature map F và task embedding E_t.
+    Sinh ra Gamma (Scale) và Beta (Shift) để "tô màu" Feature Map theo Task.
+    """
+    def __init__(self, in_channels: int, embedding_dim: int = 64):
+        super().__init__()
+        self.in_channels = in_channels
+        
+        # MLP sinh ra gamma và beta
+        self.mlp = nn.Sequential(
+            nn.Linear(embedding_dim, in_channels),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_channels, in_channels * 2) # gamma và beta
+        )
+        
+        # Initialize để FiLM bắt đầu ở trạng thái Identity (gamma=1, beta=0)
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(self, x: torch.Tensor, task_embedding: torch.Tensor) -> torch.Tensor:
+        # task_embedding shape: (B, embedding_dim)
+        film_params = self.mlp(task_embedding) # (B, 2 * in_channels)
+        
+        gamma, beta = torch.chunk(film_params, 2, dim=-1) # mỗi cái (B, in_channels)
+        
+        # Expand spatial dims
+        gamma = gamma.view(-1, self.in_channels, 1, 1) + 1.0 # Bắt đầu từ 1.0
+        beta = beta.view(-1, self.in_channels, 1, 1)
+        
+        return gamma * x + beta
+
+
+
 # ─── Attention Modules ───────────────────────────────────────────────────────
 
 class AttentionGate(nn.Module):

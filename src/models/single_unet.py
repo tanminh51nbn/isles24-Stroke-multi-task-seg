@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from typing import List, Optional, Tuple
 
 from models.encoder import build_encoders
-from models.decoder import ConvBnGelu1x1, ConvBnGelu, LightweightDualAttention, AttentionGate, AuxHead
+from models.decoder import ConvBnGelu1x1, ConvBnGelu, LightweightDualAttention, AttentionGate, AuxHead, TaskConditionedFiLM
 from models.heads import MultiTaskHeads
 
 
@@ -204,6 +204,12 @@ class SingleTaskPath(nn.Module):
         self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0], dec_ch[2], attn_type, use_aux=active_aux_levels[0], task_name=task_name, aux_ch=aux_ch, dropout_p=dropout_p)
         self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1], dec_ch[3], attn_type, use_aux=active_aux_levels[1], task_name=task_name, aux_ch=aux_ch, dropout_p=dropout_p)
 
+        # ─── Task-Conditioned FiLM ──────────────────────────────────────────
+        self.task_embedding = nn.Parameter(torch.randn(1, 64))
+        self.film_shared = TaskConditionedFiLM(in_channels=in_ch, embedding_dim=64)
+        self.film_s2 = TaskConditionedFiLM(in_channels=skip_channels[0], embedding_dim=64)
+        self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
+
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
         
@@ -225,12 +231,17 @@ class SingleTaskPath(nn.Module):
     def forward(self, x_shared, skips_task, guidance: Optional[torch.Tensor] = None,
                 guidance_dec2: Optional[torch.Tensor] = None, guidance_dec1: Optional[torch.Tensor] = None):
         s2, s1 = skips_task
+        
+        # ─── Áp dụng FiLM ──────────────────────────────────────────────────
+        x_shared_film = self.film_shared(x_shared, self.task_embedding)
+        s2_film = self.film_s2(s2, self.task_embedding)
+        s1_film = self.film_s1(s1, self.task_embedding)
 
-        x_dec2, aux2 = self.dec2(x_shared, s2, prev_mask=None)
+        x_dec2, aux2 = self.dec2(x_shared_film, s2_film, prev_mask=None)
         if guidance_dec2 is not None and self.attn_dec2 is not None:
             x_dec2, _ = self.attn_dec2(x_dec2, guidance_dec2)
 
-        x_dec1, aux1 = self.dec1(x_dec2, s1, prev_mask=aux2)
+        x_dec1, aux1 = self.dec1(x_dec2, s1_film, prev_mask=aux2)
         if guidance_dec1 is not None and self.attn_dec1 is not None:
             x_dec1, _ = self.attn_dec1(x_dec1, guidance_dec1)
 
@@ -258,6 +269,11 @@ class LesionTaskPath(nn.Module):
         self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0] + perf_ch, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
         self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1] + perf_ch, dec_ch[3], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
 
+        # ─── Task-Conditioned FiLM ──────────────────────────────────────────
+        self.task_embedding = nn.Parameter(torch.randn(1, 64))
+        self.film_shared = TaskConditionedFiLM(in_channels=in_ch, embedding_dim=64)
+        self.film_s2 = TaskConditionedFiLM(in_channels=skip_channels[0], embedding_dim=64)
+        self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
         self.guidance_attn = FusedSpatialAttention(task_ch=final_ch, guidance_ch=16)
@@ -281,10 +297,15 @@ class LesionTaskPath(nn.Module):
         perf_s2 = F.avg_pool2d(perf_raw, 4)
         perf_s1 = F.avg_pool2d(perf_raw, 2)
         
-        s2_fused = torch.cat([s2, perf_s2], dim=1)
-        s1_fused = torch.cat([s1, perf_s1], dim=1)
+        # ─── Áp dụng FiLM ──────────────────────────────────────────────────
+        x_shared_film = self.film_shared(x_shared, self.task_embedding)
+        s2_film = self.film_s2(s2, self.task_embedding)
+        s1_film = self.film_s1(s1, self.task_embedding)
         
-        x_dec2, aux2 = self.dec2(x_shared, s2_fused, prev_mask=None)
+        s2_fused = torch.cat([s2_film, perf_s2], dim=1)
+        s1_fused = torch.cat([s1_film, perf_s1], dim=1)
+        
+        x_dec2, aux2 = self.dec2(x_shared_film, s2_fused, prev_mask=None)
         if guidance_dec2 is not None and self.attn_dec2 is not None:
             x_dec2, _ = self.attn_dec2(x_dec2, guidance_dec2)
 
