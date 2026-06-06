@@ -265,9 +265,17 @@ class LesionTaskPath(nn.Module):
         dropout_cfg = config["decoder"].get("dropout", {})
         dropout_p = dropout_cfg.get("lesion", 0.2) if isinstance(dropout_cfg, dict) else 0.2
         
-        # Bơm trực tiếp số kênh Perfusion vào skip channels
-        self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0] + perf_ch, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
-        self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1] + perf_ch, dec_ch[3], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
+        # ─── Perfusion Bottleneck (Xử lý cháy sáng) ──────────────────────────
+        self.perf_bottleneck = nn.Sequential(
+            nn.InstanceNorm2d(perf_ch, affine=True),
+            nn.Conv2d(perf_ch, 16, kernel_size=1, bias=False),
+            nn.BatchNorm2d(16),
+            nn.GELU()
+        )
+        
+        # Bơm Perfusion Bottleneck (16 kênh) vào skip channels
+        self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0] + 16, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
+        self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1] + 16, dec_ch[3], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
 
         # ─── Task-Conditioned FiLM ──────────────────────────────────────────
         self.task_embedding = nn.Parameter(torch.randn(1, 64))
@@ -292,10 +300,13 @@ class LesionTaskPath(nn.Module):
                 guidance_dec2: Optional[torch.Tensor] = None, guidance_dec1: Optional[torch.Tensor] = None):
         s2, s1 = skips_task
         
+        # ─── Perfusion Bottleneck ─────────────────────────────────────────
         # perf_raw is (B, 6, 256, 256)
+        perf_norm = self.perf_bottleneck(perf_raw) # (B, 16, 256, 256)
+        
         # s2 is 64x64, s1 is 128x128
-        perf_s2 = F.avg_pool2d(perf_raw, 4)
-        perf_s1 = F.avg_pool2d(perf_raw, 2)
+        perf_s2 = F.avg_pool2d(perf_norm, 4)
+        perf_s1 = F.avg_pool2d(perf_norm, 2)
         
         # ─── Áp dụng FiLM ──────────────────────────────────────────────────
         x_shared_film = self.film_shared(x_shared, self.task_embedding)
