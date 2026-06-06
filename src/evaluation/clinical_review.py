@@ -24,7 +24,7 @@ from data.dataset import ISLES24Dataset
 from evaluation.visualize import overlay_predictions
 
 
-def get_clinical_samples(data_dir, num_checks=500):
+def get_clinical_samples(data_dir, num_checks=2000):
     """Tìm 3 file npy thỏa mãn điều kiện có LVO, Lesion, CoW"""
     all_files = glob(os.path.join(data_dir, "*.npy"))
     np.random.shuffle(all_files)
@@ -42,7 +42,7 @@ def get_clinical_samples(data_dir, num_checks=500):
             found["lvo"] = f
         if found["lesion"] is None and lbl[0].sum() > 300:
             found["lesion"] = f
-        if found["cow"] is None and lbl[2].sum() > 200:
+        if found["cow"] is None and lbl[2].sum() > 50:
             found["cow"] = f
 
         if all(v is not None for v in found.values()):
@@ -94,7 +94,7 @@ def run_clinical_review(args):
         overlay_predictions(
             sample=sample,
             preds=preds,
-            epoch=999,  # Mã đánh dấu hậu kiểm
+            title_prefix=f"Ca Tiêu Biểu: {task_name.upper()}",
             save_dir=actual_save_dir,
             thresholds=thresholds,
             show=True

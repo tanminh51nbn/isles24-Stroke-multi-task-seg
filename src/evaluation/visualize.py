@@ -123,8 +123,14 @@ def select_best_sample(candidates: list) -> dict:
 
 # ─── Prediction Overlay (Dashboard v4) ───────────────────────────────────────
 
-def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optional[str] = None, thresholds: dict = None, show: bool = False):
-
+def overlay_predictions(
+    sample: dict,
+    preds: dict,
+    title_prefix: str = "Inference",
+    save_dir: Optional[str] = None,
+    thresholds: dict = None,
+    show: bool = False
+):
     if thresholds is None:
         thresholds = {"lesion": 0.45, "lvo": 0.05, "cow": 0.5}
 
@@ -184,7 +190,7 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     plt.subplots_adjust(wspace=0.1, hspace=0.2)
     
-    title = f"Epoch {epoch} | Sample Dice_L: {dice_l:.4f} | {lvo_msg}"
+    title = f"{title_prefix} | Dice_L: {dice_l:.4f} | {lvo_msg}"
     fig.suptitle(title, fontsize=16, fontweight="bold")
 
     # --- Hàng 1: CTA, Nhãn gốc, AI phân vùng ---
@@ -192,20 +198,20 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     
     # Nhãn gốc (GT Overlay trên CTA)
     axes[0, 1].imshow(cta_img, cmap="bone")
-    gt_overlay = np.zeros((*gt_lesion.shape, 3))
-    gt_overlay[..., 0] = gt_lesion * 0.7  # Đỏ: Lesion
-    gt_overlay[..., 1] = gt_cow * 0.4     # Xanh lá: CoW
-    gt_overlay[..., 2] = (gt_lvo > 0.1).astype(float) * 0.9 # Xanh dương: LVO (Hạ ngưỡng để thấy rõ)
-    axes[0, 1].imshow(gt_overlay, alpha=0.5)
+    gt_rgba = np.zeros((*gt_lesion.shape, 4))
+    gt_rgba[gt_lesion > 0] = [0.7, 0, 0, 0.5]       # Đỏ: Lesion (50% opacity)
+    gt_rgba[gt_cow > 0] = [0, 0.4, 0, 0.5]          # Xanh lá: CoW (50% opacity)
+    gt_rgba[gt_lvo > 0.1] = [1.0, 1.0, 0, 1.0]      # Vàng: LVO (100% opacity, đè lên trên)
+    axes[0, 1].imshow(gt_rgba)
     axes[0, 1].set_title("Nhãn gốc"); axes[0, 1].axis("off")
 
     # AI phân vùng (Pred Overlay trên CTA)
     axes[0, 2].imshow(cta_img, cmap="bone")
-    pr_overlay = np.zeros((*pr_lesion_bin.shape, 3))
-    pr_overlay[..., 0] = pr_lesion_bin * 0.7
-    pr_overlay[..., 1] = pr_cow_bin * 0.4
-    pr_overlay[..., 2] = pr_lvo_bin * 0.9
-    axes[0, 2].imshow(pr_overlay, alpha=0.5)
+    pr_rgba = np.zeros((*pr_lesion_bin.shape, 4))
+    pr_rgba[pr_lesion_bin > 0] = [0.7, 0, 0, 0.5]
+    pr_rgba[pr_cow_bin > 0] = [0, 0.4, 0, 0.5]
+    pr_rgba[pr_lvo_bin > 0] = [1.0, 1.0, 0, 1.0]
+    axes[0, 2].imshow(pr_rgba)
     axes[0, 2].set_title("AI phân vùng"); axes[0, 2].axis("off")
 
     # --- Hàng 2: Perfusion, LVO Heatmap (AI), Lesion Heatmap (AI) ---
@@ -238,13 +244,14 @@ def overlay_predictions(sample: dict, preds: dict, epoch: int, save_dir: Optiona
     patches = [
         mpatches.Patch(color=(0.7, 0, 0), label="Lesion"),
         mpatches.Patch(color=(0, 0.4, 0), label="CoW"),
-        mpatches.Patch(color=(0, 0, 0.9), label="LVO")
+        mpatches.Patch(color=(1.0, 1.0, 0), label="LVO")
     ]
     fig.legend(handles=patches, loc="lower center", ncol=3, fontsize=12)
 
     if save_dir:
         fname = os.path.basename(sample.get("path", "sample")).replace(".npy", "")
-        save_path = os.path.join(save_dir, f"epoch{epoch:03d}_{fname}.png")
+        # Thay thế epoch bằng "clinical"
+        save_path = os.path.join(save_dir, f"clinical_{fname}.png")
         plt.savefig(save_path, dpi=120, bbox_inches="tight")
     if show: plt.show()
     plt.close()
