@@ -608,8 +608,7 @@ class MultiTaskLoss(nn.Module):
             if num_active > 0:
                 # Trọng số Aux = 0.5 * TaskWeight, đã chia trung bình qua các tầng
                 if task_key == "lesion":
-                    task_aux_loss_weighted = (task_aux_loss * lesion_slice_weights).mean()
-                    aux_l = (task_aux_loss_weighted / num_active) * p_l * 0.5
+                    aux_l = (task_aux_loss / num_active) * p_l * 0.5
                 elif task_key == "lvo":
                     task_aux_loss_weighted = (task_aux_loss * lvo_slice_weights).mean()
                     aux_v = (task_aux_loss_weighted / num_active) * p_v * 0.5
