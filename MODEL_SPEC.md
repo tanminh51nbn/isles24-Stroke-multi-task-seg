@@ -10,30 +10,83 @@ Kiến trúc chính là **Single-Encoder Triple-Decoder UNet** với cơ chế r
 
 ```mermaid
 graph TD
-    Input["Input: 18 Channels<br/>(6 CTA + 12 CTP)<br/>Slices: Z-1, Z, Z+1"] --> SA["SliceAttention<br/>(Channel Reweighting)"]
-    SA --> Enc["Encoder: DenseNet-121<br/>(Center-Weighted conv0)"]
-    Enc --> Bot["DenseGlobalBottleneck<br/>(7x7 depthwise, Expand 4x)"]
-    
-    Bot --> SharedDec["Shared Decoder Path<br/>(dec4 & dec3 + DualAttention)"]
-    
-    SharedDec --> Dec_CoW["CoW Decoder Path<br/>(dec2, dec1, final)"]
-    SharedDec --> Dec_LVO["LVO Decoder Path<br/>(dec2, dec1, final)"]
-    SharedDec --> Dec_Les["Lesion Decoder Path<br/>(dec2, dec1, final)"]
-    
-    %% Guidance connections
-    Dec_CoW -.->|"CoW.detach()"| Dec_LVO
-    Dec_CoW -.->|"CoW.detach() + Dropout(0.4)"| Dec_Les
-    
-    %% Raw Perfusion Injection
-    Input -.->|"Raw Perfusion (Center Z)"| Dec_Les
-    
-    Dec_CoW --> Head_CoW["CoW Head<br/>(SE + ResidualBlock)"]
-    Dec_LVO --> Head_LVO["LVO Head<br/>(SE + ResidualBlock)"]
-    Dec_Les --> Head_Les["Lesion Head<br/>(SE + ResidualBlock)"]
-    
-    Head_CoW --> Out_CoW["CoW Mask"]
-    Head_LVO --> Out_LVO["LVO Heatmap"]
-    Head_Les --> Out_Les["Lesion Mask"]
+    subgraph InputProcessing ["Input & Preprocessing"]
+        Input["Raw Input: 18 Channels (2.5D)<br/>[6 CTA + 12 CTP]<br/>Shape: (B, 18, 256, 256)"]
+        SA["SliceAttention<br/>(Channel Reweighting)"]
+        Input --> SA
+    end
+
+    subgraph EncoderBlock ["Encoder (DenseNet-121)"]
+        Conv0["Center-Weighted conv0<br/>Shape: (B, 64, 128, 128)"]
+        Enc1["Encoder Block 1<br/>Shape: (B, 256, 64, 64)"]
+        Enc2["Encoder Block 2<br/>Shape: (B, 512, 32, 32)"]
+        Enc3["Encoder Block 3<br/>Shape: (B, 1024, 16, 16)"]
+        Bot["DenseGlobalBottleneck<br/>(7x7 DW, Expand 4x)<br/>Shape: (B, 512, 16, 16)"]
+        SA --> Conv0 --> Enc1 --> Enc2 --> Enc3 --> Bot
+    end
+
+    subgraph SharedDecoder ["Shared Decoder (Low-Res)"]
+        Dec4["dec4 (Shared)<br/>Up + DualAttention<br/>Shape: (B, 256, 32, 32)"]
+        Dec3["dec3 (Shared)<br/>Up + DualAttention<br/>Shape: (B, 128, 64, 64)"]
+        Bot --> Dec4
+        Enc2 -.->|"Skip"| Dec4
+        Dec4 --> Dec3
+        Enc1 -.->|"Skip"| Dec3
+    end
+
+    subgraph TaskDecoders ["Task-Specific Decoders (High-Res)"]
+        %% CoW Branch
+        Dec2_CoW["CoW dec2<br/>Shape: (B, 64, 128, 128)"]
+        Dec1_CoW["CoW dec1<br/>Shape: (B, 32, 256, 256)"]
+        
+        %% LVO Branch
+        Dec2_LVO["LVO dec2<br/>Shape: (B, 64, 128, 128)"]
+        Dec1_LVO["LVO dec1<br/>Shape: (B, 32, 256, 256)"]
+        
+        %% Lesion Branch
+        Dec2_Les["Lesion dec2<br/>Shape: (B, 64, 128, 128)"]
+        Dec1_Les["Lesion dec1<br/>Shape: (B, 32, 256, 256)"]
+
+        Dec3 --> Dec2_CoW
+        Dec3 --> Dec2_LVO
+        Dec3 --> Dec2_Les
+
+        Conv0 -.->|"Skip"| Dec2_CoW
+        Conv0 -.->|"Skip"| Dec2_LVO
+        Conv0 -.->|"Skip"| Dec2_Les
+
+        Dec2_CoW --> Dec1_CoW
+        Dec2_LVO --> Dec1_LVO
+        Dec2_Les --> Dec1_Les
+        
+        %% Guidance
+        Dec1_CoW -.->|"CoW.detach()<br/>FusedSpatialAttn"| Dec1_LVO
+        Dec1_CoW -.->|"CoW.detach()<br/>+ Dropout2d(0.15)"| Dec1_Les
+
+        %% Raw Perfusion Injection
+        Input -.->|"Raw CTP Center<br/>Pooling"| Dec2_Les
+        Input -.->|"Raw CTP Center"| Dec1_Les
+    end
+
+    subgraph Heads ["Segmentation Heads"]
+        Head_CoW["CoW Head<br/>(SE + ResBlock)<br/>Bias: -2.944"]
+        Head_LVO["LVO Head<br/>(SE + ResBlock)<br/>Bias: -3.000"]
+        Head_Les["Lesion Head<br/>(SE + ResBlock)<br/>Bias: -2.944"]
+
+        Dec1_CoW --> Head_CoW
+        Dec1_LVO --> Head_LVO
+        Dec1_Les --> Head_Les
+    end
+
+    subgraph Outputs ["Final Output"]
+        Out_CoW["CoW Mask<br/>Shape: (B, 1, 256, 256)"]
+        Out_LVO["LVO Heatmap<br/>Shape: (B, 1, 256, 256)"]
+        Out_Les["Lesion Mask<br/>Shape: (B, 1, 256, 256)"]
+        
+        Head_CoW --> Out_CoW
+        Head_LVO --> Out_LVO
+        Head_Les --> Out_Les
+    end
 ```
 
 ### 1.1. Backbone (Encoder) & Input Processing
@@ -51,55 +104,54 @@ graph TD
 *   **Knowledge Cascade (Lan truyền tri thức):** 
     1. Nhánh **CoW** được giải mã trước để lấy thông tin giải phẫu hệ mạch.
     2. Nhánh **LVO** nhận đặc trưng dẫn đường từ CoW (`CoW.detach()`) qua khối **FusedSpatialAttention** để thu hẹp vùng tìm kiếm điểm tắc mạch lớn.
-    3. Nhánh **Lesion** nhận đặc trưng dẫn đường từ CoW (`CoW.detach()`) kết hợp `Dropout2d(p=0.4)` để tránh hiện tượng quá phụ thuộc vào mạch máu mà bỏ qua vùng nhu mô.
+    3. Nhánh **Lesion** nhận đặc trưng dẫn đường từ CoW (`CoW.detach()`) kết hợp `Dropout2d(p=0.15)` để tránh hiện tượng quá phụ thuộc vào mạch máu mà bỏ qua vùng nhu mô.
     *(Việc sử dụng `.detach()` giúp cô lập hoàn toàn gradient giữa các TaskPath, ngăn ngừa nhiễu gradient chéo)*.
 *   **Raw Perfusion Injection:** Nhánh **Lesion** được bơm trực tiếp các bản đồ tưới máu thô của lát cắt trung tâm $Z$ (đã qua pooling tương thích kích thước) vào skip-connection của `dec2` và `dec1`. Điều này giúp giữ lại các tín hiệu huyết động học nguyên bản vốn dễ bị suy giảm khi đi qua Encoder sâu.
-*   **Deep Supervision & Prev-Mask Propagation:** Ở các tầng `dec2` và `dec1`, mô hình có các `AuxHead` dự đoán sớm. Dự đoán của tầng sâu được nâng kích thước và gom (concatenate) trực tiếp vào đầu vào tầng nông hơn làm tín hiệu dẫn đường lặp (iterative refinement). Nhánh LVO sử dụng nội suy `nearest` cho mặt nạ bổ trợ để bảo toàn độ sắc nét của mục tiêu nhỏ dạng điểm.
 
 ### 1.4. Task-Specific Segmentation Heads
 Mỗi nhánh ra mặt nạ được thiết kế dưới dạng: `ChannelAttention(reduction=4) -> ResidualBlock(2x Conv3x3) -> Dropout2d -> Conv1x1`.
-*   **Bias Initialization:** Khởi tạo bias đặc thù để giải quyết mất cân bằng lớp cực đoan:
-    *   LVO Head: `bias = -2.0` (Aux Head dùng `bias = -4.595`)
-    *   CoW & Lesion Head: `bias = -2.944`
+*   **Bias Initialization Đặc Thù:** Khởi tạo bias để giải quyết mất cân bằng lớp cực đoan và dập tắt báo ảo (FP) trên nền âm tính:
+    *   **LVO Head:** `bias = -3.0` (tương đương baseline probability $\sigma \approx 0.047$). Ngưỡng này ép mô hình phải "chắc chắn" mới dám vượt ngưỡng 0.4.
+    *   **CoW & Lesion Head:** `bias = -2.944`
 
 ---
 
 ## 2. Hệ Thống Hàm Mất Mát (Task-Specific Losses)
 
-Do tính chất hình học và phân phối nhãn rất khác biệt, mỗi nhánh sử dụng một tổ hợp Loss chuyên biệt phối hợp cùng Deep Supervision (trọng số 0.5 cho aux loss).
+Do tính chất hình học và phân phối nhãn rất khác biệt, mỗi nhánh sử dụng một tổ hợp Loss chuyên biệt phối hợp cùng Deep Supervision.
 
 | Nhiệm vụ | Công thức Loss | Rationale (Lý do thiết kế) |
 | :--- | :--- | :--- |
-| **Lesion** (Ổ nhồi máu) | `Focal Tversky (α=0.35, β=0.65, γ=1.35)` <br>+ `SDF Boundary Loss (weight=0.45)` | Tính toán **per-sample** để tránh nổ gradient từ Batch-Dice khi dính False Positive diện rộng. `β=0.65` ưu tiên hạn chế False Negative (tăng recall). SDF (Signed Distance Function) Loss giúp bám sát các đường viền phức tạp của vùng nhồi máu. |
-| **LVO** (Tắc mạch lớn) | `Modified Focal Loss (α=2.5, β=4.5)` <br>+ `Gaussian Curriculum` | LVO chỉ xuất hiện dưới dạng một chấm vài pixel. **Gaussian Curriculum** tạo một vùng Gaussian xung quanh điểm tắc với kích thước $\sigma$ thu nhỏ dần theo Epoch ($\sigma = \max(5.0 \times 0.97^{epoch}, 1.25)$) để mô hình dễ "bắt trúng" ở giai đoạn đầu và hội tụ chính xác ở giai đoạn sau. |
-| **CoW** (Vòng Willis) | `Tversky Loss (α=0.2, β=0.8)` <br>+ `Soft CLDice Loss (weight=0.45)` | `β=0.8` phạt rất nặng hiện tượng đứt gãy mạch máu. **clDice (Centerline Dice)** sử dụng skeletonization mềm để duy trì tính liên tục và topology dạng mạng lưới của đa giác Willis. |
+| **Lesion** (Ổ nhồi máu) | `Focal Tversky (batch=True, α=0.35, β=0.65, γ=1.75)` <br>+ `SDF Boundary Loss (area_gated > 400px)` | **Batch-level Tversky:** Gom toàn bộ pixel trong batch để tính chung 1 giá trị TI, tránh hiện tượng gradient bị pha loãng bởi các lát cắt rỗng. <br>**Area-Gated SDF:** SDF Loss ép mô hình học đường viền, nhưng sẽ phạt nhầm các ổ nhồi máu siêu nhỏ thành 0. Do đó, SDF chỉ kích hoạt khi ổ nhồi máu $> 400$ pixel. |
+| **LVO** (Tắc mạch lớn) | `Modified Focal Loss (α=2.5, β=4.5)` <br>+ `Gaussian Curriculum` <br>+ `Negative Slice Max Penalty` | LVO chỉ là dạng một chấm nhỏ. **Gaussian Curriculum** tạo vùng Gaussian quanh điểm tắc, thu nhỏ dần $\sigma$ (xuống mức floor=1.25) theo Epoch để dễ hội tụ.<br>**Negative Slice Max Penalty:** Phạt bình phương giá trị dự đoán tối đa ($max\_pred^2$) trên các lát cắt không có LVO để đè bẹp các báo ảo (False Positives). |
+| **CoW** (Vòng Willis) | `Tversky Loss (α=0.2, β=0.8)` <br>+ `Soft CLDice Loss (weight=0.45)` | `β=0.8` phạt rất nặng hiện tượng đứt gãy mạch máu. **clDice (Centerline Dice)** sử dụng skeletonization mềm để duy trì tính liên tục và topology dạng mạng lưới của mạch máu. |
 
 ---
 
 ## 3. Cân Bằng Đa Nhiệm Động & Gradient Surgery
 
-Để huấn luyện đồng thời 3 tác vụ mà không bị hiện tượng một tác vụ dễ lấn át tác vụ khó hoặc xung đột gradient, mô hình áp dụng hai cơ chế điều phối động:
+Để huấn luyện đồng thời 3 tác vụ mà không bị hiện tượng một tác vụ dễ lấn át tác vụ khó, mô hình áp dụng hai cơ chế:
 
 ### 3.1. PCGrad (Projecting Conflicting Gradients)
-Ở mỗi bước lan truyền ngược:
-1. Loss của từng tác vụ (Lesion, LVO, CoW) được `backward()` độc lập (trong ngữ cảnh `no_sync` của DDP).
-2. Gradient của từng tác vụ được đồng bộ qua các GPU (`all_reduce`).
-3. Nếu vector gradient của hai tác vụ có góc tù (xung đột hướng tối ưu), gradient của tác vụ này sẽ được chiếu vuông góc lên không gian không xung đột của tác vụ kia trước khi cộng tổng. Thứ tự chiếu được xáo ngẫu nhiên ở mỗi bước.
+Nếu vector gradient của hai tác vụ có góc tù (xung đột hướng tối ưu), gradient của tác vụ này sẽ được chiếu vuông góc lên mặt phẳng không xung đột của tác vụ kia trước khi cộng tổng. Điều này chống lại hiện tượng "quên thảm khốc" (Catastrophic Forgetting) giữa các nhánh giải mã.
 
 ### 3.2. PGW (Performance Gap Weighting)
-Bắt đầu từ Epoch 8, trọng số các tác vụ được cập nhật tự động dựa trên khoảng cách tới mục tiêu (Gap):
+Trọng số các tác vụ được cập nhật tự động (với momentum) dựa trên khoảng cách tới mục tiêu (Gap):
 *   **Mục tiêu hiệu năng:** `Lesion_Dice = 0.75`, `LVO_D2C_F1 = 0.50`, `CoW_Dice = 0.88`.
-*   **Cập nhật trọng số:** 
-    $$\text{Gap}_t = \max(0, \text{Target}_t - \text{Metric}_t)$$
-    $$\text{RawWeight}_t = \text{softmax}(\text{Gap}_t / \tau)$$
-    $$\text{Weight}_t = m \cdot \text{Weight}_{t-1} + (1-m) \cdot \text{RawWeight}_t$$
-*   Áp dụng các biên cứng `w_min` và `w_max` để tránh triệt tiêu hoàn toàn bất kỳ tác vụ nào.
+*   **Cập nhật:** $\text{Gap}_t = \max(0, \text{Target}_t - \text{Metric}_t)$. Task nào càng xa mục tiêu, Loss của task đó càng được khuếch đại ở Epoch tiếp theo.
 
 ---
 
-## 4. Chiến Lược Tối Ưu Hóa (Optimization Protocol)
+## 4. Chiến Lược Đánh Giá & Hậu Xử Lý Lâm Sàng (Evaluation)
 
-*   **Warm-up Curriculum:** Encoder được đóng băng (`frozen`) trong 11 Epoch đầu tiên để các Decoder Path tự khởi động và học cách dựng lại không gian. Từ Epoch 12, Encoder được mở băng và huấn luyện với tốc độ học nhỏ hơn (Differential LR tỷ lệ 20:1, tức `encoder_lr = 5e-5` so với `base_lr = 1e-3`).
+*   **Đánh giá LVO cấp độ Bệnh nhân (Patient-level Majority Voting):** Để giảm triệt để báo ảo (1 lát cắt nhiễu kéo theo cả bệnh nhân bị chẩn đoán nhầm), logic đánh giá quy định một bệnh nhân chỉ được kết luận là dương tính với LVO khi có **ít nhất 2 lát cắt (min_pos_slices = 2)** vượt ngưỡng dự đoán (threshold > 0.4).
+*   **Volumetric Dice cho Lesion:** Dice của Lesion được tính trên phương diện không gian 3D (gom toàn bộ pixel của batch) thay vì lấy trung bình các lát cắt, khớp hoàn toàn với phương pháp huấn luyện Batch-level Focal Tversky.
+
+---
+
+## 5. Chiến Lược Tối Ưu Hóa (Optimization Protocol)
+
+*   **Warm-up Curriculum:** Encoder được đóng băng (`frozen`) trong 11 Epoch đầu. Từ Epoch 12, Encoder được mở băng và huấn luyện với tốc độ học nhỏ hơn (Differential LR tỷ lệ 20:1).
 *   **3-Phase Scheduler:** Kết hợp SequentialLR bao gồm: Warmup (5 Epoch) $\rightarrow$ Hold (7 Epoch) $\rightarrow$ Cosine Annealing (88 Epoch).
-*   **Independent Checkpointing:** Lưu trữ 3 mô hình tốt nhất độc lập (`best_overall.pt`, `best_lesion.pt`, `best_lvo.pt`) dựa trên điểm số hỗn hợp (`0.45*Lesion + 0.45*LVO + 0.1*CoW`) và metric riêng lẻ của từng tác vụ.
-*   **Modality Robustness:** Tích hợp `ModalityDropout` trong pipeline tăng cường dữ liệu (ngẫu nhiên tắt toàn bộ kênh CTA hoặc CTP với xác suất 10%) giúp mô hình có khả năng suy luận ổn định ngay cả khi thiếu khuyết modality lâm sàng.
+*   **Independent Checkpointing:** Lưu trữ 3 mô hình tốt nhất độc lập (`best_overall.pt`, `best_lesion.pt`, `best_lvo.pt`).
+*   **Modality Robustness:** Tích hợp `ModalityDropout` (ngẫu nhiên tắt kênh CTA hoặc CTP xác suất 10%) giúp mô hình có khả năng suy luận ổn định khi thiếu khuyết modality.
