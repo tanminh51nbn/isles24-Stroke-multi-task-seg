@@ -210,18 +210,30 @@ class DenseNet121Encoder(nn.Module):
         # 1. Slice Attention để học trọng số lát cắt
         self.slice_attention = SliceAttention(in_channels)
 
-        # 2. Backbone Setup
-        # DenseNet dùng features.conv0 thay vì conv1
-        self.conv0 = nn.Conv2d(
+        # 2. Backbone Setup: Dual-Stream Shallow Encoder
+        # Stream A: CoW/LVO Focus (Sharp edges)
+        self.conv0_A = nn.Conv2d(
             in_channels,
             64,
-            kernel_size=7,
+            kernel_size=5,
             stride=2,
-            padding=3,
+            padding=2,
             bias=False,
         )
-        self.norm0 = features.norm0
-        self.gelu0 = nn.GELU()
+        self.norm0_A = nn.BatchNorm2d(64)
+        self.gelu0_A = nn.GELU()
+
+        # Stream B: Lesion Focus (Broad texture)
+        self.conv0_B = nn.Conv2d(
+            in_channels,
+            64,
+            kernel_size=9,
+            stride=2,
+            padding=4,
+            bias=False,
+        )
+        self.norm0_B = nn.BatchNorm2d(64)
+        self.gelu0_B = nn.GELU()
 
         # Load RadImageNet weights
         if weights_path is not None and os.path.exists(weights_path):
@@ -229,16 +241,12 @@ class DenseNet121Encoder(nn.Module):
         else:
             if weights_path is not None:
                 print(f"[DenseNet121Encoder] Weights not found at {weights_path}. Fallback to ImageNet inflation.")
-            # Fallback: Inflate từ ImageNet
-            with torch.no_grad():
-                self.conv0.weight.copy_(
-                    inflate_weights(features.conv0.weight, in_channels)
-                )
+            # Khởi tạo Kaiming Normal thay vì Inflate từ ImageNet do đổi cấu trúc
+            nn.init.kaiming_normal_(self.conv0_A.weight, mode='fan_out', nonlinearity='relu')
+            nn.init.kaiming_normal_(self.conv0_B.weight, mode='fan_out', nonlinearity='relu')
 
         # Tách 5 stage để lấy skip connections
-        self.stage0 = nn.Sequential(
-            self.slice_attention, self.conv0, self.norm0, self.gelu0
-        )                                          # 64ch, /2
+        # stage0 bị bỏ đi vì forward logic thay đổi cho 2 luồng
         self.pool   = features.pool0               # /4 tổng
         self.stage1 = features.denseblock1         # 128ch (256 in original, half out)
         self.trans1 = features.transition1         # Compression → 128ch, /8
@@ -266,13 +274,8 @@ class DenseNet121Encoder(nn.Module):
         if "state_dict" in state_dict:
             state_dict = state_dict["state_dict"]
 
-        # 1. Inflate Conv0 (features.conv0.weight trong RadImageNet)
+        # 1. Bỏ qua Inflate Conv0 vì cấu trúc đã thay đổi thành Dual-Stream
         if "features.conv0.weight" in state_dict:
-            rad_conv0_weight = state_dict["features.conv0.weight"]
-            with torch.no_grad():
-                self.conv0.weight.copy_(
-                    inflate_weights(rad_conv0_weight, in_channels)
-                )
             del state_dict["features.conv0.weight"]
 
         # 2. Load các layer còn lại
@@ -287,12 +290,21 @@ class DenseNet121Encoder(nn.Module):
 
         Returns:
             List 5 feature maps từ nông → sâu:
-            [d1(64,H/2), d2(256,H/4), d3(512,H/8), d4(1024,H/16), d5(1024,H/32)]
+            [(d1_A, d1_B), d2, d3, d4, d5]
+            Trong đó d1_A và d1_B đều có kích thước (B, 64, H/2, W/2).
         """
-        d1 = self.stage0(x)               # (B, 64,   H/2,  W/2) — không dropout
-        x  = self.pool(d1)                # (B, 64,   H/4,  W/4)
+        x_attn = self.slice_attention(x)
+        
+        # Stream A (CoW/LVO)
+        d1_A = self.gelu0_A(self.norm0_A(self.conv0_A(x_attn)))
+        
+        # Stream B (Lesion)
+        d1_B = self.gelu0_B(self.norm0_B(self.conv0_B(x_attn)))
+        
+        # Gộp lại trước khi qua pool0 và denseblock1
+        x_pool = self.pool(d1_A) + self.pool(d1_B) # (B, 64, H/4, W/4)
 
-        d2 = self.drop1(self.stage1(x))   # (B, 256,  H/4,  W/4) — p=dp[0]
+        d2 = self.drop1(self.stage1(x_pool))   # (B, 256,  H/4,  W/4) — p=dp[0]
         x  = self.trans1(d2)              # (B, 128,  H/8,  W/8)
 
         d3 = self.drop2(self.stage2(x))   # (B, 512,  H/8,  W/8) — p=dp[1]
@@ -302,8 +314,7 @@ class DenseNet121Encoder(nn.Module):
         x  = self.trans3(d4)              # (B, 512,  H/32, W/32)
 
         d5 = self.drop4(self.stage4(x))   # (B, 1024, H/32, W/32) — p=dp[3]
-
-        return [d1, d2, d3, d4, d5]
+        return [(d1_A, d1_B), d2, d3, d4, d5]
 
 
 
