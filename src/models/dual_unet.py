@@ -117,15 +117,19 @@ class DualEncoderUNet(nn.Module):
         """
         Trả về param groups cho AdamW với Differential LR:
             - Encoder: encoder_lr (thấp hơn để bảo vệ RadImageNet weights)
-            - FiLM & Gate: decoder_lr * 3.0 (học nhanh để hội tụ adapter)
+            - FiLM: decoder_lr * 3.0 (học nhanh để hội tụ adapter)
+            - Gate: decoder_lr * 3.0 (học nhanh để hội tụ adapter)
             - Decoder + Heads: decoder_lr (cao hơn để học nhanh)
         """
-        film_gate_params = []
+        film_params = []
+        gate_params = []
         decoder_heads_params = []
         
         for name, p in list(self.decoder.named_parameters()) + list(self.heads.named_parameters()):
-            if "film" in name.lower() or "gate_param" in name.lower():
-                film_gate_params.append(p)
+            if "film" in name.lower() or "embedding" in name.lower():
+                film_params.append(p)
+            elif "gate_param" in name.lower():
+                gate_params.append(p)
             else:
                 decoder_heads_params.append(p)
 
@@ -137,9 +141,14 @@ class DualEncoderUNet(nn.Module):
                 "name": "encoders",
             },
             {
-                "params": film_gate_params,
+                "params": film_params,
                 "lr": decoder_lr * 3.0,
-                "name": "film_gate",
+                "name": "film",
+            },
+            {
+                "params": gate_params,
+                "lr": decoder_lr * 3.0,
+                "name": "asymmetry_gate",
             },
             {
                 "params": decoder_heads_params,
