@@ -609,6 +609,9 @@ class MultiTaskLoss(nn.Module):
                     task_aux_loss += self.lesion_main_loss(a_p, t_l)
                 
                 elif task_key == "lvo":
+                    if task_aux_loss == 0.0:
+                        task_aux_loss = torch.zeros(targets.size(0), device=targets.device)
+                        
                     t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
                     if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
                         task_aux_loss += self.lvo_loss_fn(a_p, t_v, sigma=dynamic_sigma)
@@ -624,6 +627,7 @@ class MultiTaskLoss(nn.Module):
                 if task_key == "lesion":
                     aux_l = (task_aux_loss / num_active) * p_l * 0.5
                 elif task_key == "lvo":
+                    # task_aux_loss ở đây là vector (B,) do lvo_loss_fn(reduction='none')
                     task_aux_loss_weighted = (task_aux_loss * lvo_slice_weights).mean()
                     aux_v = (task_aux_loss_weighted / num_active) * p_v * 0.5
                 elif task_key == "cow":
