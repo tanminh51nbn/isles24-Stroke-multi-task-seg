@@ -609,7 +609,7 @@ class MultiTaskLoss(nn.Module):
                     task_aux_loss += self.lesion_main_loss(a_p, t_l)
                 
                 elif task_key == "lvo":
-                    if task_aux_loss == 0.0:
+                    if not isinstance(task_aux_loss, torch.Tensor):
                         task_aux_loss = torch.zeros(targets.size(0), device=targets.device)
                         
                     t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
