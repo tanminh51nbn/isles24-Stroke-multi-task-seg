@@ -611,7 +611,7 @@ class MultiTaskLoss(nn.Module):
                 elif task_key == "lvo":
                     t_v = F.adaptive_max_pool2d(targets[:, 1:2], (h, w))
                     if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
-                        task_aux_loss += self.lvo_loss_fn(a_p, t_v, sigma=4.0)
+                        task_aux_loss += self.lvo_loss_fn(a_p, t_v, sigma=dynamic_sigma)
                     else:
                         task_aux_loss += self.lvo_loss_fn(a_p, t_v)
                     
