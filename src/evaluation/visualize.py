@@ -200,18 +200,18 @@ def overlay_predictions(
     # Nhãn gốc (GT Overlay trên CTA)
     axes[0, 1].imshow(cta_img, cmap="bone")
     gt_rgba = np.zeros((*gt_lesion.shape, 4))
-    gt_rgba[gt_lesion > 0] = [0.7, 0, 0, 0.5]       # Đỏ: Lesion (50% opacity)
-    gt_rgba[gt_cow > 0] = [0, 0.4, 0, 0.5]          # Xanh lá: CoW (50% opacity)
-    gt_rgba[gt_lvo > 0.1] = [1.0, 1.0, 0, 1.0]      # Vàng: LVO (100% opacity, đè lên trên)
+    gt_rgba[gt_lesion > 0] = [0, 0, 0.8, 0.5]       # Xanh dương: Lesion (50% opacity)
+    gt_rgba[gt_cow > 0] = [0, 0.7, 0, 0.5]          # Xanh lá: CoW (50% opacity)
+    gt_rgba[gt_lvo > 0.1] = [1.0, 0, 0, 1.0]        # Đỏ: LVO (100% opacity, đè lên trên)
     axes[0, 1].imshow(gt_rgba)
     axes[0, 1].set_title("Nhãn gốc"); axes[0, 1].axis("off")
 
     # AI phân vùng (Pred Overlay trên CTA)
     axes[0, 2].imshow(cta_img, cmap="bone")
     pr_rgba = np.zeros((*pr_lesion_bin.shape, 4))
-    pr_rgba[pr_lesion_bin > 0] = [0.7, 0, 0, 0.5]
-    pr_rgba[pr_cow_bin > 0] = [0, 0.4, 0, 0.5]
-    pr_rgba[pr_lvo_bin > 0] = [1.0, 1.0, 0, 0.5]
+    pr_rgba[pr_lesion_bin > 0] = [0, 0, 0.8, 0.5]
+    pr_rgba[pr_cow_bin > 0] = [0, 0.7, 0, 0.5]
+    pr_rgba[pr_lvo_bin > 0] = [1.0, 0, 0, 0.5]      # Đỏ LVO (50% opacity)
     axes[0, 2].imshow(pr_rgba)
     axes[0, 2].set_title("AI phân vùng"); axes[0, 2].axis("off")
 
@@ -243,9 +243,9 @@ def overlay_predictions(
 
     # Legend
     patches = [
-        mpatches.Patch(color=(0.7, 0, 0), label="Lesion"),
-        mpatches.Patch(color=(0, 0.4, 0), label="CoW"),
-        mpatches.Patch(color=(1.0, 1.0, 0), label="LVO")
+        mpatches.Patch(color=(0, 0, 0.8), label="Lesion"),
+        mpatches.Patch(color=(0, 0.7, 0), label="CoW"),
+        mpatches.Patch(color=(1.0, 0, 0), label="LVO")
     ]
     fig.legend(handles=patches, loc="lower center", ncol=3, fontsize=12)
 

@@ -128,10 +128,9 @@ def run_compare_mode(args, base_model, train_cfg, device):
         axes[row, 0].imshow(bg_img, cmap='bone')
         if gt.max() > 0:
             ov = np.zeros((*gt[0].shape, 4))
-            ov[..., 0] = gt[0] * 0.7
-            ov[..., 1] = gt[2] * 0.4
-            ov[..., 2] = (gt[1] > 0.1).astype(float) * 0.9
-            ov[..., 3] = (gt.max(axis=0) > 0.1) * 0.5
+            ov[gt[0] > 0] = [0, 0, 0.8, 0.5]       # Xanh dương: Lesion (50% opacity)
+            ov[gt[2] > 0] = [0, 0.7, 0, 0.5]       # Xanh lá: CoW (50% opacity)
+            ov[gt[1] > 0.1] = [1.0, 0, 0, 1.0]     # Đỏ: LVO (100% opacity, đè lên trên)
             axes[row, 0].imshow(ov)
         
         label_str = f"Les={key[0]}, LVO={key[1]}, CoW={key[2]}"
@@ -159,7 +158,7 @@ def run_compare_mode(args, base_model, train_cfg, device):
                 mask = (sig > thresh).numpy()[0,0]
                 if mask.sum() > 0:
                     ov = np.zeros((*mask.shape, 4))
-                    ov[..., 0] = 1.0; ov[..., 3] = mask * 0.5
+                    ov[mask > 0] = [0, 0, 0.8, 0.5]
                     ax.imshow(ov)
             elif name == "overall":
                 thresh_l = train_cfg["composite_score"]["thresholds"].get("lesion", 0.5)
@@ -175,11 +174,11 @@ def run_compare_mode(args, base_model, train_cfg, device):
                 
                 if m_l.sum() > 0:
                     ov_l = np.zeros((*m_l.shape, 4))
-                    ov_l[..., 0] = 1.0; ov_l[..., 3] = m_l * 0.5
+                    ov_l[m_l > 0] = [0, 0, 0.8, 0.5]
                     ax.imshow(ov_l)
                 if m_c.sum() > 0:
                     ov_c = np.zeros((*m_c.shape, 4))
-                    ov_c[..., 1] = 1.0; ov_c[..., 3] = m_c * 0.4
+                    ov_c[m_c > 0] = [0, 0.7, 0, 0.5]
                     ax.imshow(ov_c)
                 if h_v.max() > 0:
                     ax.imshow(h_v, cmap='hot', alpha=0.6, vmin=0, vmax=1)
