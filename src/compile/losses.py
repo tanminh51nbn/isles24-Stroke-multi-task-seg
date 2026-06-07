@@ -562,15 +562,23 @@ class MultiTaskLoss(nn.Module):
         neg_lvo_mask = (1.0 - has_lvo)  # (B,) — 1.0 cho negative slices
         if neg_lvo_mask.sum() > 0:
             lvo_probs = torch.sigmoid(preds['lvo'].float())  # (B, 1, H, W)
-            lvo_max_per_slice = lvo_probs.amax(dim=(1, 2, 3))  # (B,)
-            neg_penalty = (lvo_max_per_slice ** 2) * neg_lvo_mask  # Chỉ phạt negative slices
+            
+            # Thay vì chỉ phạt đỉnh cao nhất, ta phạt trung bình top-k pixels
+            # để bắt được pattern mô hình báo "vùng nhỏ đều" với xác suất ~0.45
+            k = 16  # ~4x4 pixel, tương đương kích thước LVO thật
+            B_size = lvo_probs.size(0)
+            lvo_flat = lvo_probs.view(B_size, -1)
+            topk_vals = lvo_flat.topk(k, dim=1).values  # (B, k)
+            lvo_topk_mean = topk_vals.mean(dim=1)       # (B,)
+            
+            neg_penalty = (lvo_topk_mean ** 2) * neg_lvo_mask  # Chỉ phạt negative slices
             l_v_neg_penalty = neg_penalty.sum() / neg_lvo_mask.sum().clamp(min=1.0)
         else:
             l_v_neg_penalty = torch.tensor(0.0, device=targets.device)
 
         # 3. Final Task Weighting
         loss_l = combined_lesion_loss_scalar * p_l
-        loss_v = (l_v_m_scalar + 0.5 * l_v_neg_penalty) * p_v  # [FIX #1] Thêm neg penalty
+        loss_v = (l_v_m_scalar + 2.0 * l_v_neg_penalty) * p_v  # Tăng weight penalty từ 0.5 lên 2.0
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
 
         # Unweighted task losses (dùng để logging/monitoring độ hội tụ thực tế)
