@@ -132,14 +132,20 @@ class ModifiedFocalLoss(nn.Module):
         pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred + self.eps)
         neg_loss = -neg_mask * torch.pow(1.0 - heatmap_gt, self.beta) * torch.pow(pred, self.alpha) * torch.log(1.0 - pred + self.eps)
         
-        # 4. Tính toán theo từng lát cắt (dim = (1, 2, 3))
+        # Tính toán theo từng lát cắt (dim = (1, 2, 3))
         slice_pos_loss = pos_loss.sum(dim=(1, 2, 3))
         slice_neg_loss = neg_loss.sum(dim=(1, 2, 3))
         
-        # Số lượng pixel dương để chuẩn hóa (tối thiểu là 1 để tránh chia cho 0)
-        slice_num_pos = pos_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
-        slice_num_neg = neg_mask.sum(dim=(1, 2, 3)).clamp(min=1.0)
-        slice_loss = (slice_pos_loss / slice_num_pos) + (slice_neg_loss / slice_num_neg)
+        slice_num_pos = pos_mask.sum(dim=(1, 2, 3))
+        slice_num_neg = neg_mask.sum(dim=(1, 2, 3))
+        
+        is_pos_slice = (slice_num_pos > 0)
+        normalizer = torch.where(
+            is_pos_slice,
+            slice_num_pos.clamp(min=1.0),            # Positive slice: chia num_pos
+            slice_num_pos + slice_num_neg            # Negative slice: chia total pixel
+        )
+        slice_loss = (slice_pos_loss + slice_neg_loss) / normalizer
         
         slice_loss = torch.nan_to_num(slice_loss, nan=0.0, posinf=100.0, neginf=0.0).clamp(max=14000.0)
         

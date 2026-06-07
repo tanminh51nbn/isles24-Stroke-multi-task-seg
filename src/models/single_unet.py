@@ -243,13 +243,21 @@ class HemisphericAsymmetryModule(nn.Module):
         diff = self.catch_conv(concat)
         diff = self.norm(diff)
         diff = self.gelu(diff)
-        diff = self.mix_conv(diff)
+        
+        # [FIX] High-Pass Spatial Filter: Chặn rò rỉ Lesion vào nhánh LVO
+        # Các vùng Lesion tạo ra mảng bất đối xứng khổng lồ, trong khi LVO chỉ là đốm nhỏ.
+        # Ta dùng AvgPool (Low-pass) để bắt mảng nền to, sau đó lấy tín hiệu gốc trừ đi mảng nền
+        # -> Chỉ còn lại các đốm LVO sắc nét lọt qua.
+        blur = F.avg_pool2d(diff, kernel_size=31, stride=1, padding=15)
+        diff_sharp = diff - blur
+        
+        diff_out = self.mix_conv(diff_sharp)
         
         # Tính gating weight alpha (0 -> 1, khởi tạo ở 0.5)
         alpha = torch.sigmoid(self.gate_param)
         
         # Cộng feature bất đối xứng vào feature gốc với tỷ lệ alpha
-        return x + alpha * diff
+        return x + alpha * diff_out
 
 
 # ─── Specialized Decoder Paths (Single Encoder version) ────────────────────────
