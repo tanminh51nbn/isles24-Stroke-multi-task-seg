@@ -186,8 +186,8 @@ class SafePerfusionBottleneck(nn.Module):
         B, C, H, W = perf_raw.shape
         eps = 1e-5
         
-        # Detect lát cắt có tín hiệu perfusion (tổng trị tuyệt đối > eps)
-        has_perf = (perf_raw.abs().sum(dim=[1, 2, 3]) > eps) # (B,)
+        # Detect lát cắt có tín hiệu perfusion (chỉ tính tổng trên các kênh CTP: 2, 3, 4, 5 của perf_raw)
+        has_perf = (perf_raw[:, 2:6].abs().sum(dim=[1, 2, 3]) > eps) # (B,)
         
         if not has_perf.any():
             # Nếu toàn batch trống, ta vẫn pass qua layer để Pytorch tự ép kiểu AMP (Half/Float)
@@ -431,7 +431,8 @@ class LesionTaskPath(nn.Module):
         
         # ─── Bơm tường minh (Explicit Mask) thông tin Perfusion vào Lesion Head ───
         # Để mô hình tự động fallback sang CTA nếu không có Perfusion
-        has_perf = (perf_raw.abs().sum(dim=[1,2,3]) > 1e-5).float() # (B,)
+        # Chỉ check các kênh CTP (2, 3, 4, 5) thay vì toàn bộ perf_raw (vì kênh 0,1 là CTA)
+        has_perf = (perf_raw[:, 2:6].abs().sum(dim=[1,2,3]) > 1e-5).float() # (B,)
         perf_mask = has_perf.view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3]) # (B, 1, H, W)
         
         x = torch.cat([x, perf_mask], dim=1) # (B, dec_ch[3] + 1, H, W)

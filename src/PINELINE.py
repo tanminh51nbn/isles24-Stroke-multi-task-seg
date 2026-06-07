@@ -27,6 +27,11 @@ os.environ["TORCH_DISTRIBUTED_DEBUG"] = "OFF"
 import sys
 import argparse
 import yaml
+import gc
+
+# Tránh phân mảnh bộ nhớ (Memory Fragmentation) cho các session training dài hạn trên Kaggle
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
