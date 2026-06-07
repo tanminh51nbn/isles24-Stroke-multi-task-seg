@@ -70,8 +70,9 @@ def train_worker(rank: int, world_size: int, args, fold_idx: int = 0):
         args:       Parsed CLI arguments
         fold_idx:   Fold hiện tại (0-4)
     """
+    backend = "gloo" if os.name == "nt" else "nccl"
     dist.init_process_group(
-        backend="nccl",
+        backend=backend,
         init_method="env://",
         world_size=world_size,
         rank=rank,
