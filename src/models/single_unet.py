@@ -373,11 +373,11 @@ class LesionTaskPath(nn.Module):
         dropout_p = dropout_cfg.get("lesion", 0.2) if isinstance(dropout_cfg, dict) else 0.2
         
         # ─── Safe Perfusion Bottleneck (Xử lý an toàn lát cắt trống) ──────────
-        self.perf_bottleneck = SafePerfusionBottleneck(perf_ch=perf_ch, out_ch=16)
+        self.perf_bottleneck = SafePerfusionBottleneck(perf_ch=perf_ch, out_ch=32)
         
-        # Bơm Perfusion Bottleneck (16 kênh) vào skip channels
-        self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0] + 16, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
-        self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1] + 16, dec_ch[3], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
+        # Bơm Perfusion Bottleneck (32 kênh) vào skip channels
+        self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0] + 32, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
+        self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1] + 32, dec_ch[3], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
 
         # ─── Task-Conditioned FiLM ──────────────────────────────────────────
         self.task_embedding = nn.Parameter(torch.randn(1, 64))

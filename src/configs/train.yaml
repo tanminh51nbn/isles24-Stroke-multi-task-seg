@@ -11,16 +11,16 @@ loss:
     beta: 0.6
     gamma: 1.75
     slice_pos_weight: 2.5
-    sdf_weight: 0.25
+    sdf_weight: 0.45
     sdf_fg_weight: 0.4
 
   lvo:
     type: "modified_focal"
     mfl_alpha: 2.5
     mfl_beta: 4.5
-    sigma_init: 3.0
-    sigma_floor: 1.25
-    sigma_decay: 0.97
+    sigma_init: 4.5
+    sigma_floor: 1.9
+    sigma_decay: 0.98
     slice_pos_weight: 5.0
     max_radius: 14.5
 
