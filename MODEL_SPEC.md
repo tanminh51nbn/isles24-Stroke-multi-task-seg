@@ -17,12 +17,20 @@ graph TD
     end
 
     subgraph EncoderBlock ["Encoder (DenseNet-121)"]
-        Conv0["Center-Weighted conv0<br/>Shape: (B, 64, 128, 128)"]
+        Conv0_A["Stream A (CoW/LVO)<br/>Conv 5x5, Stride 2<br/>Shape: (B, 32, 128, 128)"]
+        Conv0_B["Stream B (Lesion)<br/>Conv 9x9, Stride 2<br/>Shape: (B, 32, 128, 128)"]
+        Concat_Conv0["Concat conv0<br/>Shape: (B, 64, 128, 128)"]
+        
         Enc1["Encoder Block 1<br/>Shape: (B, 256, 64, 64)"]
         Enc2["Encoder Block 2<br/>Shape: (B, 512, 32, 32)"]
         Enc3["Encoder Block 3<br/>Shape: (B, 1024, 16, 16)"]
         Bot["DenseGlobalBottleneck<br/>(7x7 DW, Expand 4x)<br/>Shape: (B, 512, 16, 16)"]
-        SA --> Conv0 --> Enc1 --> Enc2 --> Enc3 --> Bot
+        
+        SA --> Conv0_A
+        SA --> Conv0_B
+        Conv0_A --> Concat_Conv0
+        Conv0_B --> Concat_Conv0
+        Concat_Conv0 --> Enc1 --> Enc2 --> Enc3 --> Bot
     end
 
     subgraph SharedDecoder ["Shared Decoder (Low-Res)"]
@@ -35,37 +43,39 @@ graph TD
     end
 
     subgraph TaskDecoders ["Task-Specific Decoders (High-Res)"]
+        FiLM["Task-Conditioned FiLM<br/>(Tô màu đặc trưng)"]
+        Dec3 --> FiLM
+        Concat_Conv0 -.->|"Skip"| FiLM
+
         %% CoW Branch
         Dec2_CoW["CoW dec2<br/>Shape: (B, 64, 128, 128)"]
         Dec1_CoW["CoW dec1<br/>Shape: (B, 32, 256, 256)"]
         
         %% LVO Branch
+        Asym_LVO["Hemispheric Asymmetry<br/>(High-Pass Filter)"]
         Dec2_LVO["LVO dec2<br/>Shape: (B, 64, 128, 128)"]
         Dec1_LVO["LVO dec1<br/>Shape: (B, 32, 256, 256)"]
         
         %% Lesion Branch
+        Asym_Les["Lesion Asymmetry<br/>(Low-Pass Filter)"]
         Dec2_Les["Lesion dec2<br/>Shape: (B, 64, 128, 128)"]
         Dec1_Les["Lesion dec1<br/>Shape: (B, 32, 256, 256)"]
 
-        Dec3 --> Dec2_CoW
-        Dec3 --> Dec2_LVO
-        Dec3 --> Dec2_Les
-
-        Conv0 -.->|"Skip"| Dec2_CoW
-        Conv0 -.->|"Skip"| Dec2_LVO
-        Conv0 -.->|"Skip"| Dec2_Les
+        FiLM --> Dec2_CoW
+        FiLM --> Dec2_LVO
+        FiLM --> Dec2_Les
 
         Dec2_CoW --> Dec1_CoW
-        Dec2_LVO --> Dec1_LVO
-        Dec2_Les --> Dec1_Les
+        
+        Dec2_LVO --> Asym_LVO --> Dec1_LVO
+        Dec2_Les --> Asym_Les --> Dec1_Les
         
         %% Guidance
         Dec1_CoW -.->|"CoW.detach()<br/>FusedSpatialAttn"| Dec1_LVO
-        Dec1_CoW -.->|"CoW.detach()<br/>+ Dropout2d(0.15)"| Dec1_Les
 
         %% Raw Perfusion Injection
-        Input -.->|"Raw CTP Center<br/>Pooling"| Dec2_Les
-        Input -.->|"Raw CTP Center"| Dec1_Les
+        Input -.->|"Safe Perfusion Bottleneck<br/>(AvgPool 4x)"| Dec2_Les
+        Input -.->|"Safe Perfusion Bottleneck<br/>(AvgPool 2x)"| Dec1_Les
     end
 
     subgraph Heads ["Segmentation Heads"]
@@ -75,7 +85,7 @@ graph TD
 
         Dec1_CoW --> Head_CoW
         Dec1_LVO --> Head_LVO
-        Dec1_Les --> Head_Les
+        Dec1_Les -->|"Explicit Perf Mask"| Head_Les
     end
 
     subgraph Outputs ["Final Output"]
@@ -89,24 +99,25 @@ graph TD
     end
 ```
 
-### 1.1. Backbone (Encoder) & Input Processing
-*   **SliceAttention:** Khối Attention dạng Squeeze-and-Excitation cải tiến (`AvgPool` + `MaxPool` concat qua MLP) nằm ngay trước `conv0` nhằm giúp mô hình tự động gán trọng số ưu tiên cho các kênh/modality quan trọng đầu vào.
-*   **Input Inflation (Center-Weighted):** Lớp `conv0` của DenseNet-121 (gốc 3 kênh) được nhân bản lên **18 kênh** (6 kênh CTA + 12 kênh CTP) sử dụng bộ lọc trọng số ưu tiên tâm: lát cắt trung tâm $Z$ được nhân với hệ số `1.0`, các lát lân cận $Z-1, Z+1$ nhân với `0.4`, sau đó chuẩn hóa năng lượng bảo toàn phương sai.
-*   **Backbone:** DenseNet-121 tải trọng số y học **RadImageNet** giúp tăng tốc hội tụ nhờ khả năng trích xuất đặc trưng y tế mạnh mẽ.
+### 1.1. Backbone (Encoder) & Dual-Stream Input Processing
+*   **SliceAttention:** Khối Attention dạng Squeeze-and-Excitation cải tiến nằm ngay trước `conv0` nhằm gán trọng số ưu tiên cho các lát cắt.
+*   **Dual-Stream Shallow Feature Extractor:** Lớp `conv0` của DenseNet-121 được phá bỏ và thay bằng 2 luồng hoạt động song song ngay từ đầu:
+    *   **Stream A (5x5, 32 channels):** Tối ưu hóa để bắt các dải viền siêu sắc nét, mạch máu nhỏ (CoW, LVO).
+    *   **Stream B (9x9, 32 channels):** Receptive Field cực lớn để thu nhận các dải biến thiên chậm, nhu mô não, vùng mờ (Lesion).
+*   **Backbone:** Các tầng sâu (denseblocks) tải trọng số y học **RadImageNet** (99.9% tham số được giữ nguyên để bảo tồn transfer learning).
 
-### 1.2. Shared & Specialized Decoders
-Để tối ưu hóa dung lượng VRAM và tối đa hóa khả năng chia sẻ đặc trưng, mô hình sử dụng cấu trúc **Decoupled Specialist v4**:
-*   **Shared Bottleneck:** Một lớp 1x1 Conv giảm chiều dữ liệu kết hợp **DenseGlobalBottleneck** (khối đảo ngược mở rộng 4x sử dụng 7x7 depthwise conv lấy cảm hứng từ ConvNeXt) giúp đạt receptive field bao phủ toàn bộ vùng đặc trưng đáy.
-*   **Shared Decoder Path (dec4, dec3):** Cát nghĩa không gian chung ở độ phân giải thấp ($16\times16$ và $32\times32$) cho cả 3 nhiệm vụ. Mỗi khối nâng độ phân giải sử dụng **Lightweight Dual Attention** (CBAM-style: SE channel attention kết hợp với 7x7 spatial conv).
-*   **Task-Specific Decoder Paths (dec2, dec1, final):** Phân tách thành 3 đường giải mã hoàn toàn độc lập ở độ phân giải cao ($64\times64$, $128\times128$, $256\times256$) để phục vụ riêng cho các mục tiêu giải phẫu và bệnh lý khác nhau.
+### 1.2. Shared & Specialized Decoders với Task-Conditioned FiLM
+*   **Shared Bottleneck & Path:** Cát nghĩa không gian chung ở độ phân giải thấp ($16\times16$ và $32\times32$) bằng khối **DenseGlobalBottleneck**.
+*   **Task-Conditioned FiLM:** Tại "ngã ba" rẽ nhánh, các skip connections và shared features phải đi qua bộ lọc FiLM. Mỗi Task (CoW, LVO, Lesion) sử dụng 1 vector embedding riêng để ép FiLM biến đổi (Scale & Shift) dải đặc trưng cho phù hợp với khẩu vị của mình, giải phóng Encoder khỏi xung đột tín hiệu.
+*   **Task-Specific Decoder Paths:** Phân tách thành 3 đường giải mã độc lập tại ($64\times64$, $128\times128$).
+*   **Hemispheric Asymmetry Modules:** Cung cấp tư duy bác sĩ điện quang (so sánh não trái-não phải):
+    *   **LVO Asymmetry (High-Pass Filter):** Trừ mảng mờ, giữ lại các đốm nhọn và sáng (cục LVO).
+    *   **Lesion Asymmetry (Low-Pass Filter):** Trừ các hạt lấm tấm, gom lại các mảng mờ khổng lồ (vùng thiếu máu).
 
 ### 1.3. Cơ Chế Kết Nối Nâng Cao
 *   **Knowledge Cascade (Lan truyền tri thức):** 
-    1. Nhánh **CoW** được giải mã trước để lấy thông tin giải phẫu hệ mạch.
-    2. Nhánh **LVO** nhận đặc trưng dẫn đường từ CoW (`CoW.detach()`) qua khối **FusedSpatialAttention** để thu hẹp vùng tìm kiếm điểm tắc mạch lớn.
-    3. Nhánh **Lesion** nhận đặc trưng dẫn đường từ CoW (`CoW.detach()`) kết hợp `Dropout2d(p=0.15)` để tránh hiện tượng quá phụ thuộc vào mạch máu mà bỏ qua vùng nhu mô.
-    *(Việc sử dụng `.detach()` giúp cô lập hoàn toàn gradient giữa các TaskPath, ngăn ngừa nhiễu gradient chéo)*.
-*   **Raw Perfusion Injection:** Nhánh **Lesion** được bơm trực tiếp các bản đồ tưới máu thô của lát cắt trung tâm $Z$ (đã qua pooling tương thích kích thước) vào skip-connection của `dec2` và `dec1`. Điều này giúp giữ lại các tín hiệu huyết động học nguyên bản vốn dễ bị suy giảm khi đi qua Encoder sâu.
+    Nhánh **LVO** nhận đặc trưng dẫn đường từ CoW (`CoW.detach()`) qua khối **FusedSpatialAttention** để thu hẹp vùng tìm kiếm điểm tắc mạch dọc theo cấu trúc cây mạch máu. *(Nhánh Lesion đã được CẮT ĐỨT khỏi CoW để tránh ô nhiễm bởi tần số cao của mạch máu mảnh).*
+*   **Safe Perfusion Injection:** Nhánh **Lesion** được bơm bản đồ tưới máu thô vào các tầng `dec2`, `dec1`. Khối lượng này đi qua **Safe Perfusion Bottleneck** — tự động bỏ qua và trả về tensor 0 đối với các lát cắt trống CTP (zero variance) để không làm vỡ phân phối của BatchNorm/InstanceNorm. Cùng với đó, `perf_mask` (0 hoặc 1) được bơm thẳng vào Lesion Head để mạng tự nhận biết tình trạng thiếu hụt dữ liệu CTP và chuyển hướng phân tích.
 
 ### 1.4. Task-Specific Segmentation Heads
 Mỗi nhánh ra mặt nạ được thiết kế dưới dạng: `ChannelAttention(reduction=4) -> ResidualBlock(2x Conv3x3) -> Dropout2d -> Conv1x1`.
@@ -155,3 +166,32 @@ Trọng số các tác vụ được cập nhật tự động (với momentum) 
 *   **3-Phase Scheduler:** Kết hợp SequentialLR bao gồm: Warmup (5 Epoch) $\rightarrow$ Hold (7 Epoch) $\rightarrow$ Cosine Annealing (88 Epoch).
 *   **Independent Checkpointing:** Lưu trữ 3 mô hình tốt nhất độc lập (`best_overall.pt`, `best_lesion.pt`, `best_lvo.pt`).
 *   **Modality Robustness:** Tích hợp `ModalityDropout` (ngẫu nhiên tắt kênh CTA hoặc CTP xác suất 10%) giúp mô hình có khả năng suy luận ổn định khi thiếu khuyết modality.
+
+---
+
+## 6. Trọng Điểm Của Mô Hình (Những Chi Tiết Nhỏ Sống Còn)
+
+Kiến trúc đa nhiệm y tế thường sụp đổ bởi những mâu thuẫn ngầm. Dưới đây là 5 "trọng điểm" tưởng chừng nhỏ bé nhưng lại là mấu chốt quyết định sự thành bại của toàn bộ hệ thống Single-Encoder này:
+
+1. **Dual-Stream Shallow Features (`conv0_A` và `conv0_B`)**
+   - **Vấn đề:** Mạch máu (CoW) cần kernel nhỏ để giữ độ sắc nét. Vùng nhồi máu (Lesion) cần kernel to để thu nhặt dải cường độ mờ. Ép Encoder học chung 1 bộ kernel 7x7 dẫn đến *Catastrophic Interference* ngay từ lớp đầu tiên.
+   - **Giải pháp:** Tách `conv0` thành 2 luồng: `5x5` (Stream A) và `9x9` (Stream B). Bộ não điện tử được tự do trích xuất "cạnh sắc" và "mảng mờ" một cách song song mà không dẫm chân lên nhau.
+
+2. **Kỹ Thuật Phân Tách Hemispheric Asymmetry (High-Pass vs Low-Pass)**
+   - **Vấn đề:** So sánh 2 bán cầu não là tư duy kinh điển của bác sĩ. Nhưng LVO (cục máu đông) là một hạt đậu sáng chóe, còn Lesion là một bãi bùn đen khổng lồ. 
+   - **Mấu chốt:** 
+     - LVO Asymmetry sử dụng **High-Pass Filter** (`diff - blur`) để dập tắt các mảng bất đối xứng to đùng do Lesion gây ra, chỉ cho hạt đậu lọt qua.
+     - Lesion Asymmetry sử dụng **Low-Pass Filter** (`AvgPool2d`) để xóa sạch các đốm sáng nhiễu li ti, giữ nguyên mảng bùn đen nguyên vẹn.
+   - Nếu cắm nhầm 2 module này cho nhau, mô hình sẽ hoàn toàn "mù lòa".
+
+3. **Cắt Đứt Hoàn Toàn CoW Guidance Cho Lesion**
+   - **Vấn đề:** Trong khi LVO cần bản đồ mạch máu CoW để biết cục tắc nằm trên đường nào, Lesion hoàn toàn không cần nhìn thấy mạch máu vi mô để xác định mảng chết. Việc ép Lesion nhìn vào bản đồ CoW chỉ gây ô nhiễm phổ tần (High-frequency noise) và triệt tiêu Gradient (do dropout bản đồ).
+   - **Mấu chốt:** Tách hoàn toàn Lesion khỏi CoW. Lesion chỉ dùng thông tin Perfusion gốc và Asymmetry Module. Càng cắt bớt thông tin rác, mô hình càng thông minh.
+
+4. **Trấn Áp LVO False Positive Bằng "Top-16 Mean Penalty"**
+   - **Vấn đề:** Ở các lát cắt âm tính, phạt điểm cực đại `amax` là quá dễ lách luật. Mạng Neural gian lận bằng cách xả một đám mây báo ảo có xác suất mờ mờ `0.45` trên một vùng rộng. Điểm `amax` chỉ là `0.45`, bình phương lên `0.2` (mức phạt quá rẻ), nhưng lúc test lại bị lộ là False Positive cực lớn.
+   - **Mấu chốt:** Thay `amax` bằng trung bình của **Top-16 pixel** (tương đương khối 4x4 pixel). Nếu dám xả một đám mây báo ảo, lập tức cả khối mây này sẽ kích hoạt mức phạt khủng khiếp, diệt tận gốc ý định lách luật của mô hình.
+
+5. **Safe Perfusion Bottleneck & Explicit Mask Injection**
+   - **Vấn đề:** Không phải lát cắt nào cũng có ảnh tưới máu (CTP). Nếu đưa một tensor toàn số 0 vào chuẩn hóa `InstanceNorm`, phương sai sẽ bằng 0 và layer bị vỡ.
+   - **Mấu chốt:** Viết một Bypass an toàn trong Bottleneck. Thêm vào đó, gắn 1 flag (0 hoặc 1) thẳng vào Lesion Head cuối cùng. "Này Head, lát cắt này không có Perfusion đâu, mi hãy nhìn bằng CTA đi". Mô hình không phải đoán mò tín hiệu bị thiếu nữa, nó chủ động chuyển trạng thái suy luận.
