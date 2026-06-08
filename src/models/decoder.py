@@ -135,10 +135,9 @@ class AuxHead(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=1)
         with torch.no_grad():
-            # [FIX] Đổi CoW bias từ -4.595 thành -2.944. -4.595 quá nhỏ khiến prediction ~0, gradient = 0
-            bias_val = -4.595 if task_name in ["lvo", "shared"] else -2.944
-            for i in range(out_ch):
-                self.conv.bias[i] = bias_val
+            # [FIX] LVO main head dùng -3.0. Aux head cũng phải tương xứng để tránh chết gradient
+            bias_val = -3.0 if task_name == "lvo" else (-4.595 if task_name == "shared" else -2.944)
+            nn.init.constant_(self.conv.bias, bias_val)
 
     def forward(self, x): return self.conv(x)
 

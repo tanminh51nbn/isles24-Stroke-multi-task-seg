@@ -86,12 +86,13 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 continue
 
-            # Phẫu thuật Gradient bằng PCGrad
-            _log_enc = (batch_idx % self.log_interval == 0 and self.rank == 0)
-            weights = [losses["p_lesion"], losses["p_lvo"], losses["p_cow"]]
-            self.pcgrad.backward_encoder_bypass(task_losses, self.model, scaler=self.scaler,
-                                                encoder_debug_ids=self._enc_param_ids if _log_enc else None,
-                                                weights=weights, asymmetric=True)
+            # TẮT PCGrad: Dùng Backward chuẩn cộng dồn để tăng tốc độ
+            self.optimizer.zero_grad(set_to_none=True)
+            if self.scaler is not None and self.amp_enabled:
+                self.scaler.scale(losses["total"]).backward()
+            else:
+                losses["total"].backward()
+                
             self.scaler.unscale_(self.optimizer)
             
             if batch_idx % self.log_interval == 0 and self.rank == 0:

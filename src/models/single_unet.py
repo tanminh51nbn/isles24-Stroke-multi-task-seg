@@ -335,9 +335,10 @@ class SingleTaskPath(nn.Module):
         s2, s1 = skips_task
         
         # ─── Áp dụng FiLM ──────────────────────────────────────────────────
-        x_shared_film = self.film_shared(x_shared, self.task_embedding)
-        s2_film = self.film_s2(s2, self.task_embedding)
-        s1_film = self.film_s1(s1, self.task_embedding)
+        task_emb = self.task_embedding.expand(x_shared.shape[0], -1)  # (B, 64)
+        x_shared_film = self.film_shared(x_shared, task_emb)
+        s2_film = self.film_s2(s2, task_emb)
+        s1_film = self.film_s1(s1, task_emb)
 
         x_dec2, aux2 = self.dec2(x_shared_film, s2_film, prev_mask=None)
         if guidance_dec2 is not None and self.attn_dec2 is not None:
@@ -412,9 +413,10 @@ class LesionTaskPath(nn.Module):
         perf_s1 = F.avg_pool2d(perf_norm, 2)
         
         # ─── Áp dụng FiLM ──────────────────────────────────────────────────
-        x_shared_film = self.film_shared(x_shared, self.task_embedding)
-        s2_film = self.film_s2(s2, self.task_embedding)
-        s1_film = self.film_s1(s1, self.task_embedding)
+        task_emb = self.task_embedding.expand(x_shared.shape[0], -1)  # (B, 64)
+        x_shared_film = self.film_shared(x_shared, task_emb)
+        s2_film = self.film_s2(s2, task_emb)
+        s1_film = self.film_s1(s1, task_emb)
         
         s2_fused = torch.cat([s2_film, perf_s2], dim=1)
         s1_fused = torch.cat([s1_film, perf_s1], dim=1)
@@ -545,6 +547,11 @@ class SingleEncoderTripleDecoder(nn.Module):
             cow_dec2_for_les = cow_dec2.detach()
             cow_dec1_for_les = cow_dec1.detach()
             
+            # Truyền raw perfusion vào Lesion Path
+            # LƯU Ý KỸ THUẬT: x_raw[:, 6:12] là 6 kênh của Center Slice (CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT).
+            # Mặc dù Perfusion thực chất chỉ nằm ở index 8-11 (tức là index 2-5 của perf_raw này),
+            # nhưng SafePerfusionBottleneck đã được code để tự động lọc ra đúng perf_raw[:, 2:6].
+            # Do đó việc lấy 6:12 ở đây là KHÔNG SAI, chỉ truyền dư 2 kênh CTA vào Bottleneck (sẽ bị filter đi).
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_shared_les, [s2_les, s1_les],
@@ -593,6 +600,8 @@ class SingleEncoderTripleDecoder(nn.Module):
             cow_dec1_for_les = cow_dec1.detach()
             
             # Truyền raw perfusion vào Lesion Path
+            # LƯU Ý KỸ THUẬT: Tương tự như trên, x_raw[:, 6:12] truyền vào 6 kênh Center Slice.
+            # SafePerfusionBottleneck sẽ tự động lấy đúng 4 kênh perfusion qua việc index [:, 2:6].
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_shared, [s2, s1],

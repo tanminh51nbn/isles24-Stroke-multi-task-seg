@@ -591,7 +591,7 @@ class MultiTaskLoss(nn.Module):
 
         # 3. Final Task Weighting
         loss_l = combined_lesion_loss_scalar * p_l
-        loss_v = (l_v_m_scalar + 2.0 * l_v_neg_penalty) * p_v  # Tăng weight penalty từ 0.5 lên 2.0
+        loss_v = (l_v_m_scalar + 3.5 * l_v_neg_penalty) * p_v  # Tăng weight penalty lên 3.5 để ép LVO
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
 
         # Unweighted task losses (dùng để logging/monitoring độ hội tụ thực tế)
