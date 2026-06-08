@@ -260,6 +260,45 @@ class HemisphericAsymmetryModule(nn.Module):
         return x + alpha * diff_out
 
 
+class LesionAsymmetryModule(nn.Module):
+    """
+    So sánh bất đối xứng 2 bán cầu não chuyên biệt cho Lesion.
+    Áp dụng ở độ phân giải 64x64 (tầng dec2) để tìm vùng nhồi máu mờ.
+    Sử dụng Low-Pass filter (AvgPool) để lấy các vùng mất tưới máu diện rộng.
+    """
+    def __init__(self, channels: int):
+        super().__init__()
+        self.catch_conv = nn.Conv2d(
+            in_channels=channels * 2, 
+            out_channels=channels, 
+            kernel_size=21, 
+            padding=10, 
+            groups=channels, 
+            bias=False
+        )
+        self.norm = nn.BatchNorm2d(channels)
+        self.gelu = nn.GELU()
+        
+        self.mix_conv = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
+        self.gate_param = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_flipped = torch.flip(x, dims=[-1])
+        concat = torch.cat([x, x_flipped], dim=1)
+        
+        diff = self.catch_conv(concat)
+        diff = self.norm(diff)
+        diff = self.gelu(diff)
+        
+        # [LOW-PASS FILTER] Giữ lại các mảng mờ khổng lồ (Lesion), lọc bỏ các đốm sáng nhỏ (mạch máu/nhiễu)
+        blur = F.avg_pool2d(diff, kernel_size=31, stride=1, padding=15)
+        
+        diff_out = self.mix_conv(blur)
+        
+        alpha = torch.sigmoid(self.gate_param)
+        return x + alpha * diff_out
+
+
 # ─── Specialized Decoder Paths (Single Encoder version) ────────────────────────
 
 class SingleSharedPath(nn.Module):
@@ -362,8 +401,7 @@ class SingleTaskPath(nn.Module):
 
 
 class LesionTaskPath(nn.Module):
-    def __init__(self, in_ch: int, config: dict, skip_channels: List[int], perf_ch: int = 6,
-                 guidance_dec2_ch: int = 0, guidance_dec1_ch: int = 0):
+    def __init__(self, in_ch: int, config: dict, skip_channels: List[int], perf_ch: int = 6):
         super().__init__()
         dec_ch = config["decoder"]["out_channels"]
         final_ch = config["decoder"].get("final_ch", 16)
@@ -384,31 +422,20 @@ class LesionTaskPath(nn.Module):
         self.film_shared = TaskConditionedFiLM(in_channels=in_ch, embedding_dim=64)
         self.film_s2 = TaskConditionedFiLM(in_channels=skip_channels[0], embedding_dim=64)
         self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
+        
+        # ─── Asymmetry Module (Low-Pass Filter) ─────────────────────────────
+        self.asymmetry_module = LesionAsymmetryModule(dec_ch[2])
+        
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         
         # dec_ch[3] + 1 vì ta sẽ nối thêm perf_mask (1 kênh)
         self.final_conv = ConvBnGelu(dec_ch[3] + 1, final_ch)
-        self.guidance_attn = FusedSpatialAttention(task_ch=final_ch, guidance_ch=16)
 
-        if guidance_dec2_ch > 0:
-            self.attn_dec2 = FusedSpatialAttention(task_ch=dec_ch[2], guidance_ch=guidance_dec2_ch)
-        else:
-            self.attn_dec2 = None
-
-        if guidance_dec1_ch > 0:
-            self.attn_dec1 = FusedSpatialAttention(task_ch=dec_ch[3], guidance_ch=guidance_dec1_ch)
-        else:
-            self.attn_dec1 = None
-
-    def forward(self, x_shared, skips_task, guidance, perf_raw,
-                guidance_dec2: Optional[torch.Tensor] = None, guidance_dec1: Optional[torch.Tensor] = None):
+    def forward(self, x_shared, skips_task, perf_raw):
         s2, s1 = skips_task
         
         # ─── Perfusion Bottleneck ─────────────────────────────────────────
-        # perf_raw is (B, 6, 256, 256)
         perf_norm = self.perf_bottleneck(perf_raw) # (B, 16, 256, 256)
-        
-        # s2 is 64x64, s1 is 128x128
         perf_s2 = F.avg_pool2d(perf_norm, 4)
         perf_s1 = F.avg_pool2d(perf_norm, 2)
         
@@ -422,27 +449,22 @@ class LesionTaskPath(nn.Module):
         s1_fused = torch.cat([s1_film, perf_s1], dim=1)
         
         x_dec2, aux2 = self.dec2(x_shared_film, s2_fused, prev_mask=None)
-        if guidance_dec2 is not None and self.attn_dec2 is not None:
-            x_dec2, _ = self.attn_dec2(x_dec2, guidance_dec2)
+        
+        # ─── Áp dụng Asymmetry Module ───────────────────────────────────────
+        if self.asymmetry_module is not None:
+            x_dec2 = self.asymmetry_module(x_dec2)
 
         x_dec1, aux1 = self.dec1(x_dec2, s1_fused, prev_mask=aux2)
-        if guidance_dec1 is not None and self.attn_dec1 is not None:
-            x_dec1, _ = self.attn_dec1(x_dec1, guidance_dec1)
 
         x = self.up_final(x_dec1)
         
         # ─── Bơm tường minh (Explicit Mask) thông tin Perfusion vào Lesion Head ───
-        # Để mô hình tự động fallback sang CTA nếu không có Perfusion
-        # Chỉ check các kênh CTP (2, 3, 4, 5) thay vì toàn bộ perf_raw (vì kênh 0,1 là CTA)
         has_perf = (perf_raw[:, 2:6].abs().sum(dim=[1,2,3]) > 1e-5).float() # (B,)
         perf_mask = has_perf.view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3]) # (B, 1, H, W)
         
         x = torch.cat([x, perf_mask], dim=1) # (B, dec_ch[3] + 1, H, W)
         x = self.final_conv(x)
         
-        if guidance is not None and self.guidance_attn is not None:
-            x, _ = self.guidance_attn(x, guidance)
-            
         return x, [None, None, aux2, aux1], [x_dec2, x_dec1]
 
 
@@ -471,12 +493,8 @@ class SingleEncoderTripleDecoder(nn.Module):
         self.lvo_path = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[False, False], guidance_ch=16,
                                        guidance_dec2_ch=64, guidance_dec1_ch=32)
         
-        self.lesion_path = LesionTaskPath(in_ch_task, config, skips_task, perf_ch=6,
-                                          guidance_dec2_ch=64, guidance_dec1_ch=32)
+        self.lesion_path = LesionTaskPath(in_ch_task, config, skips_task, perf_ch=6)
         
-        # Dropout 2D để "cai nghiện" sự phụ thuộc của Lesion vào LVO/CoW (Giảm 0.4 → 0.15 tránh phá hủy cascade)
-        self.guidance_dropout = nn.Dropout2d(p=0.2)
-
     def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None, decoupled: bool = False):
         # --- Shape Assertion Mode (D2) ---
         from models.single_unet import SingleEncoderUNet
@@ -539,26 +557,11 @@ class SingleEncoderTripleDecoder(nn.Module):
                 guidance_dec1=cow_dec1.detach()
             )
             
-            # --- Lesion chỉ nhận Guidance từ CoW (Mạch máu sạch) ---
-            guidance_for_lesion = f_cow.detach()
-            guidance_for_lesion = self.guidance_dropout(guidance_for_lesion)
-            
-            # [FIX #3] Không dropout deep guidance levels — cần tín hiệu sạch cho deep supervision
-            cow_dec2_for_les = cow_dec2.detach()
-            cow_dec1_for_les = cow_dec1.detach()
-            
-            # Truyền raw perfusion vào Lesion Path
-            # LƯU Ý KỸ THUẬT: x_raw[:, 6:12] là 6 kênh của Center Slice (CTA_w1, CTA_w2, Tmax, CBF, CBV, MTT).
-            # Mặc dù Perfusion thực chất chỉ nằm ở index 8-11 (tức là index 2-5 của perf_raw này),
-            # nhưng SafePerfusionBottleneck đã được code để tự động lọc ra đúng perf_raw[:, 2:6].
-            # Do đó việc lấy 6:12 ở đây là KHÔNG SAI, chỉ truyền dư 2 kênh CTA vào Bottleneck (sẽ bị filter đi).
+            # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_shared_les, [s2_les, s1_les],
-                guidance=guidance_for_lesion,
-                perf_raw=perf_raw,
-                guidance_dec2=cow_dec2_for_les,
-                guidance_dec1=cow_dec1_for_les
+                perf_raw=perf_raw
             )
         else:
             # 1. Bottleneck
@@ -585,30 +588,11 @@ class SingleEncoderTripleDecoder(nn.Module):
                 guidance_dec1=cow_dec1.detach()
             )
             
-            # --- Lesion chỉ nhận Guidance từ CoW (Mạch máu sạch) ---
-            guidance_for_lesion = f_cow.detach()
-            guidance_for_lesion = self.guidance_dropout(guidance_for_lesion)
-            
-            if self.training:
-                guidance_for_lesion.requires_grad_(True)
-                def lesion_guidance_hook(grad):
-                    self._lesion_guidance_grad_norm = grad.norm(2).item()
-                guidance_for_lesion.register_hook(lesion_guidance_hook)
-                
-            # [FIX #3] Không dropout deep guidance levels — cần tín hiệu sạch cho deep supervision
-            cow_dec2_for_les = cow_dec2.detach()
-            cow_dec1_for_les = cow_dec1.detach()
-            
-            # Truyền raw perfusion vào Lesion Path
-            # LƯU Ý KỸ THUẬT: Tương tự như trên, x_raw[:, 6:12] truyền vào 6 kênh Center Slice.
-            # SafePerfusionBottleneck sẽ tự động lấy đúng 4 kênh perfusion qua việc index [:, 2:6].
+            # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_shared, [s2, s1],
-                guidance=guidance_for_lesion,
-                perf_raw=perf_raw,
-                guidance_dec2=cow_dec2_for_les,
-                guidance_dec1=cow_dec1_for_les
+                perf_raw=perf_raw
             )
 
         aux_masks = {
