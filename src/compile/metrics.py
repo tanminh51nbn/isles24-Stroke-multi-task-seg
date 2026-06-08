@@ -132,8 +132,8 @@ def accumulate_lvo_stats(logits: torch.Tensor, targets: torch.Tensor, threshold:
     }
 
 
-def finalize_lvo_dice(lvo_stats: dict) -> float:
-    """Tính Distance-to-Center F1-score (D2C) và gán thêm mean_d2c vào dict."""
+def finalize_lvo_f1(lvo_stats: dict) -> float:
+    """Tính F1-score (dựa trên D2C) và gán thêm mean_d2c vào dict."""
     tp, fp, fn = lvo_stats["tp"], lvo_stats["fp"], lvo_stats["fn"]
     dice = (2 * tp) / (2 * tp + fp + fn + 1e-8)
     
@@ -144,10 +144,10 @@ def finalize_lvo_dice(lvo_stats: dict) -> float:
     return dice * 100.0
 
 
-def dice_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
-    """Distance-to-Center F1-score (per-batch, dùng cho debug)."""
+def f1_lvo_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
+    """F1-score (dựa trên D2C, per-batch, dùng cho debug)."""
     stats = accumulate_lvo_stats(logits, targets, threshold)
-    return finalize_lvo_dice(stats)
+    return finalize_lvo_f1(stats)
 
 
 def alcd_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
@@ -338,16 +338,16 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
         lvo_stats["tn"] = lvo_stats.get("tn", 0.0) + batch_stats.get("tn", 0.0)
         lvo_stats["total_dist"] = lvo_stats.get("total_dist", 0.0) + batch_stats.get("total_dist", 0.0)
         lvo_stats["tp_count"] = lvo_stats.get("tp_count", 0) + batch_stats.get("tp_count", 0)
-        dice_lvo = 0.0  # Sẽ được tính ở cuối epoch bởi finalize_lvo_dice
+        f1_lvo = 0.0  # Sẽ được tính ở cuối epoch bởi finalize_lvo_f1
     else:
-        dice_lvo = dice_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"])
+        f1_lvo = f1_lvo_score(preds["lvo"], targets[:, 1:2], threshold=t["lvo"])
     
     # CoW Metrics
     d_cow = dice_score(preds["cow"], targets[:, 2:3], threshold=t["cow"]).item()
 
     w = weights
     comp = (w["dice_lesion_weight"] * d_lesion + 
-            w["dice_lvo_weight"]    * (dice_lvo/100.0) + 
+            w["f1_lvo_weight"]    * (f1_lvo/100.0) + 
             w["dice_cow_weight"]    * d_cow)
 
     return {
@@ -355,7 +355,7 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
         "dice_lesion_pos": d_lesion_pos,  # [FIX C] Dice trên Lesion-positive slice — metric thực cho PGW
         "aad_lesion":      aad_lesion,
         "alcd_lesion":     alcd_lesion,
-        "dice_lvo":        dice_lvo,
+        "f1_lvo":        f1_lvo,
         "dice_cow":        d_cow,
         "composite":       comp
     }

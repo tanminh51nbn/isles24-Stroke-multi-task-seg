@@ -26,7 +26,7 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
     val_raw      = [h.get("val_raw", h["val_loss"]) for h in history]
     dice_lesion  = [h["dice_lesion"]  for h in history]
     dice_lesion_pos = [h.get("dice_lesion_pos", 0.0) for h in history]
-    dice_lvo       = [h["dice_lvo"]/100.0 for h in history] # Đưa về [0,1] để vẽ chung đồ thị
+    f1_lvo       = [h["f1_lvo"]/100.0 for h in history] # Đưa về [0,1] để vẽ chung đồ thị
     dice_cow     = [h["dice_cow"]     for h in history]
     composite    = [h["composite"]    for h in history]
 
@@ -67,7 +67,7 @@ def plot_training_curves(history: List[dict], save_path: Optional[str] = None):
 
     ax_metrics.plot(epochs, dice_lesion, color="#3498DB", linewidth=2, label="Dice Lesion")
     ax_metrics.plot(epochs, dice_lesion_pos, color="#3498DB", linewidth=2, label="Dice Lesion (Pos)", linestyle="-.")
-    ax_metrics.plot(epochs, dice_lvo,       color="#E74C3C", linewidth=2, label="Dice LVO")
+    ax_metrics.plot(epochs, f1_lvo,       color="#E74C3C", linewidth=2, label="F1 LVO")
     ax_metrics.plot(epochs, dice_cow,    color="#2ECC71", linewidth=2, label="Dice CoW")
     ax_metrics.plot(epochs, composite, color="#9B59B6", linewidth=3.0, label="Composite", alpha=0.8)
     ax_metrics.set_title("5. Validation Metrics"); ax_metrics.legend(); ax_metrics.set_ylim(0, 1); ax_metrics.grid(True, alpha=0.3)

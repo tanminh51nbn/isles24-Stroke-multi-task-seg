@@ -63,7 +63,7 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
             raw_model = self.model.module if hasattr(self.model, "module") else self.model
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
-                preds = raw_model(inp, epoch=epoch, decoupled=True)
+                preds = raw_model(inp, epoch=epoch, decoupled=False)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
                 
                 # Accumulate diagnostics
@@ -160,8 +160,8 @@ class Trainer:
                 
             # Compute and print diagnostic stats
             denom = self._diag_lvo_tp + 0.5 * (self._diag_lvo_fp + self._diag_lvo_fn)
-            lvo_train_dice = (self._diag_lvo_tp / denom) if denom > 0 else 0.0
-            print(f"    [LVO Train] Dice: {lvo_train_dice*100:.2f}% (TP={int(self._diag_lvo_tp)} FP={int(self._diag_lvo_fp)} FN={int(self._diag_lvo_fn)}) | Max_P: {self._diag_lvo_max:.3f}")
+            lvo_train_f1 = (self._diag_lvo_tp / denom) if denom > 0 else 0.0
+            print(f"    [LVO Train] F1: {lvo_train_f1*100:.2f}% (TP={int(self._diag_lvo_tp)} FP={int(self._diag_lvo_fp)} FN={int(self._diag_lvo_fn)}) | Max_P: {self._diag_lvo_max:.3f}")
             # Reset diagnostics for next epoch
             self._diag_lvo_tp = self._diag_lvo_fp = self._diag_lvo_fn = 0
             self._diag_lvo_max = 0.0
@@ -357,7 +357,7 @@ class Trainer:
         if self.rank == 0:
             # Log LVO Summary (Global D2C + Patient)
             mean_d2c = lvo_stats.get("mean_d2c", 0.0)
-            print(f"    [LVO Val] D2C_F1: {lvo_dice:.2f}% (TP={lvo_stats['tp']:.0f} FP={lvo_stats['fp']:.0f} FN={lvo_stats['fn']:.0f} | Mean D2C={mean_d2c:.2f}px) | Pat_Acc: {pat['accuracy']*100:.1f}% (TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']})")
+            print(f"    [LVO Val] F1: {lvo_dice:.2f}% (TP={lvo_stats['tp']:.0f} FP={lvo_stats['fp']:.0f} FN={lvo_stats['fn']:.0f} | Mean D2C={mean_d2c:.2f}px) | Pat_Acc: {pat['accuracy']*100:.1f}% (TP={pat['tp']} FP={pat['fp']} FN={pat['fn']} TN={pat['tn']})")
             # Visualize sample tốt nhất (sau khi đã duyệt toàn bộ val loop)
             if should_vis and best_vis_candidate is not None:
                 label_desc = {3: "LVO+Lesion", 2: "LVO only", 1: "Lesion only", 0: "No label"}
@@ -375,8 +375,8 @@ class Trainer:
 
         w = self.metric_weights
         # [FIX] Dùng Slice-level Dice (đã được đồng bộ hoàn hảo qua 2 GPU) thay vì Patient-level (bị lỗi chia cắt DDP)
-        slice_dice_lvo = lvo_dice / 100.0
-        comp = (w["dice_lesion_weight"] * ad_l + w["dice_lvo_weight"] * slice_dice_lvo + w["dice_cow_weight"] * ad_c)
+        slice_f1_lvo = lvo_dice / 100.0
+        comp = (w["dice_lesion_weight"] * ad_l + w["f1_lvo_weight"] * slice_f1_lvo + w["dice_cow_weight"] * ad_c)
         
         p_l, p_v, p_c = 1.0, 1.0, 1.0
         if hasattr(self.loss_fn, "current_weights"):
@@ -385,9 +385,9 @@ class Trainer:
 
         res = {
             "val_loss": avg_l, "val_main": avg_m, "val_raw": avg_raw, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
-            "dice_lvo": lvo_dice, "dice_cow": ad_c,
+            "f1_lvo": lvo_dice, "dice_cow": ad_c,
             "mean_d2c_lvo": lvo_stats.get("mean_d2c", 0.0),
-            "dice_lvo_patient": pat.get("f1", 0.0) * 100.0,
+            "f1_lvo_patient": pat.get("f1", 0.0) * 100.0,
             "p_lesion": p_l,
             "p_lvo": p_v,
             "p_cow": p_c,
@@ -423,12 +423,16 @@ class Trainer:
     def fit(self, early_stopping=None, checkpoint=None, start_epoch: int = 0):
         raw = self.model.module if hasattr(self.model, "module") else self.model
         raw.freeze_encoders()
+        if start_epoch >= self.freeze_enc_epochs:
+            raw.unfreeze_encoders()
+            
         for epoch in range(start_epoch, self.epochs):
             # [CYCLIC STRIDE] Cập nhật danh sách file huấn luyện và tái cấu trúc DataLoader
             new_train_list = apply_sampling(self.train_files_original, self.config, epoch=epoch)
             self._rebuild_train_loader(new_train_list, epoch)
             
-            if epoch == self.freeze_enc_epochs: raw.unfreeze_encoders()
+            if epoch == self.freeze_enc_epochs and start_epoch < self.freeze_enc_epochs:
+                raw.unfreeze_encoders()
             
             t_m = self.train_one_epoch(epoch)
             import gc
@@ -455,7 +459,7 @@ class Trainer:
                 if lr_dec is None: lr_dec = self.optimizer.param_groups[-1]['lr']
 
                 print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR (En/De): {lr_enc:.1e}/{lr_dec:.1e} | Comp: {v_m['composite']:.4f}")
-                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} (Pos: {v_m['dice_lesion_pos']:.4f}) | Dice_LVO: {v_m['dice_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
+                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} (Pos: {v_m['dice_lesion_pos']:.4f}) | F1_LVO: {v_m['f1_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
                 print(f"   | [VAL] Loss: {v_m['val_loss']:.4f} (Main: {v_m['val_main']:.4f}, Raw: {v_m['val_raw']:.4f}) | AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.4f}")
                 print(f"   | [TRA] Loss: {t_m['train_loss']:.4f} (Main: {t_m['train_main']:.4f}, Raw: {t_m['train_raw']:.4f})\n{'-'*80}", flush=True)
             self.history.append({**t_m, **v_m, "epoch": epoch + 1})

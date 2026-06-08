@@ -416,7 +416,7 @@ class MultiTaskLoss(nn.Module):
             current = torch.tensor([
                 # Dùng dice_lesion_pos (chỉ trên Lesion-positive slice) để PGW thấy đúng gap thực sự
                 val_metrics.get("dice_lesion_pos", val_metrics.get("dice_lesion", 0.0)),
-                val_metrics.get("dice_lvo",    0.0) / 100.0,  # Dice → [0,1]
+                val_metrics.get("f1_lvo",    0.0) / 100.0,  # F1 -> [0,1]
                 val_metrics.get("dice_cow",  0.0),
             ], device=self.current_weights.device)
 

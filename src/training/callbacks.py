@@ -96,7 +96,7 @@ class ModelCheckpoint:
 
         comp    = metrics["composite"]
         lesion  = metrics["dice_lesion"]
-        lvo     = metrics["dice_lvo"]
+        lvo     = metrics["f1_lvo"]
 
         if self.save_overall and comp > self.best_composite:
             self.best_composite = comp
