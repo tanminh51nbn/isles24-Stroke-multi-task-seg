@@ -11,7 +11,7 @@ from typing import Optional
 import math
 
 from compile.metrics import (
-    compute_all_metrics, finalize_lvo_dice, accumulate_lvo_stats,
+    compute_all_metrics, finalize_lvo_f1, accumulate_lvo_stats,
     accumulate_patient_lvo_stats, finalize_patient_lvo_acc,
     get_lvo_threshold,
 )
@@ -352,7 +352,7 @@ class Trainer:
         )
         
         # [FIX] Finalize Global LVO Dice
-        lvo_dice = finalize_lvo_dice(lvo_stats)
+        lvo_dice = finalize_lvo_f1(lvo_stats)
         
         if self.rank == 0:
             # Log LVO Summary (Global D2C + Patient)
