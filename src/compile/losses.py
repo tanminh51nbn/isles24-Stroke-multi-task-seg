@@ -219,6 +219,8 @@ class SDFBoundaryLoss(nn.Module):
 
         return fp_mean + self.fg_weight * fn_mean
 
+from torch.utils.checkpoint import checkpoint
+
 # ─── Soft clDice ─────────────────────────────────────────────────────────────
 
 def soft_erode(img):
@@ -249,7 +251,18 @@ class SoftCLDiceLoss(nn.Module):
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = torch.sigmoid(logits)
-        t_s, p_s = soft_skel(targets, self.iters), soft_skel(probs, self.iters)
+        
+        with torch.no_grad():
+            t_s = soft_skel(targets, self.iters)
+            
+        def skel_fn(x):
+            return soft_skel(x, self.iters)
+            
+        if probs.requires_grad:
+            p_s = checkpoint(skel_fn, probs, use_reentrant=False)
+        else:
+            p_s = skel_fn(probs)
+            
         t_p = ((p_s * targets).sum() + self.smooth) / (p_s.sum() + self.smooth)
         t_s_ = ((t_s * probs).sum() + self.smooth) / (t_s.sum() + self.smooth)
         return 1.0 - ((2.0 * t_p * t_s_) / (t_p + t_s_ + self.smooth))
