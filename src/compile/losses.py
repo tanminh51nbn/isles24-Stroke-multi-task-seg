@@ -126,7 +126,7 @@ class ModifiedFocalLoss(nn.Module):
         neg_mask = 1.0 - pos_mask
         
         # 2. Bản đồ Không gian (Heatmap lan tỏa)
-        heatmap_gt = apply_gaussian_blur(targets, sigma) if sigma > 0 else targets
+        heatmap_gt = apply_gaussian_blur(targets, sigma).clamp(min=0.0, max=1.0) if sigma > 0 else targets
         
         # 3. Tính Lực Thưởng và Lực Phạt
         pos_loss = -pos_mask * torch.pow(1.0 - pred, self.alpha) * torch.log(pred + self.eps)

@@ -147,9 +147,9 @@ class Trainer:
             total_loss += losses["total"].item()
             main_loss += losses["main"].item()
             raw_loss += losses.get("unweighted_main", losses["main"].item())
-            sum_t_les += losses["l_lesion"]
-            sum_t_lvo += losses["l_lvo"]
-            sum_t_cow += losses["l_cow"]
+            sum_t_les += losses["l_lesion"].item() if isinstance(losses["l_lesion"], torch.Tensor) else losses["l_lesion"]
+            sum_t_lvo += losses["l_lvo"].item() if isinstance(losses["l_lvo"], torch.Tensor) else losses["l_lvo"]
+            sum_t_cow += losses["l_cow"].item() if isinstance(losses["l_cow"], torch.Tensor) else losses["l_cow"]
             n_batches += 1
 
         if self.rank == 0:
@@ -220,9 +220,9 @@ class Trainer:
             total_loss += losses["total"].item()
             main_loss += losses["main"].item()
             raw_loss += losses.get("unweighted_main", losses["main"].item())
-            sum_v_les += losses["l_lesion"]
-            sum_v_lvo += losses["l_lvo"]
-            sum_v_cow += losses["l_cow"]
+            sum_v_les += losses["l_lesion"].item() if isinstance(losses["l_lesion"], torch.Tensor) else losses["l_lesion"]
+            sum_v_lvo += losses["l_lvo"].item() if isinstance(losses["l_lvo"], torch.Tensor) else losses["l_lvo"]
+            sum_v_cow += losses["l_cow"].item() if isinstance(losses["l_cow"], torch.Tensor) else losses["l_cow"]
             sum_p_v += losses.get("p_lvo", 1.0)
             
             # Override thresholds.lvo = lvo_thr (dynamic ramp) cho batch này

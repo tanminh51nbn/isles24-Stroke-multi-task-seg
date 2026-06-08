@@ -211,8 +211,14 @@ def overlay_predictions(
     pr_rgba = np.zeros((*pr_lesion_bin.shape, 4))
     pr_rgba[pr_lesion_bin > 0] = [0, 0, 0.8, 0.5]
     pr_rgba[pr_cow_bin > 0] = [0, 0.7, 0, 0.5]
-    pr_rgba[pr_lvo_bin > 0] = [1.0, 0, 0, 0.5]      # Đỏ LVO (50% opacity)
     axes[0, 2].imshow(pr_rgba)
+    
+    # LVO Heatmap (Hot) in AI phân vùng
+    if sig_lvo.max() > 0:
+        sig_lvo_viz = sig_lvo.copy()
+        sig_lvo_viz[sig_lvo_viz < 0.01] = np.nan  # Giữ lại nền tối để heatmap trông đậm đà hơn
+        axes[0, 2].imshow(sig_lvo_viz, cmap="hot", alpha=0.6, vmin=0, vmax=1)
+        
     axes[0, 2].set_title("AI phân vùng"); axes[0, 2].axis("off")
 
     # --- Hàng 2: Perfusion, LVO Heatmap (AI), Lesion Heatmap (AI) ---
@@ -220,9 +226,8 @@ def overlay_predictions(
 
     # LVO Heatmap (AI)
     axes[1, 1].imshow(cta_img, cmap="bone")
-    sig_lvo_viz = sig_lvo.copy()
-    sig_lvo_viz[sig_lvo_viz < 0.05] = np.nan  # Làm trong suốt các vùng background
-    axes[1, 1].imshow(sig_lvo_viz, cmap="hot", alpha=0.7, vmin=0, vmax=1)
+    if sig_lvo.max() > 0:
+        axes[1, 1].imshow(sig_lvo, cmap="hot", alpha=0.6, vmin=0, vmax=1)
     axes[1, 1].set_title("LVO Heatmap (AI)"); axes[1, 1].axis("off")
 
     # Lesion Error Map (AI)
