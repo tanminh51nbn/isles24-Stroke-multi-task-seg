@@ -43,8 +43,8 @@ augmentation:
 
   elastic_transform:
     prob: 0.6
-    alpha: 15.0
-    sigma: 6.0
+    alpha: 35.0
+    sigma: 8.0
     alpha_affine: 50
 
   gaussian_noise:
@@ -75,3 +75,11 @@ augmentation:
   channel_dropout:
     prob: 0.2
     max_drop: 3
+
+  perfusion_jitter:
+    prob: 0.4
+    scale_range: [0.7, 1.3]
+    shift_range: 0.1
+
+  lesion_copy_paste:
+    prob: 0.3

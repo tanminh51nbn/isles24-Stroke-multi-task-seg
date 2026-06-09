@@ -18,6 +18,48 @@ from .fold_split import build_patient_split, apply_sampling, build_stratified_kf
 
 import os
 import glob
+import random
+from torch.utils.data.dataloader import default_collate
+
+
+class LesionCopyPasteCollate:
+    """
+    Lấy vùng Lesion từ sample A, paste vào sample B trong cùng batch.
+    Tạo ra case tổng hợp hợp lệ về mặt giải phẫu.
+    """
+    def __init__(self, prob=0.3):
+        self.prob = prob
+
+    def __call__(self, batch):
+        # batch is a list of dicts {"input": tensor, "label": tensor, "basename": str}
+        collated = default_collate(batch)
+        
+        inputs = collated["input"]   # (B, 18, H, W)
+        labels = collated["label"]   # (B, 3, H, W)
+        B = inputs.shape[0]
+        
+        for i in range(B):
+            if random.random() > self.prob:
+                continue
+                
+            # Tìm sample j có Lesion
+            lesion_samples = [k for k in range(B) if labels[k, 0].sum() > 0]
+            if not lesion_samples:
+                continue
+                
+            j = random.choice(lesion_samples)
+            lesion_mask = labels[j, 0:1]  # (1, H, W)
+            
+            if lesion_mask.sum() == 0:
+                continue
+                
+            # Paste Lesion từ j vào i
+            inputs[i] = inputs[i] * (1 - lesion_mask) + inputs[j] * lesion_mask
+            labels[i, 0] = torch.clamp(labels[i, 0] + labels[j, 0], 0, 1)
+            
+        collated["input"] = inputs
+        collated["label"] = labels
+        return collated
 
 
 def worker_init_fn(worker_id):
@@ -96,6 +138,11 @@ def build_dataloaders(
     ) if world_size > 1 else None
 
     dl_cfg = config["dataloader"]
+    aug_cfg = config.get("augmentation", {})
+    
+    collate_fn = None
+    if aug_cfg.get("enabled", True) and "lesion_copy_paste" in aug_cfg:
+        collate_fn = LesionCopyPasteCollate(prob=aug_cfg["lesion_copy_paste"]["prob"])
 
     train_loader = DataLoader(
         train_dataset,
@@ -108,6 +155,7 @@ def build_dataloaders(
         prefetch_factor=dl_cfg.get("prefetch_factor", 2),
         drop_last=dl_cfg.get("drop_last", True),
         worker_init_fn=worker_init_fn,
+        collate_fn=collate_fn,
     )
 
     val_loader = DataLoader(

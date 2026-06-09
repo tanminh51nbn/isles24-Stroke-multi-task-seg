@@ -238,6 +238,32 @@ class RandomGamma:
         return sample
 
 
+class PerfusionJitter:
+    """
+    Thêm noise mạnh riêng cho các kênh Perfusion (Tmax, CBF, CBV, MTT).
+    Giả lập sự khác biệt giữa các máy chụp khác nhau.
+    """
+    def __init__(self, prob=0.4, scale_range=(0.7, 1.3), shift_range=0.1):
+        self.prob = prob
+        self.scale_range = scale_range
+        self.shift_range = shift_range
+
+    def __call__(self, sample: dict) -> dict:
+        if random.random() > self.prob:
+            return sample
+            
+        x = sample["input"]
+        # Perfusion channels: 2,3,4,5 (Center_Z) và 8,9,10,11 và 14,15,16,17
+        perf_indices = [2,3,4,5, 8,9,10,11, 14,15,16,17]
+        scale = random.uniform(*self.scale_range)
+        shift = random.uniform(-self.shift_range, self.shift_range)
+        
+        x = x.clone()
+        x[perf_indices] = torch.clamp(x[perf_indices] * scale + shift, 0.0, 1.0)
+        sample["input"] = x
+        return sample
+
+
 class RandomModalityDropout:
     """
     Tắt ngẫu nhiên toàn bộ kênh CTA hoặc toàn bộ kênh Perfusion.
@@ -381,6 +407,13 @@ def build_train_transforms(config: dict) -> Callable:
             prob=aug["intensity_scale"]["prob"],
             factor=aug["intensity_scale"]["factor"],
         ))
+        
+        if "perfusion_jitter" in aug:
+            transforms.append(PerfusionJitter(
+                prob=aug["perfusion_jitter"]["prob"],
+                scale_range=aug["perfusion_jitter"]["scale_range"],
+                shift_range=aug["perfusion_jitter"]["shift_range"]
+            ))
         
         # [Giải pháp B] Modality Dropout (Tắt toàn bộ nhánh)
         if "modality_dropout" in aug:

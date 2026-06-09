@@ -59,7 +59,7 @@ class FocalTverskyLoss(nn.Module):
         self.reduction = reduction
         self.batch = batch  # Nếu True: tính TI trên toàn batch (B×H×W) thay vì per-slice
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, weight_map: torch.Tensor = None) -> torch.Tensor:
         probs   = torch.sigmoid(logits)
 
         if self.batch:
@@ -67,9 +67,17 @@ class FocalTverskyLoss(nn.Module):
             # Khớp chính xác với dice_score() metric (cũng flatten toàn batch)
             probs_f   = probs.reshape(-1)
             targets_f = targets.reshape(-1)
-            TP = (probs_f * targets_f).sum()
-            FP = (probs_f * (1 - targets_f)).sum()
-            FN = ((1 - probs_f) * targets_f).sum()
+            
+            if weight_map is not None:
+                weight_f = weight_map.reshape(-1)
+                TP = (probs_f * targets_f * weight_f).sum()
+                FP = (probs_f * (1 - targets_f)).sum()
+                FN = ((1 - probs_f) * targets_f * weight_f).sum()
+            else:
+                TP = (probs_f * targets_f).sum()
+                FP = (probs_f * (1 - targets_f)).sum()
+                FN = ((1 - probs_f) * targets_f).sum()
+                
             numerator   = TP + self.smooth
             denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
             tversky_index = numerator / denominator.clamp(min=self.smooth)
@@ -79,9 +87,17 @@ class FocalTverskyLoss(nn.Module):
             # Per-slice mode (dùng cho CoW, LVO Focal Tversky)
             probs   = probs.view(probs.size(0), -1)
             targets = targets.view(targets.size(0), -1)
-            TP = (probs * targets).sum(dim=1)
-            FP = (probs * (1 - targets)).sum(dim=1)
-            FN = ((1 - probs) * targets).sum(dim=1)
+            
+            if weight_map is not None:
+                weight_m = weight_map.view(weight_map.size(0), -1)
+                TP = (probs * targets * weight_m).sum(dim=1)
+                FP = (probs * (1 - targets)).sum(dim=1)
+                FN = ((1 - probs) * targets * weight_m).sum(dim=1)
+            else:
+                TP = (probs * targets).sum(dim=1)
+                FP = (probs * (1 - targets)).sum(dim=1)
+                FN = ((1 - probs) * targets).sum(dim=1)
+                
             numerator   = TP + self.smooth
             denominator = TP + self.alpha * FP + self.beta * FN + self.smooth
             tversky_index = numerator / denominator.clamp(min=self.smooth)
@@ -517,10 +533,15 @@ class MultiTaskLoss(nn.Module):
         has_lesion = (targets[:, 0:1].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
         has_lvo = (targets[:, 1:2].amax(dim=(1, 2, 3), keepdim=False) > 0).float()      # (B,)
 
-        # Lesion: Stroke-Optimized Compound Loss (Focal Loss + Asymmetric Tversky)
-        # Tính trên toàn bộ batch (batch=True), trả về vector (B,)
-        l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1])
+        # Tmax weighting
+        weight_map = None
+        if "tmax" in preds and preds["tmax"] is not None:
+            tmax = preds["tmax"]
+            weight_map = 1.0 + torch.clamp(tmax, min=0.0) * targets[:, 0:1]
 
+        # Lesion: Stroke-Optimized Compound Loss (Focal Loss + Asymmetric Tversky)
+        # Tính trên toàn bộ batch (batch=True), trả về scalar
+        l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1], weight_map=weight_map)
 
         if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
             l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=dynamic_sigma, debug=_debug)

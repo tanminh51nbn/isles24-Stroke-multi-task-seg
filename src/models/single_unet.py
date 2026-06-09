@@ -260,44 +260,6 @@ class HemisphericAsymmetryModule(nn.Module):
         return x + alpha * diff_out
 
 
-class LesionAsymmetryModule(nn.Module):
-    """
-    So sánh bất đối xứng 2 bán cầu não chuyên biệt cho Lesion.
-    Áp dụng ở độ phân giải 64x64 (tầng dec2) để tìm vùng nhồi máu mờ.
-    Sử dụng Low-Pass filter (AvgPool) để lấy các vùng mất tưới máu diện rộng.
-    """
-    def __init__(self, channels: int):
-        super().__init__()
-        self.catch_conv = nn.Conv2d(
-            in_channels=channels * 2, 
-            out_channels=channels, 
-            kernel_size=21, 
-            padding=10, 
-            groups=channels, 
-            bias=False
-        )
-        self.norm = nn.BatchNorm2d(channels)
-        self.gelu = nn.GELU()
-        
-        self.mix_conv = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
-        self.gate_param = nn.Parameter(torch.tensor(0.0))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_flipped = torch.flip(x, dims=[-1])
-        concat = torch.cat([x, x_flipped], dim=1)
-        
-        diff = self.catch_conv(concat)
-        diff = self.norm(diff)
-        diff = self.gelu(diff)
-        
-        # [LOW-PASS FILTER] Giữ lại các mảng mờ khổng lồ (Lesion), lọc bỏ các đốm sáng nhỏ (mạch máu/nhiễu)
-        blur = F.avg_pool2d(diff, kernel_size=31, stride=1, padding=15)
-        
-        diff_out = self.mix_conv(blur)
-        
-        alpha = torch.sigmoid(self.gate_param)
-        return x + alpha * diff_out
-
 
 # ─── Specialized Decoder Paths (Single Encoder version) ────────────────────────
 
@@ -423,13 +385,8 @@ class LesionTaskPath(nn.Module):
         self.film_s2 = TaskConditionedFiLM(in_channels=skip_channels[0], embedding_dim=64)
         self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
         
-        # ─── Asymmetry Module (Low-Pass Filter) ─────────────────────────────
-        self.asymmetry_module = LesionAsymmetryModule(dec_ch[2])
-        
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
-        
-        # dec_ch[3] + 1 vì ta sẽ nối thêm perf_mask (1 kênh)
-        self.final_conv = ConvBnGelu(dec_ch[3] + 1, final_ch)
+        self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
     def forward(self, x_shared, skips_task, perf_raw):
         s2, s1 = skips_task
@@ -450,19 +407,9 @@ class LesionTaskPath(nn.Module):
         
         x_dec2, aux2 = self.dec2(x_shared_film, s2_fused, prev_mask=None)
         
-        # ─── Áp dụng Asymmetry Module ───────────────────────────────────────
-        if self.asymmetry_module is not None:
-            x_dec2 = self.asymmetry_module(x_dec2)
-
         x_dec1, aux1 = self.dec1(x_dec2, s1_fused, prev_mask=aux2)
 
         x = self.up_final(x_dec1)
-        
-        # ─── Bơm tường minh (Explicit Mask) thông tin Perfusion vào Lesion Head ───
-        has_perf = (perf_raw[:, 2:6].abs().sum(dim=[1,2,3]) > 1e-5).float() # (B,)
-        perf_mask = has_perf.view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3]) # (B, 1, H, W)
-        
-        x = torch.cat([x, perf_mask], dim=1) # (B, dec_ch[3] + 1, H, W)
         x = self.final_conv(x)
         
         return x, [None, None, aux2, aux1], [x_dec2, x_dec1]
@@ -559,6 +506,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             
             # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
+            tmax = perf_raw[:, 5:6, :, :]
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_shared_les, [s2_les, s1_les],
                 perf_raw=perf_raw
@@ -590,6 +538,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             
             # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
+            tmax = perf_raw[:, 5:6, :, :]
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_shared, [s2, s1],
                 perf_raw=perf_raw
@@ -607,7 +556,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             "cow":    f_cow
         }
         
-        return preds, aux_masks, {}
+        return preds, aux_masks, {"tmax": tmax}
 
 
 # ─── Mô hình chính ─────────────────────────────────────────────────────────────
@@ -669,6 +618,8 @@ class SingleEncoderUNet(nn.Module):
         
         out["aux_masks"] = aux_masks
         out["guidance_maps"] = g_maps
+        if "tmax" in g_maps:
+            out["tmax"] = g_maps["tmax"]
         
         return out
 

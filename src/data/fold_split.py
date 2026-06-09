@@ -113,20 +113,8 @@ def apply_sampling(
     balanced_lvo_base.extend(g_lvo_all)
 
     # 2. NHÓM LESION: CHIẾN THUẬT PHÂN TÁCH (Dòng 5 & 6 trong bảng)
-    # 2.1 Lesion-only (Không LVO, Không CoW) -> Luân phiên 50%
-    lesion_pure_df = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train["has_cow"] == 0)]
-    n_pure_fixed = len(lesion_pure_df) // 2
-    
-    is_even_epoch = (epoch % 2 == 0)
-    if is_even_epoch:
-        pool = lesion_pure_df[lesion_pure_df["slice_idx"] % 2 == 0]["basename"].tolist()
-    else:
-        pool = lesion_pure_df[lesion_pure_df["slice_idx"] % 2 != 0]["basename"].tolist()
-    
-    if len(pool) >= n_pure_fixed:
-        lesion_pure_subset = rng.sample(pool, n_pure_fixed)
-    else:
-        lesion_pure_subset = pool + rng.choices(pool, k=n_pure_fixed - len(pool)) if len(pool) > 0 else []
+    # 2.1 Lesion-only (Không LVO, Không CoW) -> Giữ nguyên 100%
+    lesion_pure_subset = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train["has_cow"] == 0)]["basename"].tolist()
 
     # 2.2 Lesion + CoW (Có cả 2 nhưng không LVO) -> Giữ nguyên 100%
     lesion_cow_subset = df_train[(df_train["has_lvo"] == 0) & (df_train["has_lesion"] == 1) & (df_train["has_cow"] == 1)]["basename"].tolist()
