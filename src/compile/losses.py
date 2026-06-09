@@ -177,6 +177,29 @@ class ModifiedFocalLoss(nn.Module):
 # ─── LVO Loss ────────────────────────────────────────────────────────────────
 # Sử dụng Modified Focal Loss để tập trung vào các điểm tắc mạch nhỏ (Keypoints)
 
+class LVOClassifierLoss(nn.Module):
+    """
+    Focal BCE cho slice-level classification.
+    Phạt FN nặng hơn FP vì bỏ sót LVO nguy hiểm hơn báo nhầm.
+    """
+    def __init__(self, pos_weight: float = 3.0, gamma: float = 2.0):
+        super().__init__()
+        self.gamma = gamma
+        self.register_buffer('pos_weight', torch.tensor([pos_weight]))
+
+    def forward(self, logit: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # logit: (B, 1), target: (B, 1) binary
+        prob = torch.sigmoid(logit)
+        pt = torch.where(target == 1, prob, 1 - prob)
+        focal_w = (1 - pt) ** self.gamma
+
+        bce = F.binary_cross_entropy_with_logits(
+            logit, target,
+            pos_weight=self.pos_weight.to(logit.device),
+            reduction='none'
+        )
+        return (focal_w * bce).mean()
+
 # ─── Boundary Losses ──────────────────────────────────────────────────────────
 
 class BoundaryLoss(nn.Module):
@@ -355,6 +378,13 @@ class MultiTaskLoss(nn.Module):
                 beta=l_v_cfg.get("mfl_beta", 4.0),
                 reduction='none'
             )
+            
+        self.lvo_cls_loss = LVOClassifierLoss(
+            pos_weight=l_v_cfg.get("cls_pos_weight", 3.0),
+            gamma=l_v_cfg.get("cls_gamma", 2.0)
+        )
+        self.lvo_cls_w = l_v_cfg.get("cls_weight", 0.3)
+        self.lvo_neg_penalty_weight = l_v_cfg.get("neg_penalty_weight", 1.0) # Hạ xuống 1.0
 
         
         # Sigma curriculum và slice weights cho LVO:
@@ -612,7 +642,15 @@ class MultiTaskLoss(nn.Module):
 
         # 3. Final Task Weighting
         loss_l = combined_lesion_loss_scalar * p_l
-        loss_v = (l_v_m_scalar + 3.5 * l_v_neg_penalty) * p_v  # Tăng weight penalty lên 3.5 để ép LVO
+        loss_v = (l_v_m_scalar + self.lvo_neg_penalty_weight * l_v_neg_penalty) * p_v
+        
+        # Classifier Loss for LVO Gating
+        guidance_maps = preds.get("guidance_maps", {})
+        if "p_lvo_logit" in guidance_maps:
+            lvo_slice_target = (targets[:, 1:2].sum(dim=(1,2,3)) > 0).float().unsqueeze(1)
+            loss_lvo_cls = self.lvo_cls_loss(guidance_maps["p_lvo_logit"], lvo_slice_target)
+            loss_v += self.lvo_cls_w * loss_lvo_cls * p_v
+            
         loss_c = ((1.0 - self.cow_cl_w) * l_c_m + self.cow_cl_w * l_c_cl) * p_c
 
         # Unweighted task losses (dùng để logging/monitoring độ hội tụ thực tế)

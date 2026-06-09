@@ -65,6 +65,37 @@ class FusedSpatialAttention(nn.Module):
         return out, attn_map
 
 
+class LVOSliceClassifier(nn.Module):
+    """
+    Slice-level binary classifier: có LVO trong lát cắt này không?
+    Input: s5 từ Encoder (B, 1024, 8, 8)
+    Output: p_lvo_slice (B, 1) — xác suất có LVO (logit)
+    """
+    def __init__(self, in_ch: int = 1024):
+        super().__init__()
+        self.gap = nn.AdaptiveAvgPool2d(1)      # (B, 1024, 1, 1)
+        self.gmp = nn.AdaptiveMaxPool2d(1)      # (B, 1024, 1, 1)
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(in_ch * 2, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(p=0.5),
+            nn.Linear(256, 64),
+            nn.GELU(),
+            nn.Linear(64, 1)
+        )
+        
+        # Bias init: σ(-2.0) ≈ 0.12 → conservative start
+        nn.init.constant_(self.classifier[-1].bias, -2.0)
+
+    def forward(self, s5: torch.Tensor) -> torch.Tensor:
+        avg = self.gap(s5).flatten(1)           # (B, 1024)
+        gmp = self.gmp(s5).flatten(1)           # (B, 1024)
+        feat = torch.cat([avg, gmp], dim=1)     # (B, 2048)
+        return self.classifier(feat)            # (B, 1) logit
+
+
 # ─── Khối Decoder cho 1 Encoder (Single Decoder Block) ─────────────────────────
 
 class SingleDecoderBlock(nn.Module):
@@ -440,6 +471,8 @@ class SingleEncoderTripleDecoder(nn.Module):
         self.lvo_path = SingleTaskPath(in_ch_task, config, "lvo", skips_task, aux_ch=1, active_aux_levels=[False, False], guidance_ch=16,
                                        guidance_dec2_ch=64, guidance_dec1_ch=32)
         
+        self.lvo_classifier = LVOSliceClassifier(in_ch=in_ch_task)
+        
         self.lesion_path = LesionTaskPath(in_ch_task, config, skips_task, perf_ch=6)
         
     def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None, decoupled: bool = False):
@@ -504,6 +537,12 @@ class SingleEncoderTripleDecoder(nn.Module):
                 guidance_dec1=cow_dec1.detach()
             )
             
+            # --- LVO Gating ---
+            p_lvo_logit = self.lvo_classifier(x_shared_lvo)
+            p_lvo_slice = torch.sigmoid(p_lvo_logit)
+            gate = p_lvo_slice.view(p_lvo_slice.size(0), 1, 1, 1)
+            f_lvo = f_lvo * gate
+            
             # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             tmax = perf_raw[:, 5:6, :, :]
@@ -536,6 +575,12 @@ class SingleEncoderTripleDecoder(nn.Module):
                 guidance_dec1=cow_dec1.detach()
             )
             
+            # --- LVO Gating ---
+            p_lvo_logit = self.lvo_classifier(x_shared)
+            p_lvo_slice = torch.sigmoid(p_lvo_logit)
+            gate = p_lvo_slice.view(p_lvo_slice.size(0), 1, 1, 1)
+            f_lvo = f_lvo * gate
+            
             # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             tmax = perf_raw[:, 5:6, :, :]
@@ -556,7 +601,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             "cow":    f_cow
         }
         
-        return preds, aux_masks, {"tmax": tmax}
+        return preds, aux_masks, {"tmax": tmax, "p_lvo_logit": p_lvo_logit}
 
 
 # ─── Mô hình chính ─────────────────────────────────────────────────────────────
