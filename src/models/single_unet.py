@@ -86,8 +86,8 @@ class LVOSliceClassifier(nn.Module):
             nn.Linear(64, 1)
         )
         
-        # Bias init: σ(-2.0) ≈ 0.12 → conservative start
-        nn.init.constant_(self.classifier[-1].bias, -2.0)
+        # Bias init: σ(-3.5) ≈ 0.03 (match với tỷ lệ slice LVO thực tế ~3%)
+        nn.init.constant_(self.classifier[-1].bias, -3.5)
 
     def forward(self, s5: torch.Tensor) -> torch.Tensor:
         avg = self.gap(s5).flatten(1)           # (B, 1024)
