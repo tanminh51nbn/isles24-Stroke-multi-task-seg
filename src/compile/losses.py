@@ -182,7 +182,7 @@ class LVOClassifierLoss(nn.Module):
     Focal BCE cho slice-level classification.
     Phạt FN nặng hơn FP vì bỏ sót LVO nguy hiểm hơn báo nhầm.
     """
-    def __init__(self, pos_weight: float = 3.0, gamma: float = 2.0):
+    def __init__(self, pos_weight: float = 2.5, gamma: float = 1.0):
         super().__init__()
         self.gamma = gamma
         self.register_buffer('pos_weight', torch.tensor([pos_weight]))

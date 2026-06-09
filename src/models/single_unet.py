@@ -579,7 +579,12 @@ class SingleEncoderTripleDecoder(nn.Module):
             p_lvo_logit = self.lvo_classifier(x_shared)
             p_lvo_slice = torch.sigmoid(p_lvo_logit)
             gate = p_lvo_slice.view(p_lvo_slice.size(0), 1, 1, 1)
-            f_lvo = f_lvo * gate
+            
+            gate_detached = gate.detach()
+            if self.training:
+                f_lvo = f_lvo
+            else:
+                f_lvo = f_lvo * gate_detached
             
             # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
             perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
@@ -712,7 +717,7 @@ class SingleEncoderUNet(nn.Module):
             },
             {
                 "params": lvo_classifier_params,
-                "lr": decoder_lr * 0.5,
+                "lr": decoder_lr * 0.3,
                 "name": "lvo_classifier",
             },
             {
