@@ -393,6 +393,41 @@ class SingleTaskPath(nn.Module):
         return x, [None, None, aux2, aux1], [x_dec2, x_dec1]
 
 
+# ─── Lightweight Perfusion Encoder ────────────────────────────────────────
+
+class LightweightPerfusionEncoder(nn.Module):
+    def __init__(self, in_ch=6, base_ch=32):
+        super().__init__()
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(in_ch, base_ch, 3, stride=2, padding=1),
+            nn.InstanceNorm2d(base_ch),
+            nn.GELU(),
+            nn.Conv2d(base_ch, base_ch, 3, padding=1),
+            nn.InstanceNorm2d(base_ch),
+            nn.GELU()
+        )
+        self.enc2 = nn.Sequential(
+            nn.Conv2d(base_ch, base_ch*2, 3, stride=2, padding=1),
+            nn.InstanceNorm2d(base_ch*2),
+            nn.GELU(),
+            nn.Conv2d(base_ch*2, base_ch*2, 3, padding=1),
+            nn.InstanceNorm2d(base_ch*2),
+            nn.GELU()
+        )
+
+    def forward(self, perf_raw):
+        # perf_raw: (B, 6, 256, 256)
+        eps = 1e-5
+        has_perf = (perf_raw[:, 2:6].abs().sum(dim=[1,2,3], keepdim=True) > eps).float()
+        
+        p1 = self.enc1(perf_raw)
+        p2 = self.enc2(p1)
+        
+        p1 = p1 * has_perf
+        p2 = p2 * has_perf
+        
+        return p1, p2
+
 class LesionTaskPath(nn.Module):
     def __init__(self, in_ch: int, config: dict, skip_channels: List[int], perf_ch: int = 6):
         super().__init__()
@@ -403,11 +438,11 @@ class LesionTaskPath(nn.Module):
         dropout_cfg = config["decoder"].get("dropout", {})
         dropout_p = dropout_cfg.get("lesion", 0.2) if isinstance(dropout_cfg, dict) else 0.2
         
-        # ─── Safe Perfusion Bottleneck (Xử lý an toàn lát cắt trống) ──────────
-        self.perf_bottleneck = SafePerfusionBottleneck(perf_ch=perf_ch, out_ch=32)
+        # ─── Lightweight Perfusion Encoder ──────────
+        self.perf_encoder = LightweightPerfusionEncoder(in_ch=perf_ch, base_ch=32)
         
-        # Bơm Perfusion Bottleneck (32 kênh) vào skip channels
-        self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0] + 32, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
+        # Bơm Perfusion Encoder (64 và 32 kênh) vào skip channels
+        self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0] + 64, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
         self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1] + 32, dec_ch[3], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
 
         # ─── Task-Conditioned FiLM ──────────────────────────────────────────
@@ -422,10 +457,8 @@ class LesionTaskPath(nn.Module):
     def forward(self, x_shared, skips_task, perf_raw):
         s2, s1 = skips_task
         
-        # ─── Perfusion Bottleneck ─────────────────────────────────────────
-        perf_norm = self.perf_bottleneck(perf_raw) # (B, 16, 256, 256)
-        perf_s2 = F.avg_pool2d(perf_norm, 4)
-        perf_s1 = F.avg_pool2d(perf_norm, 2)
+        # ─── Perfusion Encoder ─────────────────────────────────────────
+        perf_feat_128, perf_feat_64 = self.perf_encoder(perf_raw)
         
         # ─── Áp dụng FiLM ──────────────────────────────────────────────────
         task_emb = self.task_embedding.expand(x_shared.shape[0], -1)  # (B, 64)
@@ -433,8 +466,8 @@ class LesionTaskPath(nn.Module):
         s2_film = self.film_s2(s2, task_emb)
         s1_film = self.film_s1(s1, task_emb)
         
-        s2_fused = torch.cat([s2_film, perf_s2], dim=1)
-        s1_fused = torch.cat([s1_film, perf_s1], dim=1)
+        s2_fused = torch.cat([s2_film, perf_feat_64], dim=1)
+        s1_fused = torch.cat([s1_film, perf_feat_128], dim=1)
         
         x_dec2, aux2 = self.dec2(x_shared_film, s2_fused, prev_mask=None)
         
@@ -544,8 +577,8 @@ class SingleEncoderTripleDecoder(nn.Module):
             f_lvo = f_lvo * gate
             
             # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
-            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
-            tmax = perf_raw[:, 5:6, :, :]
+            perf_raw = x_raw[:, 0:6, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
+            tmax = perf_raw[:, 4:5, :, :]
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_shared_les, [s2_les, s1_les],
                 perf_raw=perf_raw
@@ -587,8 +620,8 @@ class SingleEncoderTripleDecoder(nn.Module):
                 f_lvo = f_lvo * gate_detached
             
             # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
-            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
-            tmax = perf_raw[:, 5:6, :, :]
+            perf_raw = x_raw[:, 0:6, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
+            tmax = perf_raw[:, 4:5, :, :]
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_shared, [s2, s1],
                 perf_raw=perf_raw
