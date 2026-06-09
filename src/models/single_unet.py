@@ -80,7 +80,7 @@ class LVOSliceClassifier(nn.Module):
             nn.Linear(in_ch * 2, 256),
             nn.LayerNorm(256),
             nn.GELU(),
-            nn.Dropout(p=0.5),
+            nn.Dropout(p=0.6),
             nn.Linear(256, 64),
             nn.GELU(),
             nn.Linear(64, 1)
@@ -681,6 +681,7 @@ class SingleEncoderUNet(nn.Module):
     def get_param_groups(self, encoder_lr: float, decoder_lr: float) -> List[dict]:
         film_params = []
         gate_params = []
+        lvo_classifier_params = []
         decoder_heads_params = []
         
         for name, p in list(self.decoder.named_parameters()) + list(self.heads.named_parameters()):
@@ -688,6 +689,8 @@ class SingleEncoderUNet(nn.Module):
                 film_params.append(p)
             elif "gate_param" in name.lower():
                 gate_params.append(p)
+            elif "lvo_classifier" in name.lower():
+                lvo_classifier_params.append(p)
             else:
                 decoder_heads_params.append(p)
                 
@@ -706,6 +709,11 @@ class SingleEncoderUNet(nn.Module):
                 "params": gate_params,
                 "lr": decoder_lr * 3.0,
                 "name": "asymmetry_gate",
+            },
+            {
+                "params": lvo_classifier_params,
+                "lr": decoder_lr * 0.5,
+                "name": "lvo_classifier",
             },
             {
                 "params": decoder_heads_params,

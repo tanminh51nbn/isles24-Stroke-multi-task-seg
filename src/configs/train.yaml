@@ -47,7 +47,7 @@ composite_score:
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
-  lr: 1e-3
+  lr: 5.0e-4
   weight_decay: 0.05
   encoder_lr_scale: 0.05
   eps: 1.0e-7
@@ -99,7 +99,7 @@ training:
   early_stopping:
     enabled: true
     start_epoch: 20
-    patience: 15
+    patience: 25
     min_delta: 0.0001
 
   # Logging
