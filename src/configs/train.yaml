@@ -49,7 +49,7 @@ optimizer:
   type: "adamw"
   lr: 5.0e-4
   weight_decay: 0.05
-  encoder_lr_scale: 0.05
+  encoder_lr_scale: 0.01
   eps: 1.0e-7
 
 scheduler:

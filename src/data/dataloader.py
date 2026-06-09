@@ -53,6 +53,15 @@ class LesionCopyPasteCollate:
             if lesion_mask.sum() == 0:
                 continue
                 
+            # Kiểm tra Perfusion compatibility (tránh paste lệch hệ)
+            # Channel 6:12 chứa các thông tin CTP (CBV, CBF, Tmax, MTT, etc.)
+            target_has_perf = (inputs[i, 6:12].abs().sum() > 1e-3)
+            source_has_perf = (inputs[j, 6:12].abs().sum() > 1e-3)
+            
+            # Chỉ cho phép copy-paste nếu cả 2 cùng CÓ hoặc cùng KHÔNG CÓ CTP
+            if target_has_perf != source_has_perf:
+                continue
+                
             # Paste Lesion từ j vào i
             inputs[i] = inputs[i] * (1 - lesion_mask) + inputs[j] * lesion_mask
             labels[i, 0] = torch.clamp(labels[i, 0] + labels[j, 0], 0, 1)
