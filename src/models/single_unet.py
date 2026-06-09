@@ -608,17 +608,9 @@ class SingleEncoderTripleDecoder(nn.Module):
                 guidance_dec1=cow_dec1.detach()
             )
             
-            # --- LVO Gating ---
+            # --- LVO Gating (Chỉ lấy logit, không áp dụng vào feature để bảo vệ BatchNorm) ---
             p_lvo_logit = self.lvo_classifier(x_shared)
-            p_lvo_slice = torch.sigmoid(p_lvo_logit)
-            gate = p_lvo_slice.view(p_lvo_slice.size(0), 1, 1, 1)
-            
-            gate_detached = gate.detach()
-            if self.training:
-                f_lvo = f_lvo
-            else:
-                f_lvo = f_lvo * gate_detached
-            
+
             # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
             perf_raw = x_raw[:, 0:6, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             tmax = perf_raw[:, 4:5, :, :]
@@ -703,6 +695,15 @@ class SingleEncoderUNet(nn.Module):
         out["guidance_maps"] = g_maps
         if "tmax" in g_maps:
             out["tmax"] = g_maps["tmax"]
+            
+        # [FIX] LVO Gating được áp dụng ở output cuối cùng (Logit Level) thay vì Feature Level
+        if not self.training and "p_lvo_logit" in g_maps:
+            gate_prob = torch.sigmoid(g_maps["p_lvo_logit"]).view(-1, 1, 1, 1)
+            p_pixel = torch.sigmoid(out["lvo"])
+            # P_final = P_pixel * P_slice
+            p_final = torch.clamp(p_pixel * gate_prob, 1e-7, 1.0 - 1e-7)
+            # Chuyển đổi ngược về logit để dùng chung với BCE/Sigmoid ở metrics
+            out["lvo"] = torch.log(p_final / (1.0 - p_final))
         
         return out
 
