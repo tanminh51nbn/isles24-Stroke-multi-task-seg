@@ -696,15 +696,6 @@ class SingleEncoderUNet(nn.Module):
         if "tmax" in g_maps:
             out["tmax"] = g_maps["tmax"]
             
-        # [FIX] LVO Gating được áp dụng ở output cuối cùng (Logit Level) thay vì Feature Level
-        if not self.training and "p_lvo_logit" in g_maps:
-            gate_prob = torch.sigmoid(g_maps["p_lvo_logit"]).view(-1, 1, 1, 1)
-            p_pixel = torch.sigmoid(out["lvo"])
-            # P_final = P_pixel * P_slice
-            p_final = torch.clamp(p_pixel * gate_prob, 1e-7, 1.0 - 1e-7)
-            # Chuyển đổi ngược về logit để dùng chung với BCE/Sigmoid ở metrics
-            out["lvo"] = torch.log(p_final / (1.0 - p_final))
-        
         return out
 
     def freeze_encoders(self):
