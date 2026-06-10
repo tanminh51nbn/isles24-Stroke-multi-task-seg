@@ -438,39 +438,55 @@ class LesionTaskPath(nn.Module):
         dropout_cfg = config["decoder"].get("dropout", {})
         dropout_p = dropout_cfg.get("lesion", 0.2) if isinstance(dropout_cfg, dict) else 0.2
         
+        # ─── MỚI: dec4 và dec3 độc lập cho Lesion ──────────
+        # in_ch = bottleneck_ch = 1024
+        # skip_channels: [ch_s1, ch_s2, ch_s3, ch_s4, ch_s5]
+        self.dec4 = SingleDecoderBlock(in_ch, skip_channels[3], dec_ch[0], attn_type, use_aux=False, task_name="lesion", aux_ch=0, dropout_p=dropout_p)
+        self.dec3 = SingleDecoderBlock(dec_ch[0], skip_channels[2], dec_ch[1], attn_type, use_aux=False, task_name="lesion", aux_ch=0, dropout_p=dropout_p)
+        
         # ─── Lightweight Perfusion Encoder ──────────
         self.perf_encoder = LightweightPerfusionEncoder(in_ch=perf_ch, base_ch=32)
         
         # Bơm Perfusion Encoder (64 và 32 kênh) vào skip channels
-        self.dec2 = SingleDecoderBlock(in_ch, skip_channels[0] + 64, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
-        self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[1] + 32, dec_ch[3], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
+        self.dec2 = SingleDecoderBlock(dec_ch[1], skip_channels[1] + 64, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
+        self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[0] + 32, dec_ch[3], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
 
         # ─── Task-Conditioned FiLM ──────────────────────────────────────────
         self.task_embedding = nn.Parameter(torch.randn(1, 64))
-        self.film_shared = TaskConditionedFiLM(in_channels=in_ch, embedding_dim=64)
-        self.film_s2 = TaskConditionedFiLM(in_channels=skip_channels[0], embedding_dim=64)
-        self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
+        self.film_bottleneck = TaskConditionedFiLM(in_channels=in_ch, embedding_dim=64)
+        self.film_s4 = TaskConditionedFiLM(in_channels=skip_channels[3], embedding_dim=64)
+        self.film_s3 = TaskConditionedFiLM(in_channels=skip_channels[2], embedding_dim=64)
+        self.film_s2 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
+        self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[0], embedding_dim=64)
         
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
-    def forward(self, x_shared, skips_task, perf_raw):
-        s2, s1 = skips_task
+    def forward(self, x_bottleneck, skips_task, perf_raw):
+        s4, s3, s2, s1 = skips_task
+        
+        # [TRỌNG TÂM OPTION C]: Detach s4 và s3 để bảo vệ Encoder khỏi Lesion Gradient
+        s4_les = s4.detach()
+        s3_les = s3.detach()
         
         # ─── Perfusion Encoder ─────────────────────────────────────────
         perf_feat_128, perf_feat_64 = self.perf_encoder(perf_raw)
         
         # ─── Áp dụng FiLM ──────────────────────────────────────────────────
-        task_emb = self.task_embedding.expand(x_shared.shape[0], -1)  # (B, 64)
-        x_shared_film = self.film_shared(x_shared, task_emb)
+        task_emb = self.task_embedding.expand(x_bottleneck.shape[0], -1)  # (B, 64)
+        x_bottleneck_film = self.film_bottleneck(x_bottleneck, task_emb)
+        s4_film = self.film_s4(s4_les, task_emb)
+        s3_film = self.film_s3(s3_les, task_emb)
         s2_film = self.film_s2(s2, task_emb)
         s1_film = self.film_s1(s1, task_emb)
         
         s2_fused = torch.cat([s2_film, perf_feat_64], dim=1)
         s1_fused = torch.cat([s1_film, perf_feat_128], dim=1)
         
-        x_dec2, aux2 = self.dec2(x_shared_film, s2_fused, prev_mask=None)
+        x_dec4, _ = self.dec4(x_bottleneck_film, s4_film, prev_mask=None)
+        x_dec3, _ = self.dec3(x_dec4, s3_film, prev_mask=None)
         
+        x_dec2, aux2 = self.dec2(x_dec3, s2_fused, prev_mask=None)
         x_dec1, aux1 = self.dec1(x_dec2, s1_fused, prev_mask=aux2)
 
         x = self.up_final(x_dec1)
@@ -506,7 +522,7 @@ class SingleEncoderTripleDecoder(nn.Module):
         
         self.lvo_classifier = LVOSliceClassifier(in_ch=in_ch_task)
         
-        self.lesion_path = LesionTaskPath(in_ch_task, config, skips_task, perf_ch=6)
+        self.lesion_path = LesionTaskPath(bottleneck_ch, config, skip_channels, perf_ch=6)
         
     def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None, decoupled: bool = False):
         # --- Shape Assertion Mode (D2) ---
@@ -548,14 +564,16 @@ class SingleEncoderTripleDecoder(nn.Module):
             s2_lvo = s2.detach().requires_grad_(True)
             s1_lvo = s1.detach().requires_grad_(True)
             
-            x_shared_les = x_shared.detach().requires_grad_(True)
+            x_bottleneck_les = x_bottleneck.detach().requires_grad_(True)
+            s4_les = s4.detach().requires_grad_(True)
+            s3_les = s3.detach().requires_grad_(True)
             s2_les = s2.detach().requires_grad_(True)
             s1_les = s1.detach().requires_grad_(True)
             
             self.task_leaves = {
                 "cow": (x_shared_cow, s2_cow, s1_cow),
                 "lvo": (x_shared_lvo, s2_lvo, s1_lvo),
-                "lesion": (x_shared_les, s2_les, s1_les)
+                "lesion": (x_bottleneck_les, s4_les, s3_les, s2_les, s1_les)
             }
             
             f_cow, cow_auxs, cow_feats = self.cow_path(x_shared_cow, [s2_cow, s1_cow])
@@ -580,7 +598,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             perf_raw = x_raw[:, 0:6, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             tmax = perf_raw[:, 4:5, :, :]
             f_lesion, lesion_auxs, _ = self.lesion_path(
-                x_shared_les, [s2_les, s1_les],
+                x_bottleneck_les, [s4_les, s3_les, s2_les, s1_les],
                 perf_raw=perf_raw
             )
         else:
@@ -615,7 +633,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             perf_raw = x_raw[:, 0:6, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             tmax = perf_raw[:, 4:5, :, :]
             f_lesion, lesion_auxs, _ = self.lesion_path(
-                x_shared, [s2, s1],
+                x_bottleneck, [s4, s3, s2, s1],
                 perf_raw=perf_raw
             )
 
