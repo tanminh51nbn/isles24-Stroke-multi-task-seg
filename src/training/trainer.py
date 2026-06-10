@@ -37,9 +37,8 @@ class Trainer:
 
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.amp_enabled)
         self.history = []
-        from compile import PCGrad
-        self.pcgrad = PCGrad(self.optimizer, use_amp=self.amp_enabled, max_norm=self.grad_clip_norm)
-        # [DEBUG] Encoder param IDs cho phân tích gradient
+        self.config = config
+        self.grad_clip_norm = float(config["optimizer"].get("grad_clip_norm", 10.0))
         _raw = self.model.module if hasattr(self.model, "module") else self.model
         self._enc_param_ids = {id(p) for p in _raw.encoder.parameters()} if hasattr(_raw, 'encoder') else set()
 
@@ -108,37 +107,8 @@ class Trainer:
                 
                 print(f"    [GRAD] B{batch_idx:03d} | 🔴 Les: {gn['l']**0.5:.2f} 🎯 LVO: {gn['v']**0.5:.2f} 🟢 CoW: {gn['c']**0.5:.2f} 🧠 Enc: {gn['e']**0.5:.2f}")
                 
-                # In thông số đo đạc Telemetry PCGrad + PGW (G1)
-                if hasattr(self.pcgrad, 'telemetry_data') and self.pcgrad.telemetry_data is not None:
-                    td = self.pcgrad.telemetry_data
-                    con = td["conflict"]
-                    cos_b = td["cosine_before"]
-                    cos_a = td["cosine_after"]
-                    print(f"    [TELEMETRY] Conflict: L-V:{int(con.get('Lesion,LVO', 0))} L-C:{int(con.get('Lesion,CoW', 0))} V-C:{int(con.get('LVO,CoW', 0))} | "
-                          f"CosBefore: L-V:{cos_b.get('Lesion,LVO', 0.0):+.2f} L-C:{cos_b.get('Lesion,CoW', 0.0):+.2f} V-C:{cos_b.get('LVO,CoW', 0.0):+.2f} | "
-                          f"CosAfter (Direction Kept): Les:{cos_a.get('Lesion', 1.0):.2f} LVO:{cos_a.get('LVO', 1.0):.2f} CoW:{cos_a.get('CoW', 1.0):.2f}")
-                
-                enc_str, guide_str = "", ""
-                if hasattr(self.pcgrad, '_enc_debug') and self.pcgrad._enc_debug is not None:
-                    _ed = self.pcgrad._enc_debug
-                    _n, _c = _ed['norms'], _ed['cosine']
-                    enc_str = f"| Enc_Norm[L:{_n['Lesion']:.1f} V:{_n['LVO']:.1f} C:{_n['CoW']:.1f}] cos[LV:{_c['L,V']:+.2f} LC:{_c['L,C']:+.2f} VC:{_c['V,C']:+.2f}]"
-                    
-                raw = self.model.module if hasattr(self.model, "module") else self.model
-                if hasattr(raw.decoder, "_lesion_guidance_grad_norm"):
-                    g_norm_l = raw.decoder._lesion_guidance_grad_norm
-                    if self.scaler is not None: g_norm_l /= self.scaler.get_scale()
-                    guide_str += f" L:{g_norm_l:.3f}"
-                if hasattr(raw.decoder, "_lvo_guidance_grad_norm"):
-                    g_norm = raw.decoder._lvo_guidance_grad_norm
-                    if self.scaler is not None: g_norm /= self.scaler.get_scale()
-                    guide_str += f" V:{g_norm:.3f}"
-                
-                if enc_str or guide_str:
-                    print(f"    [INFO] Guide_Flow[{guide_str.strip()}] {enc_str}")
-
-            # Bỏ qua Per-task gradient clip thủ công tại đây vì PCGrad đã thực hiện
-            # clip per-task 10.0 một cách chính xác trước đó.
+                if guide_str:
+                    print(f"    [INFO] Guide_Flow[{guide_str.strip()}]")
             
             # Clip toàn bộ tham số mô hình (global clip)
             nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
