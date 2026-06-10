@@ -6,9 +6,7 @@ Tài liệu này đặc tả toàn bộ kiến trúc mô hình, hệ thống hà
 
 ## 1. Tổng Quan Kiến Trúc (Architecture Overview)
 
-Kiến trúc chính là **Single-Encoder Triple-Decoder UNet** với cơ chế rẽ nhánh sâu tuần tự (**Knowledge Cascade**) và tích hợp tưới máu trực tiếp (**Raw Perfusion Injection**). Mô hình thực hiện Early Fusion 18 kênh đầu vào trên một Encoder duy nhất, sau đó phân tách thành 3 nhánh Decoder độc lập ở độ phân giải cao.
-
-```mermaid
+Kiến trúc chính là **Single-Encoder Triple-Decoder UNet** với cơ chế rẽ nhánh sâu tuần tự (**Knowledge Cascade**) và tích hợp tưới máu trực tiếp (**Raw Perfusion Injection**). Mô hình thực hiện Early Fusion 18 kênh �```mermaid
 graph TD
     subgraph InputProcessing ["Input & Preprocessing"]
         Input["Raw Input: 18 Channels (2.5D)<br/>[6 CTA + 12 CTP]<br/>Shape: (B, 18, 256, 256)"]
@@ -17,7 +15,7 @@ graph TD
     end
 
     subgraph EncoderBlock ["Encoder (DenseNet-121)"]
-        Conv0_A["Stream A (CoW/LVO)<br/>Conv 5x5, Stride 2<br/>Shape: (B, 32, 128, 128)"]
+        Conv0_A["Stream A (CoW/LVO)<br/>Conv 3x3, Stride 2<br/>Shape: (B, 32, 128, 128)"]
         Conv0_B["Stream B (Lesion)<br/>Conv 9x9, Stride 2<br/>Shape: (B, 32, 128, 128)"]
         Concat_Conv0["Concat conv0<br/>Shape: (B, 64, 128, 128)"]
         
@@ -57,7 +55,6 @@ graph TD
         Dec1_LVO["LVO dec1<br/>Shape: (B, 32, 256, 256)"]
         
         %% Lesion Branch
-        Asym_Les["Lesion Asymmetry<br/>(Low-Pass Filter)"]
         Dec2_Les["Lesion dec2<br/>Shape: (B, 64, 128, 128)"]
         Dec1_Les["Lesion dec1<br/>Shape: (B, 32, 256, 256)"]
 
@@ -68,14 +65,15 @@ graph TD
         Dec2_CoW --> Dec1_CoW
         
         Dec2_LVO --> Asym_LVO --> Dec1_LVO
-        Dec2_Les --> Asym_Les --> Dec1_Les
         
         %% Guidance
         Dec1_CoW -.->|"CoW.detach()<br/>FusedSpatialAttn"| Dec1_LVO
 
-        %% Raw Perfusion Injection
-        Input -.->|"Safe Perfusion Bottleneck<br/>(AvgPool 4x)"| Dec2_Les
-        Input -.->|"Safe Perfusion Bottleneck<br/>(AvgPool 2x)"| Dec1_Les
+        %% Perfusion Physics Encoder
+        PhysEnc["PerfusionPhysicsEncoder<br/>(10 Channels Input:<br/>6 raw + core + penumbra + mismatch + tmax_asym)"]
+        Input -.-> PhysEnc
+        PhysEnc -.->|"perf_feat_64<br/>(64ch, 64x64)"| Dec2_Les
+        PhysEnc -.->|"perf_feat_128<br/>(32ch, 128x128)"| Dec1_Les
     end
 
     subgraph Heads ["Segmentation Heads"]
@@ -97,12 +95,13 @@ graph TD
         Head_LVO --> Out_LVO
         Head_Les --> Out_Les
     end
+end
 ```
 
 ### 1.1. Backbone (Encoder) & Dual-Stream Input Processing
 *   **SliceAttention:** Khối Attention dạng Squeeze-and-Excitation cải tiến nằm ngay trước `conv0` nhằm gán trọng số ưu tiên cho các lát cắt.
 *   **Dual-Stream Shallow Feature Extractor:** Lớp `conv0` của DenseNet-121 được phá bỏ và thay bằng 2 luồng hoạt động song song ngay từ đầu:
-    *   **Stream A (5x5, 32 channels):** Tối ưu hóa để bắt các dải viền siêu sắc nét, mạch máu nhỏ (CoW, LVO).
+    *   **Stream A (3x3, 32 channels):** Tối ưu hóa để bắt các dải viền siêu sắc nét, mạch máu nhỏ (CoW, LVO).
     *   **Stream B (9x9, 32 channels):** Receptive Field cực lớn để thu nhận các dải biến thiên chậm, nhu mô não, vùng mờ (Lesion).
 *   **Backbone:** Các tầng sâu (denseblocks) tải trọng số y học **RadImageNet** (99.9% tham số được giữ nguyên để bảo tồn transfer learning).
 
@@ -112,12 +111,18 @@ graph TD
 *   **Task-Specific Decoder Paths:** Phân tách thành 3 đường giải mã độc lập tại ($64\times64$, $128\times128$).
 *   **Hemispheric Asymmetry Modules:** Cung cấp tư duy bác sĩ điện quang (so sánh não trái-não phải):
     *   **LVO Asymmetry (High-Pass Filter):** Trừ mảng mờ, giữ lại các đốm nhọn và sáng (cục LVO).
-    *   **Lesion Asymmetry (Low-Pass Filter):** Trừ các hạt lấm tấm, gom lại các mảng mờ khổng lồ (vùng thiếu máu).
 
 ### 1.3. Cơ Chế Kết Nối Nâng Cao
 *   **Knowledge Cascade (Lan truyền tri thức):** 
     Nhánh **LVO** nhận đặc trưng dẫn đường từ CoW (`CoW.detach()`) qua khối **FusedSpatialAttention** để thu hẹp vùng tìm kiếm điểm tắc mạch dọc theo cấu trúc cây mạch máu. *(Nhánh Lesion đã được CẮT ĐỨT khỏi CoW để tránh ô nhiễm bởi tần số cao của mạch máu mảnh).*
-*   **Safe Perfusion Injection:** Nhánh **Lesion** được bơm bản đồ tưới máu thô vào các tầng `dec2`, `dec1`. Khối lượng này đi qua **Safe Perfusion Bottleneck** — tự động bỏ qua và trả về tensor 0 đối với các lát cắt trống CTP (zero variance) để không làm vỡ phân phối của BatchNorm/InstanceNorm. Cùng với đó, `perf_mask` (0 hoặc 1) được bơm thẳng vào Lesion Head để mạng tự nhận biết tình trạng thiếu hụt dữ liệu CTP và chuyển hướng phân tích.
+*   **PerfusionPhysicsEncoder & Perfusion Injection:** 
+    Nhánh **Lesion** tích hợp tri thức lâm sàng qua `PerfusionPhysicsEncoder` nâng đầu vào thô lên 10 kênh đặc trưng vật lý y học (bao gồm 6 kênh perfusion gốc, core_map, penumbra_map, mismatch_map và tmax_asym). Encoder phụ này trích xuất hai dải đặc trưng đa quy mô: `perf_feat_128` (32 kênh, kích thước $128\times128$) và `perf_feat_64` (64 kênh, kích thước $64\times64$), được nối trực tiếp vào các skip connections của Lesion decoder (`dec1` và `dec2`). Cùng với đó, `perf_mask` (0 hoặc 1) được bơm thẳng vào Lesion Head để mạng tự nhận biết tình trạng thiếu hụt dữ liệu CTP và chuyển hướng phân tích.
+
+### 1.4. Task-Specific Segmentation Heads
+Mỗi nhánh ra mặt nạ được thiết kế dưới dạng: `ChannelAttention(reduction=4) -> ResidualBlock(2x Conv3x3) -> Dropout2d -> Conv1x1`.
+*   **Bias Initialization Đặc Thù:** Khởi tạo bias để giải quyết mất cân bằng lớp cực đoan và dập tắt báo ảo (FP) trên nền âm tính:
+    *   **LVO Head:** `bias = -3.0` (tương đương baseline probability $\sigma \approx 0.047$). Ngưỡng này ép mô hình phải "chắc chắn" mới dám vượt ngưỡng 0.4.
+    *   **CoW & Lesion Head:** `bias = -2.944`�ng tự nhận biết tình trạng thiếu hụt dữ liệu CTP và chuyển hướng phân tích.
 
 ### 1.4. Task-Specific Segmentation Heads
 Mỗi nhánh ra mặt nạ được thiết kế dưới dạng: `ChannelAttention(reduction=4) -> ResidualBlock(2x Conv3x3) -> Dropout2d -> Conv1x1`.

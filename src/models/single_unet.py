@@ -548,7 +548,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             guidance_ch=32, guidance_dec2_ch=128, guidance_dec1_ch=64
         )
         
-    def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None, decoupled: bool = False):
+    def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None):
         # --- Shape Assertion Mode (D2) ---
         from models.single_unet import SingleEncoderUNet
         if getattr(SingleEncoderUNet, 'DEBUG', False):
@@ -564,123 +564,50 @@ class SingleEncoderTripleDecoder(nn.Module):
         
         s1, s2, s3, s4, s5 = skips
 
-        if decoupled and self.training:
-            # 1. Bottleneck with detached leaves for shared path inputs
-            s5_dec = s5.detach().requires_grad_(True)
-            s4_dec = s4.detach().requires_grad_(True)
-            s3_dec = s3.detach().requires_grad_(True)
+        # 1. Bottleneck
+        x_bottleneck = self.shared_bottleneck(s5)
+        
+        # 2. Shared Path (dec4, dec3)
+        x_shared = self.shared_path(x_bottleneck, [s4, s3])
+        
+        f_cow, cow_auxs, cow_feats = self.cow_path(x_shared, [s2, s1])
+        cow_dec2, cow_dec1 = cow_feats
+        
+        # --- LVO nhận Guidance từ CoW ---
+        guidance_for_lvo = f_cow.detach()
+        if self.training:
+            guidance_for_lvo.requires_grad_(True)
+            def lvo_guidance_hook(grad):
+                self._lvo_guidance_grad_norm = grad.norm(2).item()
+            guidance_for_lvo.register_hook(lvo_guidance_hook)
             
-            x_bottleneck = self.shared_bottleneck(s5_dec)
-            x_shared = self.shared_path(x_bottleneck, [s4_dec, s3_dec])
-            
-            # Save detached leaves for backward access
-            self.s5_dec = s5_dec
-            self.s4_dec = s4_dec
-            self.s3_dec = s3_dec
-            self.x_shared = x_shared
-            self.x_bottleneck = x_bottleneck
-            
-            # 2. Detach x_shared and skips for each task path to isolate their graphs
-            x_shared_cow = x_shared.detach().requires_grad_(True)
-            s2_cow = s2.detach().requires_grad_(True)
-            s1_cow = s1.detach().requires_grad_(True)
-            
-            x_shared_lvo = x_shared.detach().requires_grad_(True)
-            s2_lvo = s2.detach().requires_grad_(True)
-            s1_lvo = s1.detach().requires_grad_(True)
-            
-            x_bottleneck_les = x_bottleneck.detach().requires_grad_(True)
-            s4_les = s4.detach().requires_grad_(True)
-            s3_les = s3.detach().requires_grad_(True)
-            s2_les = s2.detach().requires_grad_(True)
-            s1_les = s1.detach().requires_grad_(True)
-            
-            self.task_leaves = {
-                "cow": (x_shared_cow, s2_cow, s1_cow),
-                "lvo": (x_shared_lvo, s2_lvo, s1_lvo),
-                "lesion": (x_bottleneck_les, s4_les, s3_les, s2_les, s1_les)
-            }
-            
-            f_cow, cow_auxs, cow_feats = self.cow_path(x_shared_cow, [s2_cow, s1_cow])
-            cow_dec2, cow_dec1 = cow_feats
-            
-            # --- LVO nhận Guidance từ CoW ---
-            guidance_for_lvo = f_cow.detach()
-            f_lvo, lvo_auxs, lvo_feats = self.lvo_path(
-                x_shared_lvo, [s2_lvo, s1_lvo],
-                guidance=guidance_for_lvo,
-                guidance_dec2=cow_dec2.detach(),
-                guidance_dec1=cow_dec1.detach()
-            )
-            lvo_dec2, lvo_dec1 = lvo_feats
-            
-            # --- LVO Gating ---
-            p_lvo_logit = self.lvo_classifier(x_shared_lvo)
-            p_lvo_slice = torch.sigmoid(p_lvo_logit)
-            gate = p_lvo_slice.view(p_lvo_slice.size(0), 1, 1, 1)
-            f_lvo = f_lvo * gate
-            
-            # --- Lesion NHẬN Guidance từ LVO và CoW ---
-            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
-            tmax = perf_raw[:, 2:3, :, :]
-            cbf  = perf_raw[:, 3:4, :, :]
-            
-            lesion_guidance = torch.cat([f_lvo.detach(), f_cow.detach()], dim=1)
-            lesion_guidance_dec2 = torch.cat([lvo_dec2.detach(), cow_dec2.detach()], dim=1)
-            lesion_guidance_dec1 = torch.cat([lvo_dec1.detach(), cow_dec1.detach()], dim=1)
-            
-            f_lesion, lesion_auxs, _ = self.lesion_path(
-                x_bottleneck_les, [s4_les, s3_les, s2_les, s1_les],
-                perf_raw=perf_raw,
-                guidance=lesion_guidance,
-                guidance_dec2=lesion_guidance_dec2,
-                guidance_dec1=lesion_guidance_dec1
-            )
-        else:
-            # 1. Bottleneck
-            x_bottleneck = self.shared_bottleneck(s5)
-            
-            # 2. Shared Path (dec4, dec3)
-            x_shared = self.shared_path(x_bottleneck, [s4, s3])
-            
-            f_cow, cow_auxs, cow_feats = self.cow_path(x_shared, [s2, s1])
-            cow_dec2, cow_dec1 = cow_feats
-            
-            # --- LVO nhận Guidance từ CoW ---
-            guidance_for_lvo = f_cow.detach()
-            if self.training:
-                guidance_for_lvo.requires_grad_(True)
-                def lvo_guidance_hook(grad):
-                    self._lvo_guidance_grad_norm = grad.norm(2).item()
-                guidance_for_lvo.register_hook(lvo_guidance_hook)
-                
-            f_lvo, lvo_auxs, lvo_feats = self.lvo_path(
-                x_shared, [s2, s1],
-                guidance=guidance_for_lvo,
-                guidance_dec2=cow_dec2.detach(),
-                guidance_dec1=cow_dec1.detach()
-            )
-            lvo_dec2, lvo_dec1 = lvo_feats
-            
-            # --- LVO Gating (Chỉ lấy logit, không áp dụng vào feature để bảo vệ BatchNorm) ---
-            p_lvo_logit = self.lvo_classifier(x_shared)
+        f_lvo, lvo_auxs, lvo_feats = self.lvo_path(
+            x_shared, [s2, s1],
+            guidance=guidance_for_lvo,
+            guidance_dec2=cow_dec2.detach(),
+            guidance_dec1=cow_dec1.detach()
+        )
+        lvo_dec2, lvo_dec1 = lvo_feats
+        
+        # --- LVO Gating (Chỉ lấy logit, không áp dụng vào feature để bảo vệ BatchNorm) ---
+        p_lvo_logit = self.lvo_classifier(x_shared)
 
-            # --- Lesion NHẬN Guidance từ LVO và CoW ---
-            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
-            tmax = perf_raw[:, 2:3, :, :]
-            cbf  = perf_raw[:, 3:4, :, :]
-            
-            lesion_guidance = torch.cat([f_lvo.detach(), f_cow.detach()], dim=1)
-            lesion_guidance_dec2 = torch.cat([lvo_dec2.detach(), cow_dec2.detach()], dim=1)
-            lesion_guidance_dec1 = torch.cat([lvo_dec1.detach(), cow_dec1.detach()], dim=1)
-            
-            f_lesion, lesion_auxs, _ = self.lesion_path(
-                x_bottleneck, [s4, s3, s2, s1],
-                perf_raw=perf_raw,
-                guidance=lesion_guidance,
-                guidance_dec2=lesion_guidance_dec2,
-                guidance_dec1=lesion_guidance_dec1
-            )
+        # --- Lesion NHẬN Guidance từ LVO và CoW ---
+        perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
+        tmax = perf_raw[:, 2:3, :, :]
+        cbf  = perf_raw[:, 3:4, :, :]
+        
+        lesion_guidance = torch.cat([f_lvo.detach(), f_cow.detach()], dim=1)
+        lesion_guidance_dec2 = torch.cat([lvo_dec2.detach(), cow_dec2.detach()], dim=1)
+        lesion_guidance_dec1 = torch.cat([lvo_dec1.detach(), cow_dec1.detach()], dim=1)
+        
+        f_lesion, lesion_auxs, _ = self.lesion_path(
+            x_bottleneck, [s4, s3, s2, s1],
+            perf_raw=perf_raw,
+            guidance=lesion_guidance,
+            guidance_dec2=lesion_guidance_dec2,
+            guidance_dec1=lesion_guidance_dec1
+        )
 
         aux_masks = {
             "lesion": lesion_auxs,
@@ -738,7 +665,7 @@ class SingleEncoderUNet(nn.Module):
             heads_config=config["heads"],
         )
 
-    def forward(self, x: torch.Tensor, epoch: int = 0, decoupled: bool = False) -> dict:
+    def forward(self, x: torch.Tensor, epoch: int = 0) -> dict:
         # --- Shape Assertion Mode (D2) ---
         if getattr(self, 'DEBUG', False):
             assert x.ndim == 4, f"[SingleEncoderUNet] Input must be a 4D tensor (B, C, H, W), got {x.shape}."
@@ -747,10 +674,7 @@ class SingleEncoderUNet(nn.Module):
                 f"[SingleEncoderUNet] Input dimensions must be multiple of 32 (for UNet downsampling), got {x.shape[2:]}."
 
         skips = self.encoder(x)
-        if self.training:
-            self.encoder.saved_skips = skips
-
-        features_dict, aux_masks, g_maps = self.decoder(skips, epoch=epoch, x_raw=x, decoupled=decoupled)
+        features_dict, aux_masks, g_maps = self.decoder(skips, epoch=epoch, x_raw=x)
 
         out = self.heads(features_dict)
         
