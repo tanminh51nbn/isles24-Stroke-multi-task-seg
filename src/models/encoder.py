@@ -215,9 +215,9 @@ class DenseNet121Encoder(nn.Module):
         self.conv0_A = nn.Conv2d(
             in_channels,
             32,
-            kernel_size=5,
+            kernel_size=3,
             stride=2,
-            padding=2,
+            padding=1,
             bias=False,
         )
         self.norm0_A = nn.BatchNorm2d(32)
