@@ -44,14 +44,14 @@ composite_score:
 # ── Optimizer ───────────────────────────────────────────────────
 optimizer:
   type: "adamw"
-  lr: 5.0e-4
+  lr: 1.0e-3
   weight_decay: 0.05
-  encoder_lr_scale: 0.05
+  encoder_lr_scale: 0.03
   eps: 1.0e-7
 
 scheduler:
-  warmup_epochs: 5
-  hold_epochs: 7
+  warmup_epochs: 7
+  hold_epochs: 8
   min_lr: 1.0e-6
 
 # ── Training ────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ training:
   epochs: 100
   amp: true
   grad_clip_norm: 20.0
-  freeze_encoder_epochs: 11
+  freeze_encoder_epochs: 14
 
   initial_weights:
     lesion: 1.00
