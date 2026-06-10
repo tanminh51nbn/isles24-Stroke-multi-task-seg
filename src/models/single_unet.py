@@ -393,10 +393,10 @@ class SingleTaskPath(nn.Module):
         return x, [None, None, aux2, aux1], [x_dec2, x_dec1]
 
 
-# ─── Lightweight Perfusion Encoder ────────────────────────────────────────
+# ─── Perfusion Physics Encoder ────────────────────────────────────────
 
-class LightweightPerfusionEncoder(nn.Module):
-    def __init__(self, in_ch=6, base_ch=32):
+class PerfusionPhysicsEncoder(nn.Module):
+    def __init__(self, in_ch=10, base_ch=32):
         super().__init__()
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_ch, base_ch, 3, stride=2, padding=1),
@@ -420,7 +420,18 @@ class LightweightPerfusionEncoder(nn.Module):
         eps = 1e-5
         has_perf = (perf_raw[:, 2:6].abs().sum(dim=[1,2,3], keepdim=True) > eps).float()
         
-        p1 = self.enc1(perf_raw)
+        tmax = perf_raw[:, 2:3]
+        cbf  = perf_raw[:, 3:4]
+        
+        tmax_asym = torch.abs(tmax - torch.flip(tmax, dims=[-1]))
+        
+        core_map     = ((tmax > 6/7.0) & (cbf < 30/35.0)).float() * has_perf
+        penumbra_map = ((tmax > 4/7.0) & ~(tmax > 6/7.0)).float() * has_perf
+        mismatch_map = core_map - penumbra_map
+        
+        physics_features = torch.cat([perf_raw, core_map, penumbra_map, mismatch_map, tmax_asym], dim=1)
+        
+        p1 = self.enc1(physics_features)
         p2 = self.enc2(p1)
         
         p1 = p1 * has_perf
@@ -444,8 +455,8 @@ class LesionTaskPath(nn.Module):
         self.dec4 = SingleDecoderBlock(in_ch, skip_channels[3], dec_ch[0], attention_type=None, use_aux=False, task_name="lesion", aux_ch=0, dropout_p=dropout_p)
         self.dec3 = SingleDecoderBlock(dec_ch[0], skip_channels[2], dec_ch[1], attention_type=None, use_aux=False, task_name="lesion", aux_ch=0, dropout_p=dropout_p)
         
-        # ─── Lightweight Perfusion Encoder ──────────
-        self.perf_encoder = LightweightPerfusionEncoder(in_ch=perf_ch, base_ch=32)
+        # ─── Perfusion Physics Encoder ──────────
+        self.perf_encoder = PerfusionPhysicsEncoder(in_ch=10, base_ch=32)
         
         # Bơm Perfusion Encoder (64 và 32 kênh) vào skip channels
         self.dec2 = SingleDecoderBlock(dec_ch[1], skip_channels[1] + 64, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
@@ -609,8 +620,9 @@ class SingleEncoderTripleDecoder(nn.Module):
             f_lvo = f_lvo * gate
             
             # --- Lesion NHẬN Guidance từ LVO và CoW ---
-            perf_raw = x_raw[:, 0:6, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
-            tmax = perf_raw[:, 4:5, :, :]
+            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
+            tmax = perf_raw[:, 2:3, :, :]
+            cbf  = perf_raw[:, 3:4, :, :]
             
             lesion_guidance = torch.cat([f_lvo.detach(), f_cow.detach()], dim=1)
             lesion_guidance_dec2 = torch.cat([lvo_dec2.detach(), cow_dec2.detach()], dim=1)
@@ -653,8 +665,9 @@ class SingleEncoderTripleDecoder(nn.Module):
             p_lvo_logit = self.lvo_classifier(x_shared)
 
             # --- Lesion NHẬN Guidance từ LVO và CoW ---
-            perf_raw = x_raw[:, 0:6, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
-            tmax = perf_raw[:, 4:5, :, :]
+            perf_raw = x_raw[:, 6:12, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
+            tmax = perf_raw[:, 2:3, :, :]
+            cbf  = perf_raw[:, 3:4, :, :]
             
             lesion_guidance = torch.cat([f_lvo.detach(), f_cow.detach()], dim=1)
             lesion_guidance_dec2 = torch.cat([lvo_dec2.detach(), cow_dec2.detach()], dim=1)
@@ -680,7 +693,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             "cow":    f_cow
         }
         
-        return preds, aux_masks, {"tmax": tmax, "p_lvo_logit": p_lvo_logit}
+        return preds, aux_masks, {"tmax": tmax, "cbf": cbf, "p_lvo_logit": p_lvo_logit}
 
 
 # ─── Mô hình chính ─────────────────────────────────────────────────────────────
@@ -744,6 +757,8 @@ class SingleEncoderUNet(nn.Module):
         out["guidance_maps"] = g_maps
         if "tmax" in g_maps:
             out["tmax"] = g_maps["tmax"]
+        if "cbf" in g_maps:
+            out["cbf"] = g_maps["cbf"]
             
         return out
 
