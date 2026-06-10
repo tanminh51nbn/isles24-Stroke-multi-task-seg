@@ -266,8 +266,8 @@ class MultiTaskLoss(nn.Module):
             alpha=l_cfg["lesion"].get("alpha", 0.3),
             beta=l_cfg["lesion"].get("beta", 0.7),
             gamma=l_cfg["lesion"].get("gamma", 1.25),
-            reduction='mean',
-            batch=True
+            reduction='none',
+            batch=False
         )
 
         self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 2.5)  # Giữ lại cho tham chiếu
@@ -514,9 +514,9 @@ class MultiTaskLoss(nn.Module):
         # 2. Additional Task-specific Losses (Boundary & Topology - CoW only)
         l_c_cl = self.cow_cl_loss(preds['cow'], targets[:, 2:3]) if self.cow_cl_w > 0.0 else torch.tensor(0.0, device=targets.device)
 
-        # [FIX #1] Batch-level loss: l_l_m đã là scalar (batch=True trả về 1 giá trị)
-        # Không cần lesion_slice_weights vì FocalTversky đã tính trên toàn batch
-        combined_lesion_loss_scalar = l_l_m
+        # Tính lại Lesion Loss với per-slice weights (do batch=False, reduction='none')
+        lesion_slice_weights = has_lesion * (self.lesion_slice_pos_w - 1.0) + 1.0
+        combined_lesion_loss_scalar = (l_l_m * lesion_slice_weights).mean()
 
         # LVO vẫn giữ per-slice weights như cũ
         lvo_slice_weights = has_lvo * (self.lvo_slice_pos_w - 1.0) + 1.0
@@ -599,7 +599,8 @@ class MultiTaskLoss(nn.Module):
             if num_active > 0:
                 # Trọng số Aux = 0.5 * TaskWeight, đã chia trung bình qua các tầng
                 if task_key == "lesion":
-                    aux_l = (task_aux_loss / num_active) * p_l * 0.5
+                    task_aux_loss_weighted = (task_aux_loss * lesion_slice_weights).mean()
+                    aux_l = (task_aux_loss_weighted / num_active) * p_l * 0.5
                 elif task_key == "lvo":
                     # task_aux_loss ở đây là vector (B,) do lvo_loss_fn(reduction='none')
                     task_aux_loss_weighted = (task_aux_loss * lvo_slice_weights).mean()
