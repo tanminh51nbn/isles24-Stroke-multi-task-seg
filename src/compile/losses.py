@@ -357,7 +357,7 @@ class MultiTaskLoss(nn.Module):
         )
 
         self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 2.5)  # Giữ lại cho tham chiếu
-        self.lesion_sdf_w = l_cfg["lesion"].get("sdf_weight", 0.15)
+        self.lesion_sdf_w = 0.0 # [FIX] Tắt hoàn toàn SDFBoundaryLoss cho Lesion (Dự báo tương lai, ranh giới vô định)
         self.lesion_sdf_loss_fn = SDFBoundaryLoss(fg_weight=l_cfg["lesion"].get("sdf_fg_weight", 0.1))
         # [FIX #2] Ngưỡng diện tích (pixel) để bật SDF — slice nhỏ hơn ngưỡng này dùng thuần FocalTversky
         self.lesion_sdf_area_gate = l_cfg["lesion"].get("sdf_area_gate", 400)

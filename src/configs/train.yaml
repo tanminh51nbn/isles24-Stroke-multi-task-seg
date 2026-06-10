@@ -76,8 +76,8 @@ training:
     momentum: 0.8
     w_min:
       lesion: 0.50
-      lvo: 0.30
-      cow: 0.40
+      lvo: 0.80
+      cow: 0.30
     w_max:
       lesion: 5.0
       lvo: 4.0

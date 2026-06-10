@@ -429,7 +429,8 @@ class LightweightPerfusionEncoder(nn.Module):
         return p1, p2
 
 class LesionTaskPath(nn.Module):
-    def __init__(self, in_ch: int, config: dict, skip_channels: List[int], perf_ch: int = 6):
+    def __init__(self, in_ch: int, config: dict, skip_channels: List[int], perf_ch: int = 6,
+                 guidance_ch: int = 32, guidance_dec2_ch: int = 128, guidance_dec1_ch: int = 64):
         super().__init__()
         dec_ch = config["decoder"]["out_channels"]
         final_ch = config["decoder"].get("final_ch", 16)
@@ -452,8 +453,26 @@ class LesionTaskPath(nn.Module):
 
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
+        
+        if guidance_ch > 0:
+            self.guidance_attn = FusedSpatialAttention(task_ch=final_ch, guidance_ch=guidance_ch)
+        else:
+            self.guidance_attn = None
 
-    def forward(self, x_bottleneck, skips_task, perf_raw):
+        if guidance_dec2_ch > 0:
+            self.attn_dec2 = FusedSpatialAttention(task_ch=dec_ch[2], guidance_ch=guidance_dec2_ch)
+        else:
+            self.attn_dec2 = None
+
+        if guidance_dec1_ch > 0:
+            self.attn_dec1 = FusedSpatialAttention(task_ch=dec_ch[3], guidance_ch=guidance_dec1_ch)
+        else:
+            self.attn_dec1 = None
+
+    def forward(self, x_bottleneck, skips_task, perf_raw,
+                guidance: Optional[torch.Tensor] = None,
+                guidance_dec2: Optional[torch.Tensor] = None,
+                guidance_dec1: Optional[torch.Tensor] = None):
         s4, s3, s2, s1 = skips_task
         
         # [TRỌNG TÂM OPTION C]: Detach s4 và s3 để bảo vệ Encoder khỏi Lesion Gradient
@@ -470,10 +489,18 @@ class LesionTaskPath(nn.Module):
         x_dec3, _ = self.dec3(x_dec4, s3_les, prev_mask=None)
         
         x_dec2, aux2 = self.dec2(x_dec3, s2_fused, prev_mask=None)
+        if guidance_dec2 is not None and self.attn_dec2 is not None:
+            x_dec2, _ = self.attn_dec2(x_dec2, guidance_dec2)
+            
         x_dec1, aux1 = self.dec1(x_dec2, s1_fused, prev_mask=aux2)
+        if guidance_dec1 is not None and self.attn_dec1 is not None:
+            x_dec1, _ = self.attn_dec1(x_dec1, guidance_dec1)
 
         x = self.up_final(x_dec1)
         x = self.final_conv(x)
+        
+        if guidance is not None and self.guidance_attn is not None:
+            x, _ = self.guidance_attn(x, guidance)
         
         return x, [None, None, aux2, aux1], [x_dec2, x_dec1]
 
@@ -505,7 +532,10 @@ class SingleEncoderTripleDecoder(nn.Module):
         
         self.lvo_classifier = LVOSliceClassifier(in_ch=in_ch_task)
         
-        self.lesion_path = LesionTaskPath(bottleneck_ch, config, skip_channels, perf_ch=6)
+        self.lesion_path = LesionTaskPath(
+            bottleneck_ch, config, skip_channels, perf_ch=6,
+            guidance_ch=32, guidance_dec2_ch=128, guidance_dec1_ch=64
+        )
         
     def forward(self, skips: List[torch.Tensor], epoch: int = 0, x_raw: Optional[torch.Tensor] = None, decoupled: bool = False):
         # --- Shape Assertion Mode (D2) ---
@@ -564,12 +594,13 @@ class SingleEncoderTripleDecoder(nn.Module):
             
             # --- LVO nhận Guidance từ CoW ---
             guidance_for_lvo = f_cow.detach()
-            f_lvo, lvo_auxs, _ = self.lvo_path(
+            f_lvo, lvo_auxs, lvo_feats = self.lvo_path(
                 x_shared_lvo, [s2_lvo, s1_lvo],
                 guidance=guidance_for_lvo,
                 guidance_dec2=cow_dec2.detach(),
                 guidance_dec1=cow_dec1.detach()
             )
+            lvo_dec2, lvo_dec1 = lvo_feats
             
             # --- LVO Gating ---
             p_lvo_logit = self.lvo_classifier(x_shared_lvo)
@@ -577,12 +608,20 @@ class SingleEncoderTripleDecoder(nn.Module):
             gate = p_lvo_slice.view(p_lvo_slice.size(0), 1, 1, 1)
             f_lvo = f_lvo * gate
             
-            # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
+            # --- Lesion NHẬN Guidance từ LVO và CoW ---
             perf_raw = x_raw[:, 0:6, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             tmax = perf_raw[:, 4:5, :, :]
+            
+            lesion_guidance = torch.cat([f_lvo.detach(), f_cow.detach()], dim=1)
+            lesion_guidance_dec2 = torch.cat([lvo_dec2.detach(), cow_dec2.detach()], dim=1)
+            lesion_guidance_dec1 = torch.cat([lvo_dec1.detach(), cow_dec1.detach()], dim=1)
+            
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_bottleneck_les, [s4_les, s3_les, s2_les, s1_les],
-                perf_raw=perf_raw
+                perf_raw=perf_raw,
+                guidance=lesion_guidance,
+                guidance_dec2=lesion_guidance_dec2,
+                guidance_dec1=lesion_guidance_dec1
             )
         else:
             # 1. Bottleneck
@@ -602,22 +641,31 @@ class SingleEncoderTripleDecoder(nn.Module):
                     self._lvo_guidance_grad_norm = grad.norm(2).item()
                 guidance_for_lvo.register_hook(lvo_guidance_hook)
                 
-            f_lvo, lvo_auxs, _ = self.lvo_path(
+            f_lvo, lvo_auxs, lvo_feats = self.lvo_path(
                 x_shared, [s2, s1],
                 guidance=guidance_for_lvo,
                 guidance_dec2=cow_dec2.detach(),
                 guidance_dec1=cow_dec1.detach()
             )
+            lvo_dec2, lvo_dec1 = lvo_feats
             
             # --- LVO Gating (Chỉ lấy logit, không áp dụng vào feature để bảo vệ BatchNorm) ---
             p_lvo_logit = self.lvo_classifier(x_shared)
 
-            # --- Lesion KHÔNG NHẬN Guidance từ CoW nữa ---
+            # --- Lesion NHẬN Guidance từ LVO và CoW ---
             perf_raw = x_raw[:, 0:6, :, :] if x_raw is not None else torch.zeros((s1.shape[0], 6, s1.shape[2]*2, s1.shape[3]*2), device=s1.device)
             tmax = perf_raw[:, 4:5, :, :]
+            
+            lesion_guidance = torch.cat([f_lvo.detach(), f_cow.detach()], dim=1)
+            lesion_guidance_dec2 = torch.cat([lvo_dec2.detach(), cow_dec2.detach()], dim=1)
+            lesion_guidance_dec1 = torch.cat([lvo_dec1.detach(), cow_dec1.detach()], dim=1)
+            
             f_lesion, lesion_auxs, _ = self.lesion_path(
                 x_bottleneck, [s4, s3, s2, s1],
-                perf_raw=perf_raw
+                perf_raw=perf_raw,
+                guidance=lesion_guidance,
+                guidance_dec2=lesion_guidance_dec2,
+                guidance_dec1=lesion_guidance_dec1
             )
 
         aux_masks = {
