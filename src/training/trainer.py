@@ -426,17 +426,14 @@ class Trainer:
 
     def fit(self, early_stopping=None, checkpoint=None, start_epoch: int = 0):
         raw = self.model.module if hasattr(self.model, "module") else self.model
-        raw.freeze_encoders()
-        if start_epoch >= self.freeze_enc_epochs:
-            raw.unfreeze_encoders()
+        # [FIX] DDP không hỗ trợ thay đổi requires_grad (freeze/unfreeze) trong lúc train.
+        # Hệ thống đã dùng Differential LR (Encoder LR = 1/100 Decoder LR) và LR Warmup, 
+        # nên việc freeze thủ công là không cần thiết và gây lỗi DDP.
             
         for epoch in range(start_epoch, self.epochs):
             # [CYCLIC STRIDE] Cập nhật danh sách file huấn luyện và tái cấu trúc DataLoader
             new_train_list = apply_sampling(self.train_files_original, self.config, epoch=epoch)
             self._rebuild_train_loader(new_train_list, epoch)
-            
-            if epoch == self.freeze_enc_epochs and start_epoch < self.freeze_enc_epochs:
-                raw.unfreeze_encoders()
             
             t_m = self.train_one_epoch(epoch)
             import gc
