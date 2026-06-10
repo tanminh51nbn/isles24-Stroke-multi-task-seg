@@ -788,11 +788,25 @@ class SingleEncoderUNet(nn.Module):
             else:
                 decoder_heads_params.append(p)
                 
+        # Split encoder parameters into pretrained and randomly initialized custom layers
+        encoder_pretrained = []
+        encoder_custom = []
+        for name, p in self.encoder.named_parameters():
+            if any(k in name.lower() for k in ["slice_attention", "conv0_a", "norm0_a", "conv0_b", "norm0_b"]):
+                encoder_custom.append(p)
+            else:
+                encoder_pretrained.append(p)
+                
         return [
             {
-                "params": list(self.encoder.parameters()),
+                "params": encoder_pretrained,
                 "lr": encoder_lr,
-                "name": "encoders",
+                "name": "encoder_pretrained",
+            },
+            {
+                "params": encoder_custom,
+                "lr": decoder_lr,  # Train custom input layers at full base_lr!
+                "name": "encoder_custom",
             },
             {
                 "params": film_params,
@@ -815,6 +829,7 @@ class SingleEncoderUNet(nn.Module):
                 "name": "decoder_heads",
             },
         ]
+
 
 def build_model(config: dict) -> nn.Module:
     """Tự động trả về mô hình tương ứng"""
