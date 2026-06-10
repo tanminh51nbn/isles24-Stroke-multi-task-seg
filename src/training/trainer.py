@@ -13,7 +13,7 @@ import math
 from compile.metrics import (
     compute_all_metrics, finalize_lvo_f1, accumulate_lvo_stats,
     accumulate_patient_lvo_stats, finalize_patient_lvo_acc,
-    get_lvo_threshold,
+    get_lvo_threshold, compute_3d_lesion_metrics,
 )
 from evaluation.visualize import overlay_predictions
 from data.fold_split import apply_sampling
@@ -167,6 +167,8 @@ class Trainer:
         lvo_stats = {"tp": 0, "fp": 0, "fn": 0}
         # Patient-level LVO stats
         patient_stats = {}
+        # Patient-level Lesion volumes for 3D AVD and ALCD
+        patient_lesion_volumes = {}
 
         # [RAMP] Tính ngưỡng LVO động theo epoch — linear ramp từ thresh_freeze → thresh_unfreeze
         lvo_thr = get_lvo_threshold(epoch + 1, self.metric_weights)  # epoch là 0-indexed, log dùng 1-indexed
@@ -218,6 +220,24 @@ class Trainer:
                 preds["lvo"], lbl[:, 1:2], paths, patient_stats,
                 threshold=lvo_thr
             )
+
+            # Accumulate 2D slices for Lesion 3D metrics
+            preds_lesion = (torch.sigmoid(preds["lesion"]) > _t["thresholds"]["lesion"]).cpu().numpy()
+            gt_lesion = (lbl[:, 0:1] > 0.5).cpu().numpy()
+            for i, path in enumerate(paths):
+                if not path:
+                    continue
+                fname = os.path.basename(path).replace(".npy", "")
+                parts = fname.split("_")
+                pid = parts[0]
+                slice_idx = int(parts[1].replace("slice", ""))
+                
+                if pid not in patient_lesion_volumes:
+                    patient_lesion_volumes[pid] = {}
+                patient_lesion_volumes[pid][slice_idx] = {
+                    "pred": preds_lesion[i, 0],
+                    "gt": gt_lesion[i, 0]
+                }
 
             # Thu thập ứng viên visualize (chỉ rank 0, từ tất cả batch của val loop)
             if should_vis and self.rank == 0:
@@ -302,6 +322,19 @@ class Trainer:
                         merged_stats[pid]["n_pos_slices"] += stats.get("n_pos_slices", 0)
                         merged_stats[pid]["n_total_slices"] += stats.get("n_total_slices", 0)
             patient_stats = merged_stats
+            
+            # Thu thập và gộp patient_lesion_volumes từ tất cả các rank
+            gathered_lesion = [None] * world_size
+            dist.all_gather_object(gathered_lesion, patient_lesion_volumes)
+            
+            merged_lesion = {}
+            for rank_volumes in gathered_lesion:
+                if rank_volumes is None: continue
+                for pid, slices in rank_volumes.items():
+                    if pid not in merged_lesion:
+                        merged_lesion[pid] = {}
+                    merged_lesion[pid].update(slices)
+            patient_lesion_volumes = merged_lesion
         else:
             avg_l = total_loss/max(n_b,1)
             avg_m = main_loss/max(n_b,1)
@@ -315,6 +348,11 @@ class Trainer:
             ad_l_pos = sum_d_l_pos / max(n_b_pos, 1)
             avg_v_les = sum_v_les / max(n_b, 1)
             avg_v_lvo = sum_v_lvo / max(n_b, 1)
+
+        # Tính toán các chỉ số Lesion 3D ở mức bệnh nhân
+        lesion_3d_metrics = compute_3d_lesion_metrics(patient_lesion_volumes)
+        a_aad = lesion_3d_metrics["avd_3d"]
+        a_alcd = lesion_3d_metrics["alcd_3d"]
 
         # Tính patient LVO metrics trên toàn bộ tập dữ liệu đã gộp
         pat = finalize_patient_lvo_acc(

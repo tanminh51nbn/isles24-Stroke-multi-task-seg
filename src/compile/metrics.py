@@ -384,3 +384,48 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
         "dice_cow":        d_cow,
         "composite":       comp
     }
+
+
+def compute_3d_lesion_metrics(patient_lesion_volumes: dict) -> dict:
+    """Tính toán các chỉ số Lesion 3D (ALCD_3D, AVD_3D, Dice_3D) ở mức bệnh nhân."""
+    alcd_list = []
+    avd_list = []
+    dice_3d_list = []
+    
+    for pid, slices in patient_lesion_volumes.items():
+        if not slices:
+            continue
+        sorted_slices = sorted(slices.keys())
+        # Tái cấu trúc thể tích 3D (Z, H, W)
+        pred_3d = np.stack([slices[idx]["pred"] for idx in sorted_slices], axis=0)
+        gt_3d   = np.stack([slices[idx]["gt"] for idx in sorted_slices], axis=0)
+        
+        # Đếm số lượng ổ tổn thương liên thông 3D
+        _, n_p = label(pred_3d)
+        _, n_g = label(gt_3d)
+        alcd_3d = abs(n_p - n_g)
+        alcd_list.append(alcd_3d)
+        
+        # Tính AVD (Average Volumetric Difference)
+        pred_vol = pred_3d.sum()
+        gt_vol   = gt_3d.sum()
+        if gt_vol == 0 and pred_vol == 0:
+            avd_3d = 0.0
+        elif gt_vol == 0:
+            avd_3d = 100.0  # FP bệnh nhân: 100% lỗi
+        else:
+            avd_3d = min(abs(pred_vol - gt_vol) / gt_vol * 100.0, 500.0)
+        avd_list.append(avd_3d)
+        
+        # Tính Dice 3D
+        intersection = (pred_3d & gt_3d).sum()
+        union = pred_3d.sum() + gt_3d.sum()
+        dice_3d = (2.0 * intersection) / (union + 1e-8)
+        dice_3d_list.append(dice_3d)
+        
+    return {
+        "alcd_3d": sum(alcd_list) / max(len(alcd_list), 1),
+        "avd_3d":  sum(avd_list) / max(len(avd_list), 1),
+        "dice_3d": sum(dice_3d_list) / max(len(dice_3d_list), 1)
+    }
+
