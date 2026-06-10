@@ -62,7 +62,7 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
                 # Call self.model directly so DDP hooks can trigger gradient synchronization
-                preds = self.model(inp, epoch=epoch, decoupled=False)
+                preds = self.model(inp, epoch=epoch)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
                 
                 # Accumulate diagnostics
