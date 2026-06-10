@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISLES'24 Flowchart - Pastel Purple/Pink</title>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        
+        // Cấu hình tone màu pastel hồng/tím
+        mermaid.initialize({ 
+            startOnLoad: true, 
+            theme: 'base',
+            themeVariables: {
+                primaryColor: '#F8E8F8',       // Tím pastel cực nhạt (nền node)
+                primaryTextColor: '#4A148C',   // Tím đậm (chữ)
+                primaryBorderColor: '#CE93D8', // Tím nhạt (viền node)
+                lineColor: '#AB47BC',          // Tím trung bình (đường nối)
+                secondaryColor: '#FCE4EC',     // Hồng pastel (node phụ)
+                tertiaryColor: '#FFFFFF',
+                clusterBkg: '#FFF0F5',         // Lavender blush (Nền khối subgraph)
+                clusterBorder: '#F06292',      // Hồng đậm (viền khối subgraph)
+                fontFamily: 'arial, sans-serif'
+            }
+        });
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            display: flex;
+            justify-content: center;
+            background-color: #FAFAFA;
+        }
+        .mermaid {
+            width: 100%;
+            max-width: 1000px; /* Bóp thu hẹp chiều ngang để gọn hơn */
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.05);
+        }
+    </style>
+</head>
+<body>
+    <div class="mermaid">
+graph TD
+    %% Tối ưu hóa chữ để gọn gàng nhưng vẫn đủ ý
+    Input["Input<br/>6 CTA + 12 CTP"] --> SA["SliceAttention"]
+    
+    subgraph Enc ["Encoder (DenseNet-121)"]
+        SA --> DS["Dual-Stream (5x5 & 9x9)"]
+        DS --> E1["Block 1"] --> E2["Block 2"] --> E3["Block 3"]
+        E3 --> Bot["Bottleneck (16x16)"]
+    end
+
+    subgraph Dec ["Shared Decoder"]
+        Bot --> D4["dec4"]
+        E2 -.->|"Skip"| D4
+        D4 --> D3["dec3"]
+        E1 -.->|"Skip"| D3
+    end
+
+    D3 --> FiLM{"Task-Conditioned<br/>FiLM"}
+    DS -.->|"Skip"| FiLM
+
+    FiLM -->|"CoW"| C2["dec2"]
+    FiLM -->|"LVO"| L2["dec2"]
+    FiLM -->|"Lesion"| S2["dec2"]
+
+    subgraph CoW ["Nhánh Vòng Willis"]
+        C2 --> C1["dec1"]
+        C1 --> HC["CoW Head"]
+        HC --> OC("Mạch máu (CoW)")
+    end
+
+    subgraph LVO ["Nhánh Tắc Mạch Lớn"]
+        L2 --> AL["Asymmetry<br/>(High-Pass)"]
+        AL --> L1["dec1"]
+        C1 -.->|"Detach() Guidance"| L1
+        L1 --> HL["LVO Head (Bias -3.0)"]
+        HL --> OL("Cục máu đông (LVO)")
+    end
+
+    subgraph Lesion ["Nhánh Ổ Nhồi Máu"]
+        Input -.->|"Perfusion Injection"| S2
+        S2 --> AS["Asymmetry<br/>(Low-Pass)"]
+        AS --> S1["dec1"]
+        S1 --> HS["Lesion Head"]
+        HS --> OS("Vùng thiếu máu (Lesion)")
+    end
+    </div>
+</body>
+</html>
