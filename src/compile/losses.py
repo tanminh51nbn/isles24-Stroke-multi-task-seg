@@ -563,15 +563,30 @@ class MultiTaskLoss(nn.Module):
         has_lesion = (targets[:, 0:1].amax(dim=(1, 2, 3), keepdim=False) > 0).float()  # (B,)
         has_lvo = (targets[:, 1:2].amax(dim=(1, 2, 3), keepdim=False) > 0).float()      # (B,)
 
-        # Tmax weighting
-        weight_map = None
-        if "tmax" in preds and preds["tmax"] is not None:
+        # Soft Lesion Labeling (Spatio-Temporal Forecasting)
+        lesion_target = targets[:, 0:1]
+        if "tmax" in preds and "cbf" in preds and preds["tmax"] is not None and preds["cbf"] is not None:
             tmax = preds["tmax"]
-            weight_map = 1.0 + torch.clamp(tmax, min=0.0) * targets[:, 0:1]
+            cbf = preds["cbf"]
+            
+            soft = lesion_target.float().clone()
+            core_zone = (tmax > 6/7.0) & (cbf < 30/35.0)
+            penumbra_zone = (tmax > 4/7.0) & ~core_zone
+            benign_zone = ~(core_zone | penumbra_zone)
+            
+            soft[core_zone & (lesion_target > 0.5)] = 0.95
+            soft[penumbra_zone & (lesion_target > 0.5)] = 0.70
+            soft[benign_zone & (lesion_target > 0.5)] = 0.90
+            
+            soft[benign_zone & (lesion_target < 0.5)] = 0.0
+            soft[penumbra_zone & (lesion_target < 0.5)] = 0.1
+            soft[core_zone & (lesion_target < 0.5)] = 0.3
+            
+            lesion_target = soft
 
         # Lesion: Stroke-Optimized Compound Loss (Focal Loss + Asymmetric Tversky)
         # Tính trên toàn bộ batch (batch=True), trả về scalar
-        l_l_m = self.lesion_main_loss(preds['lesion'], targets[:, 0:1], weight_map=weight_map)
+        l_l_m = self.lesion_main_loss(preds['lesion'], lesion_target, weight_map=None)
 
         if isinstance(self.lvo_loss_fn, ModifiedFocalLoss):
             l_v_m = self.lvo_loss_fn(preds['lvo'], targets[:, 1:2], sigma=dynamic_sigma, debug=_debug)
