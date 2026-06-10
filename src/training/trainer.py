@@ -61,9 +61,9 @@ class Trainer:
                 self._diag_lvo_max = 0.0
 
             self.optimizer.zero_grad(set_to_none=True)
-            raw_model = self.model.module if hasattr(self.model, "module") else self.model
             with torch.amp.autocast('cuda', enabled=self.amp_enabled):
-                preds = raw_model(inp, epoch=epoch, decoupled=False)
+                # Call self.model directly so DDP hooks can trigger gradient synchronization
+                preds = self.model(inp, epoch=epoch, decoupled=False)
                 losses = self.loss_fn(preds, lbl, epoch=epoch, batch_idx=batch_idx)
                 
                 # Accumulate diagnostics
@@ -298,7 +298,7 @@ class Trainer:
             sync = torch.tensor([
                 total_loss, main_loss, sum_d_l, sum_d_c, sum_aad, sum_alcd, 
                 sum_p_v, float(n_b), raw_loss, sum_d_l_pos, float(n_b_pos),
-                sum_v_les, sum_v_lvo, sum_v_cow
+                sum_v_les, sum_v_lvo, sum_v_cow, sum_core_dice
             ], device=self.device)
             dist.all_reduce(sync, op=dist.ReduceOp.SUM)
             v = sync.cpu().numpy()
@@ -310,6 +310,7 @@ class Trainer:
             avg_v_les = v[11]/max(v[7],1)
             avg_v_lvo = v[12]/max(v[7],1)
             avg_v_cow = v[13]/max(v[7],1)
+            ad_core = v[14]/max(v[7],1)
 
             # Thu thập và gộp patient_stats từ tất cả các rank
             world_size = dist.get_world_size()
