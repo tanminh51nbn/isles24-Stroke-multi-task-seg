@@ -36,6 +36,27 @@ def dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0
     return dice
 
 
+def core_dice_score(logits: torch.Tensor, targets: torch.Tensor, tmax: torch.Tensor, cbf: torch.Tensor, threshold: float = 0.5, smooth: float = 1e-6) -> torch.Tensor:
+    probs = torch.sigmoid(logits)
+    preds = (probs > threshold).float()
+    
+    core_zone = (tmax > 6/7.0) & (cbf < 30/35.0)
+    penumbra_zone = (tmax > 4/7.0) & ~core_zone
+    
+    # Mask out Penumbra completely from both predictions and targets
+    eval_mask = ~penumbra_zone
+    
+    preds_masked = preds * eval_mask.float()
+    targets_masked = targets * eval_mask.float()
+    
+    preds_flat = preds_masked.reshape(-1)
+    targets_flat = targets_masked.reshape(-1)
+    
+    intersection = (preds_flat * targets_flat).sum()
+    dice = (2.0 * intersection + smooth) / (preds_flat.sum() + targets_flat.sum() + smooth)
+    return dice
+
+
 def aad_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
     """
     Average Area Difference (%) — Tính trung bình sai lệch diện tích trên từng lát cắt.
@@ -311,7 +332,10 @@ def finalize_patient_lvo_acc(patient_stats: dict, threshold: float = 0.5, min_po
 def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_stats: dict = None, epoch: int = 999, lvo_max_radius: float = 10.0) -> dict:
     t = weights.get("thresholds", {"lesion": 0.45, "lvo": 0.05, "cow": 0.5})
     # Lesion Metrics
-    d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]).item()
+    if "tmax" in preds and "cbf" in preds and preds["tmax"] is not None and preds["cbf"] is not None:
+        d_lesion = core_dice_score(preds["lesion"], targets[:, 0:1], preds["tmax"], preds["cbf"], threshold=t["lesion"]).item()
+    else:
+        d_lesion  = dice_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]).item()
     aad_lesion = aad_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"]) # Note: AAD doesn't support gating, which is fine as it's auxiliary
     alcd_lesion = alcd_score(preds["lesion"], targets[:, 0:1], threshold=t["lesion"])
 
@@ -352,6 +376,7 @@ def compute_all_metrics(preds: dict, targets: torch.Tensor, weights: dict, lvo_s
 
     return {
         "dice_lesion":     d_lesion,
+        "core_dice":       d_lesion if not ("tmax" in preds and "cbf" in preds and preds["tmax"] is not None and preds["cbf"] is not None) else core_dice_score(preds["lesion"], targets[:, 0:1], preds["tmax"], preds["cbf"], threshold=t["lesion"]).item(),
         "dice_lesion_pos": d_lesion_pos,  # [FIX C] Dice trên Lesion-positive slice — metric thực cho PGW
         "aad_lesion":      aad_lesion,
         "alcd_lesion":     alcd_lesion,
