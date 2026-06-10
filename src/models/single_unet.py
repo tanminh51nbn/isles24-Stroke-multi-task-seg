@@ -439,10 +439,9 @@ class LesionTaskPath(nn.Module):
         dropout_p = dropout_cfg.get("lesion", 0.2) if isinstance(dropout_cfg, dict) else 0.2
         
         # ─── MỚI: dec4 và dec3 độc lập cho Lesion ──────────
-        # in_ch = bottleneck_ch = 1024
-        # skip_channels: [ch_s1, ch_s2, ch_s3, ch_s4, ch_s5]
-        self.dec4 = SingleDecoderBlock(in_ch, skip_channels[3], dec_ch[0], attn_type, use_aux=False, task_name="lesion", aux_ch=0, dropout_p=dropout_p)
-        self.dec3 = SingleDecoderBlock(dec_ch[0], skip_channels[2], dec_ch[1], attn_type, use_aux=False, task_name="lesion", aux_ch=0, dropout_p=dropout_p)
+        # Tắt Attention ở tầng sâu để tiết kiệm VRAM
+        self.dec4 = SingleDecoderBlock(in_ch, skip_channels[3], dec_ch[0], attention_type=None, use_aux=False, task_name="lesion", aux_ch=0, dropout_p=dropout_p)
+        self.dec3 = SingleDecoderBlock(dec_ch[0], skip_channels[2], dec_ch[1], attention_type=None, use_aux=False, task_name="lesion", aux_ch=0, dropout_p=dropout_p)
         
         # ─── Lightweight Perfusion Encoder ──────────
         self.perf_encoder = LightweightPerfusionEncoder(in_ch=perf_ch, base_ch=32)
@@ -451,14 +450,6 @@ class LesionTaskPath(nn.Module):
         self.dec2 = SingleDecoderBlock(dec_ch[1], skip_channels[1] + 64, dec_ch[2], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
         self.dec1 = SingleDecoderBlock(dec_ch[2], skip_channels[0] + 32, dec_ch[3], attn_type, use_aux=True, task_name="lesion", aux_ch=1, dropout_p=dropout_p)
 
-        # ─── Task-Conditioned FiLM ──────────────────────────────────────────
-        self.task_embedding = nn.Parameter(torch.randn(1, 64))
-        self.film_bottleneck = TaskConditionedFiLM(in_channels=in_ch, embedding_dim=64)
-        self.film_s4 = TaskConditionedFiLM(in_channels=skip_channels[3], embedding_dim=64)
-        self.film_s3 = TaskConditionedFiLM(in_channels=skip_channels[2], embedding_dim=64)
-        self.film_s2 = TaskConditionedFiLM(in_channels=skip_channels[1], embedding_dim=64)
-        self.film_s1 = TaskConditionedFiLM(in_channels=skip_channels[0], embedding_dim=64)
-        
         self.up_final = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.final_conv = ConvBnGelu(dec_ch[3], final_ch)
 
@@ -472,19 +463,11 @@ class LesionTaskPath(nn.Module):
         # ─── Perfusion Encoder ─────────────────────────────────────────
         perf_feat_128, perf_feat_64 = self.perf_encoder(perf_raw)
         
-        # ─── Áp dụng FiLM ──────────────────────────────────────────────────
-        task_emb = self.task_embedding.expand(x_bottleneck.shape[0], -1)  # (B, 64)
-        x_bottleneck_film = self.film_bottleneck(x_bottleneck, task_emb)
-        s4_film = self.film_s4(s4_les, task_emb)
-        s3_film = self.film_s3(s3_les, task_emb)
-        s2_film = self.film_s2(s2, task_emb)
-        s1_film = self.film_s1(s1, task_emb)
+        s2_fused = torch.cat([s2, perf_feat_64], dim=1)
+        s1_fused = torch.cat([s1, perf_feat_128], dim=1)
         
-        s2_fused = torch.cat([s2_film, perf_feat_64], dim=1)
-        s1_fused = torch.cat([s1_film, perf_feat_128], dim=1)
-        
-        x_dec4, _ = self.dec4(x_bottleneck_film, s4_film, prev_mask=None)
-        x_dec3, _ = self.dec3(x_dec4, s3_film, prev_mask=None)
+        x_dec4, _ = self.dec4(x_bottleneck, s4_les, prev_mask=None)
+        x_dec3, _ = self.dec3(x_dec4, s3_les, prev_mask=None)
         
         x_dec2, aux2 = self.dec2(x_dec3, s2_fused, prev_mask=None)
         x_dec1, aux1 = self.dec1(x_dec2, s1_fused, prev_mask=aux2)
