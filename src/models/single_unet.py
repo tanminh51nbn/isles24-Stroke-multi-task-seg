@@ -578,6 +578,7 @@ class SingleEncoderTripleDecoder(nn.Module):
             self.s4_dec = s4_dec
             self.s3_dec = s3_dec
             self.x_shared = x_shared
+            self.x_bottleneck = x_bottleneck
             
             # 2. Detach x_shared and skips for each task path to isolate their graphs
             x_shared_cow = x_shared.detach().requires_grad_(True)

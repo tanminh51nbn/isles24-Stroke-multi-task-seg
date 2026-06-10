@@ -133,20 +133,17 @@ Do tính chất hình học và phân phối nhãn rất khác biệt, mỗi nh�
 
 | Nhiệm vụ | Công thức Loss | Rationale (Lý do thiết kế) |
 | :--- | :--- | :--- |
-| **Lesion** (Ổ nhồi máu) | `Focal Tversky (batch=True, α=0.35, β=0.65, γ=1.75)` <br>+ `SDF Boundary Loss (area_gated > 400px)` | **Batch-level Tversky:** Gom toàn bộ pixel trong batch để tính chung 1 giá trị TI, tránh hiện tượng gradient bị pha loãng bởi các lát cắt rỗng. <br>**Area-Gated SDF:** SDF Loss ép mô hình học đường viền, nhưng sẽ phạt nhầm các ổ nhồi máu siêu nhỏ thành 0. Do đó, SDF chỉ kích hoạt khi ổ nhồi máu $> 400$ pixel. |
+| **Lesion** (Ổ nhồi máu) | `Focal Tversky (batch=True, α=0.35, β=0.65, γ=1.75)` <br>+ `Soft Lesion Labeling` | **Batch-level Tversky:** Gom toàn bộ pixel trong batch để tính chung 1 giá trị TI, tránh pha loãng gradient bởi các lát cắt rỗng. <br>**Soft Labeling:** Phân tách và làm mềm nhãn thật (về dải 0.1 - 0.95) theo các vùng Core/Penumbra/Benign, giúp mô hình bớt bảo thủ và bắt được các vùng rìa tranh tối tranh sáng chưa hoại tử. |
 | **LVO** (Tắc mạch lớn) | `Modified Focal Loss (α=2.5, β=4.5)` <br>+ `Gaussian Curriculum` <br>+ `Negative Slice Max Penalty` | LVO chỉ là dạng một chấm nhỏ. **Gaussian Curriculum** tạo vùng Gaussian quanh điểm tắc, thu nhỏ dần $\sigma$ (xuống mức floor=1.25) theo Epoch để dễ hội tụ.<br>**Negative Slice Max Penalty:** Phạt bình phương giá trị dự đoán tối đa ($max\_pred^2$) trên các lát cắt không có LVO để đè bẹp các báo ảo (False Positives). |
 | **CoW** (Vòng Willis) | `Tversky Loss (α=0.2, β=0.8)` <br>+ `Soft CLDice Loss (weight=0.45)` | `β=0.8` phạt rất nặng hiện tượng đứt gãy mạch máu. **clDice (Centerline Dice)** sử dụng skeletonization mềm để duy trì tính liên tục và topology dạng mạng lưới của mạch máu. |
 
 ---
 
-## 3. Cân Bằng Đa Nhiệm Động & Gradient Surgery
+## 3. Cân Bằng Đa Nhiệm (Multi-Task Balancing)
 
-Để huấn luyện đồng thời 3 tác vụ mà không bị hiện tượng một tác vụ dễ lấn át tác vụ khó, mô hình áp dụng hai cơ chế:
+Để huấn luyện đồng thời 3 tác vụ mà không bị hiện tượng một tác vụ dễ lấn át tác vụ khó, mô hình áp dụng cơ chế đánh trọng số động:
 
-### 3.1. PCGrad (Projecting Conflicting Gradients)
-Nếu vector gradient của hai tác vụ có góc tù (xung đột hướng tối ưu), gradient của tác vụ này sẽ được chiếu vuông góc lên mặt phẳng không xung đột của tác vụ kia trước khi cộng tổng. Điều này chống lại hiện tượng "quên thảm khốc" (Catastrophic Forgetting) giữa các nhánh giải mã.
-
-### 3.2. PGW (Performance Gap Weighting)
+### 3.1. PGW (Performance Gap Weighting)
 Trọng số các tác vụ được cập nhật tự động (với momentum) dựa trên khoảng cách tới mục tiêu (Gap):
 *   **Mục tiêu hiệu năng:** `Lesion_Dice = 0.75`, `LVO_D2C_F1 = 0.50`, `CoW_Dice = 0.88`.
 *   **Cập nhật:** $\text{Gap}_t = \max(0, \text{Target}_t - \text{Metric}_t)$. Task nào càng xa mục tiêu, Loss của task đó càng được khuếch đại ở Epoch tiếp theo.

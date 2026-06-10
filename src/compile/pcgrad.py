@@ -234,14 +234,15 @@ class PCGrad:
             for p in shared_dec_params:
                 p.grad = None
             s5_dec.grad, s4_dec.grad, s3_dec.grad = None, None, None
-            torch.autograd.backward(x_shared, grad_tensors=g_les[0], retain_graph=False) # Giải phóng đồ thị Shared Decoder!
+            # Lesion starts from bottleneck, bypassing shared_path, so backward through x_bottleneck
+            torch.autograd.backward(raw_model.decoder.x_bottleneck, grad_tensors=g_les[0], retain_graph=False) # Giải phóng đồ thị Shared Decoder!
             task_dec_grads.append([p.grad.clone() if p.grad is not None else torch.zeros_like(p) for p in shared_dec_params])
             rep_grads.append([
                 s5_dec.grad.clone() if s5_dec.grad is not None else torch.zeros_like(s5_dec),
-                s4_dec.grad.clone() if s4_dec.grad is not None else torch.zeros_like(s4_dec),
-                s3_dec.grad.clone() if s3_dec.grad is not None else torch.zeros_like(s3_dec),
                 g_les[1].clone() if g_les[1] is not None else torch.zeros_like(task_leaves["lesion"][1]),
-                g_les[2].clone() if g_les[2] is not None else torch.zeros_like(task_leaves["lesion"][2])
+                g_les[2].clone() if g_les[2] is not None else torch.zeros_like(task_leaves["lesion"][2]),
+                g_les[3].clone() if g_les[3] is not None else torch.zeros_like(task_leaves["lesion"][3]),
+                g_les[4].clone() if g_les[4] is not None else torch.zeros_like(task_leaves["lesion"][4])
             ])
 
         # 3. Phẫu thuật gradient (PCGrad) trên Shared Decoder
@@ -274,6 +275,7 @@ class PCGrad:
         raw_model.decoder.s4_dec = None
         raw_model.decoder.s3_dec = None
         raw_model.decoder.x_shared = None
+        raw_model.decoder.x_bottleneck = None
         if hasattr(raw_model.encoder, "saved_skips"):
             raw_model.encoder.saved_skips = None
 
