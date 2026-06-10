@@ -106,9 +106,7 @@ class Trainer:
                         elif "encoder" in n.lower() or "features" in n.lower(): gn["e"] += sq_val
                 
                 print(f"    [GRAD] B{batch_idx:03d} | 🔴 Les: {gn['l']**0.5:.2f} 🎯 LVO: {gn['v']**0.5:.2f} 🟢 CoW: {gn['c']**0.5:.2f} 🧠 Enc: {gn['e']**0.5:.2f}")
-                
-                if guide_str:
-                    print(f"    [INFO] Guide_Flow[{guide_str.strip()}]")
+
             
             # Clip toàn bộ tham số mô hình (global clip)
             nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
