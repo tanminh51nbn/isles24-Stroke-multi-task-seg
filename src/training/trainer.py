@@ -190,6 +190,7 @@ class Trainer:
         total_loss, main_loss, raw_loss = 0.0, 0.0, 0.0
         sum_v_les, sum_v_lvo, sum_v_cow = 0.0, 0.0, 0.0
         sum_d_l, sum_d_l_pos, sum_d_c = 0.0, 0.0, 0.0  # [FIX C] sum_d_l_pos: Lesion-positive slice only
+        sum_core_dice = 0.0
         sum_aad, sum_alcd = 0.0, 0.0
         sum_p_v = 0.0
         n_b, n_b_pos = 0, 0  # n_b_pos: số batch có ít nhất 1 Lesion-positive slice
@@ -232,10 +233,11 @@ class Trainer:
             max_r = float(self.config.get("loss", {}).get("lvo", {}).get("max_radius", 10.0))
             metrics = compute_all_metrics(preds, lbl, _t, lvo_stats=lvo_stats, epoch=epoch, lvo_max_radius=max_r)
 
-            sum_d_l  += metrics["dice_lesion"]
-            sum_d_c  += metrics["dice_cow"]
-            sum_aad  += metrics["aad_lesion"]
-            sum_alcd += metrics["alcd_lesion"]
+            sum_d_l  += metrics.get("dice_lesion", 0)
+            sum_core_dice += metrics.get("core_dice", 0)
+            sum_d_c  += metrics.get("dice_cow", 0)
+            sum_aad  += metrics.get("aad_lesion", 0)
+            sum_alcd += metrics.get("alcd_lesion", 0)
             n_b += 1
             # [FIX C] Accumulate Lesion-positive-only Dice (chỉ khi batch có GT Lesion)
             d_l_pos = metrics.get("dice_lesion_pos", None)
@@ -337,13 +339,13 @@ class Trainer:
             avg_raw = raw_loss/max(n_b,1)
             ad_l  = sum_d_l/max(n_b,1)
             ad_c  = sum_d_c/max(n_b,1)
+            ad_core = sum_core_dice / max(n_b, 1)
             a_aad = sum_aad/max(n_b,1)
             a_alcd = sum_alcd/max(n_b,1)
             ap_v  = sum_p_v/max(n_b,1)
             ad_l_pos = sum_d_l_pos / max(n_b_pos, 1)
             avg_v_les = sum_v_les / max(n_b, 1)
             avg_v_lvo = sum_v_lvo / max(n_b, 1)
-            avg_v_cow = sum_v_cow / max(n_b, 1)
 
         # Tính patient LVO metrics trên toàn bộ tập dữ liệu đã gộp
         pat = finalize_patient_lvo_acc(
@@ -385,6 +387,7 @@ class Trainer:
 
         res = {
             "val_loss": avg_l, "val_main": avg_m, "val_raw": avg_raw, "dice_lesion": ad_l, "dice_lesion_pos": ad_l_pos,
+            "core_dice": ad_core,
             "f1_lvo": lvo_dice, "dice_cow": ad_c,
             "mean_d2c_lvo": lvo_stats.get("mean_d2c", 0.0),
             "f1_lvo_patient": pat.get("f1", 0.0) * 100.0,
@@ -459,7 +462,7 @@ class Trainer:
                 if lr_dec is None: lr_dec = self.optimizer.param_groups[-1]['lr']
 
                 print(f"{'-'*80}\n=> | [Ep {epoch+1:03d}/{self.epochs}] | LR (En/De): {lr_enc:.1e}/{lr_dec:.1e} | Comp: {v_m['composite']:.4f}")
-                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} (Pos: {v_m['dice_lesion_pos']:.4f}) | F1_LVO: {v_m['f1_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
+                print(f"   | [VAL] Dice_Lesion: {v_m['dice_lesion']:.4f} (Core: {v_m.get('core_dice', 0):.4f} | Pos: {v_m['dice_lesion_pos']:.4f}) | F1_LVO: {v_m['f1_lvo']/100.0:.4f} | Dice_CoW: {v_m['dice_cow']:.4f}")
                 print(f"   | [VAL] Loss: {v_m['val_loss']:.4f} (Main: {v_m['val_main']:.4f}, Raw: {v_m['val_raw']:.4f}) | AAD: {v_m['aad_lesion']:.2f}% | ALCD: {v_m['alcd_lesion']:.4f}")
                 print(f"   | [TRA] Loss: {t_m['train_loss']:.4f} (Main: {t_m['train_main']:.4f}, Raw: {t_m['train_raw']:.4f})\n{'-'*80}", flush=True)
             self.history.append({**t_m, **v_m, "epoch": epoch + 1})
