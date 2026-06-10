@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from typing import List, Optional, Callable
-from scipy.ndimage import gaussian_filter, distance_transform_edt
+from scipy.ndimage import gaussian_filter
 
 
 # ─── Gaussian Heatmap Generator ───────────────────────────────────────────────
@@ -51,26 +51,6 @@ def make_lvo_heatmap(binary_mask: np.ndarray, sigma: float = 4.0) -> np.ndarray:
 
     return heatmap.astype(np.float32)
 
-def compute_sdf(mask: np.ndarray) -> np.ndarray:
-    """
-    Tính toán Signed Distance Function (SDF) từ mask nhị phân.
-    - Ngoài vật thể: Giá trị dương (khoảng cách tới biên gần nhất).
-    - Trong vật thể: Giá trị âm (khoảng cách tới biên gần nhất).
-    """
-    if mask.sum() == 0:
-        # Trả về 1.0 (hình phạt cực đại ngoài biên) cho các slice trống
-        return np.ones_like(mask, dtype=np.float32) * 1.0
-        
-    dist_out = distance_transform_edt(1 - mask)
-    dist_in  = distance_transform_edt(mask)
-    
-    # SDF = Khoảng cách ngoài - Khoảng cách trong
-    # Giới hạn ở 20 pixel
-    sdf = np.clip(dist_out - dist_in, -20, 20)
-    
-    # [QUY ĐỔI VỀ 0-1]: Chia cho 20 để đưa về thang đo [0, 1]
-    # Lúc này: 0 là ranh giới, 1.0 là cực xa bên ngoài, -1.0 là cực sâu bên trong
-    return (sdf / 20.0).astype(np.float32)
 
 
 class ISLES24Dataset(Dataset):
@@ -112,23 +92,10 @@ class ISLES24Dataset(Dataset):
         aug_inp = sample["input"]
         aug_lbl = sample["label"] # (3, 256, 256)
 
-        # ── Lesion SDF Calculation (Hausdorff Guidance) ─────────────────────
-        # Tính SDF sau khi Augment để đảm bảo khớp với mask đã xoay/biến dạng
-        # Chuyển về numpy để dùng scipy bên trong compute_sdf
-        lesion_mask_np = aug_lbl[0].cpu().numpy()
-        lesion_sdf_np  = compute_sdf(lesion_mask_np)
-        lesion_sdf_ts  = torch.from_numpy(lesion_sdf_np).to(aug_lbl.device)
-
         # ── Final Label Assembly ────────────────────────────────────────────
-        # Gộp thành label 4 kênh: [Lesion_Mask, LVO_Binary, CoW_Mask, Lesion_SDF]
-        # Kênh 1 (LVO) lúc này đã là binary vì chúng ta đã bỏ bước tạo heatmap ở dataset
-        full_label = torch.cat([
-            aug_lbl, # [Lesion, LVO, CoW]
-            lesion_sdf_ts.unsqueeze(0) # [SDF]
-        ], dim=0)
-
+        # Gộp thành label 3 kênh: [Lesion, LVO, CoW]
         # Sanitize NaN/inf (Cuối cùng cho an toàn tuyệt đối)
-        lbl = torch.nan_to_num(full_label, nan=0.0, posinf=0.0, neginf=0.0)
+        lbl = torch.nan_to_num(aug_lbl, nan=0.0, posinf=0.0, neginf=0.0)
 
         return {"input": aug_inp, "label": lbl, "path": path}
 

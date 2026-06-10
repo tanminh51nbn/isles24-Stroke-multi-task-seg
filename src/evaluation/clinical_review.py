@@ -35,7 +35,7 @@ def get_clinical_samples(data_dir, num_checks=2000):
     for f in all_files[:num_checks]:
         temp_ds = ISLES24Dataset([f], transform=None)
         sample = temp_ds[0]
-        lbl = sample["label"]  # (4, H, W): [Lesion, LVO_binary, CoW, SDF]
+        lbl = sample["label"]  # (3, H, W): [Lesion, LVO_binary, CoW]
 
         # [FIX] LVO: binary mask thực tế chỉ có 5–40 pixel — ngưỡng cũ (> 80) không bao giờ tìm được
         if found["lvo"] is None and lbl[1].sum() > 3:

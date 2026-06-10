@@ -200,63 +200,7 @@ class LVOClassifierLoss(nn.Module):
         )
         return (focal_w * bce).mean()
 
-# ─── Boundary Losses ──────────────────────────────────────────────────────────
 
-class BoundaryLoss(nn.Module):
-    def __init__(self, kernel_size: int = 3):
-        super().__init__()
-        self.kernel_size = kernel_size
-        self.padding = kernel_size // 2
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        probs = torch.sigmoid(logits)
-        t_b = targets - (1.0 - F.max_pool2d(1.0 - targets, kernel_size=self.kernel_size, stride=1, padding=self.padding))
-        t_b = torch.clamp(t_b, min=0.0)
-        p_b = probs - (1.0 - F.max_pool2d(1.0 - probs, kernel_size=self.kernel_size, stride=1, padding=self.padding))
-        p_b = torch.clamp(p_b, min=0.0)
-        intersection = (p_b * t_b).sum(dim=(1, 2, 3))
-        union = p_b.sum(dim=(1, 2, 3)) + t_b.sum(dim=(1, 2, 3))
-        return 1.0 - ((2.0 * intersection + 1e-5) / (union + 1e-5)).mean()
-
-class SDFBoundaryLoss(nn.Module):
-    def __init__(self, fg_weight: float = 0.1, gamma: float = 2.0):
-        super().__init__()
-        self.fg_weight = fg_weight
-        self.gamma = gamma
-
-    def forward(self, logits: torch.Tensor, sdf: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        logits = logits.float()
-        sdf = sdf.float()
-        if mask is not None:
-            mask = mask.float()
-            
-        probs = torch.sigmoid(logits)
-
-        if mask is None:
-            # Fallback for compatibility (e.g. tests or older configurations)
-            fp_loss = (probs ** self.gamma) * torch.clamp(sdf, min=0)
-            fn_loss = (1 - probs) * torch.abs(torch.clamp(sdf, max=0))
-            return (fp_loss + fn_loss).mean()
-
-        # mask shape: (B, 1, H, W)
-        # 1. Background-Foreground Balancing trên toàn bộ Batch (Không Gating Slice rỗng)
-        # Background pixels have sdf > 0
-        is_bg = sdf > 0
-        # Foreground pixels have sdf <= 0
-        is_fg = sdf <= 0
-
-        num_bg = is_bg.sum().float()
-        num_fg = is_fg.sum().float()
-
-        # Calculate losses (Focal-gated FP loss cho background)
-        fp_loss = (probs ** self.gamma) * torch.clamp(sdf, min=0)
-        fn_loss = (1 - probs) * torch.abs(torch.clamp(sdf, max=0))
-
-        # Average separately to balance gradients
-        fp_mean = fp_loss.sum() / (num_bg + 1e-8)
-        fn_mean = fn_loss.sum() / (num_fg + 1e-8) if num_fg > 0 else torch.tensor(0.0, device=logits.device)
-
-        return fp_mean + self.fg_weight * fn_mean
 
 from torch.utils.checkpoint import checkpoint
 
@@ -306,36 +250,6 @@ class SoftCLDiceLoss(nn.Module):
         t_s_ = ((t_s * probs).sum() + self.smooth) / (t_s.sum() + self.smooth)
         return 1.0 - ((2.0 * t_p * t_s_) / (t_p + t_s_ + self.smooth))
 
-# ─── Compound Dice + BCE Loss ──────────────────────────────────────────────────
-
-class BinaryFocalLoss(nn.Module):
-    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = 'mean'):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        probs = torch.sigmoid(logits.float())
-        targets = targets.float()
-        
-        pt = torch.where(targets == 1.0, probs, 1.0 - probs)
-        alpha_t = torch.where(targets == 1.0, self.alpha, 1.0 - self.alpha)
-        
-        bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
-        focal_loss = alpha_t * torch.pow(1.0 - pt, self.gamma) * bce_loss
-        
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            # Return slice-level vector of shape (B,) by averaging over spatial dimensions
-            return focal_loss.view(focal_loss.size(0), -1).mean(dim=1)
-
-
-
-
 # ─── Multi-Task Loss (The Core) ───────────────────────────────────────────────
 
 class MultiTaskLoss(nn.Module):
@@ -357,10 +271,6 @@ class MultiTaskLoss(nn.Module):
         )
 
         self.lesion_slice_pos_w = l_cfg["lesion"].get("slice_pos_weight", 2.5)  # Giữ lại cho tham chiếu
-        self.lesion_sdf_w = 0.0 # [FIX] Tắt hoàn toàn SDFBoundaryLoss cho Lesion (Dự báo tương lai, ranh giới vô định)
-        self.lesion_sdf_loss_fn = SDFBoundaryLoss(fg_weight=l_cfg["lesion"].get("sdf_fg_weight", 0.1))
-        # [FIX #2] Ngưỡng diện tích (pixel) để bật SDF — slice nhỏ hơn ngưỡng này dùng thuần FocalTversky
-        self.lesion_sdf_area_gate = l_cfg["lesion"].get("sdf_area_gate", 400)
 
         # 2. LVO Task
         l_v_cfg = l_cfg.get("lvo", {})
@@ -611,30 +521,7 @@ class MultiTaskLoss(nn.Module):
         # LVO vẫn giữ per-slice weights như cũ
         lvo_slice_weights = has_lvo * (self.lvo_slice_pos_w - 1.0) + 1.0
 
-        # Lộ trình tăng dần trọng số SDF (SDF Warmup Curriculum)
-        # Ramped từ 0.02 lên self.lesion_sdf_w qua 30 epoch đầu
-        warmup_epochs = 30
-        if cur_ep < warmup_epochs:
-            current_sdf_w = 0.02 + (self.lesion_sdf_w - 0.02) * (cur_ep / float(warmup_epochs))
-        else:
-            current_sdf_w = self.lesion_sdf_w
 
-        if current_sdf_w > 0.0:
-            # [FIX #2] SDF Area Gating: chỉ áp SDF trên các slice có GT lesion đủ lớn
-            # Small lesion (< sdf_area_gate pixel) dùng thuần FocalTversky — không bị "dạy im lặng"
-            lesion_area = targets[:, 0:1].sum(dim=(1, 2, 3))       # (B,) — diện tích GT mỗi slice
-            large_lesion_mask = (lesion_area >= self.lesion_sdf_area_gate).float()  # (B,)
-            n_large = large_lesion_mask.sum()
-
-            if n_large > 0:
-                # Tính SDF loss chỉ trên slice đủ lớn — dùng mask để zero-out small slices
-                l_l_sdf_raw = self.lesion_sdf_loss_fn(preds['lesion'], targets[:, 3:4], targets[:, 0:1])
-                # l_l_sdf_raw là scalar (mean over all pixels), không thể gate per-slice dễ dàng
-                # → Tính SDF score như trước nhưng chỉ mixed khi batch có đủ large-lesion
-                large_ratio = n_large / float(targets.size(0))  # Tỉ lệ slice lớn trong batch
-                effective_sdf_w = current_sdf_w * large_ratio    # Scale down nếu ít slice lớn
-                combined_lesion_loss_scalar = (1.0 - effective_sdf_w) * combined_lesion_loss_scalar + effective_sdf_w * l_l_sdf_raw
-            # Nếu n_large == 0: batch toàn small/empty lesion → bỏ qua SDF hoàn toàn
         l_v_m_scalar = (l_v_m * lvo_slice_weights).mean()
 
         # [FIX #1] Negative Slice Max Penalty: phạt trực tiếp đỉnh nhọn ảo trên slice không có GT LVO

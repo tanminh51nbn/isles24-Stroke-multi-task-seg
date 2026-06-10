@@ -11,9 +11,6 @@ loss:
     beta: 0.65
     gamma: 2.0
     slice_pos_weight: 2.5
-    sdf_weight: 0.45
-    sdf_fg_weight: 0.4
-    sdf_area_gate: 200
 
   lvo:
     type: "modified_focal"
