@@ -99,7 +99,7 @@ training:
   early_stopping:
     enabled: true
     start_epoch: 20
-    patience: 25
+    patience: 20
     min_delta: 0.0001
 
   # Logging
